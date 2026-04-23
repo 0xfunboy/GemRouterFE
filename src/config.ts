@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { coerceCompatibilityState, type ApiSurface } from './lib/compatibility.js';
 import type { TeGemProviderConfig } from './llm/providers/tegem/client.js';
 
 export interface BootstrapAppConfig {
@@ -18,9 +19,15 @@ export interface RuntimeConfig {
   port: number;
   rootDir: string;
   dataDir: string;
+  dashboardEnabled: boolean;
   adminToken: string;
   adminSessionTtlMs: number;
   bootstrapApp: BootstrapAppConfig;
+  compatibility: {
+    settingsStorePath: string;
+    defaultSurface: ApiSurface;
+    enabledSurfaces: ApiSurface[];
+  };
   llm: TeGemProviderConfig;
   modelIds: string[];
   auditLogPath: string;
@@ -108,12 +115,34 @@ export function loadConfig(
   );
 
   const modelIds = ['gemini-web', 'google/gemini-web'];
+  const compatibilityState = coerceCompatibilityState({
+    defaultSurface: pick(
+      env,
+      'GEMROUTER_COMPAT_DEFAULT_SURFACE',
+      'BAIRBI_COMPAT_DEFAULT_SURFACE',
+      'BARIBI_COMPAT_DEFAULT_SURFACE',
+    ) ?? 'openai',
+    enabledSurfaces: readList(
+      env,
+      ['openai', 'deepseek', 'ollama'],
+      'GEMROUTER_COMPAT_ENABLED_SURFACES',
+      'BAIRBI_COMPAT_ENABLED_SURFACES',
+      'BARIBI_COMPAT_ENABLED_SURFACES',
+    ),
+  });
 
   return {
     host: pick(env, 'HOST', 'GEMROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',
     port: readNumber(env, 4024, 'PORT', 'GEMROUTER_PORT', 'BAIRBI_PORT', 'BARIBI_PORT'),
     rootDir,
     dataDir,
+    dashboardEnabled: readBoolean(
+      env,
+      true,
+      'GEMROUTER_DASHBOARD_ENABLED',
+      'BAIRBI_DASHBOARD_ENABLED',
+      'BARIBI_DASHBOARD_ENABLED',
+    ),
     adminToken: requireEnv(env, 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
     adminSessionTtlMs: readNumber(env, 24 * 60 * 60_000, 'GEMROUTER_ADMIN_SESSION_TTL_MS', 'BAIRBI_ADMIN_SESSION_TTL_MS', 'BARIBI_ADMIN_SESSION_TTL_MS'),
     bootstrapApp: {
@@ -153,6 +182,11 @@ export function loadConfig(
         'BAIRBI_BOOTSTRAP_MAX_CONCURRENCY',
         'BARIBI_BOOTSTRAP_MAX_CONCURRENCY',
       ),
+    },
+    compatibility: {
+      settingsStorePath: path.join(dataDir, 'compatibility.json'),
+      defaultSurface: compatibilityState.defaultSurface,
+      enabledSurfaces: compatibilityState.enabledSurfaces,
     },
     llm: {
       baseUrl: pick(env, 'TEGEM_BASE_URL') ?? 'https://gemini.google.com/app',

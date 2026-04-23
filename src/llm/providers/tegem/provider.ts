@@ -1,6 +1,6 @@
 import type { Locator, Page } from "playwright";
 
-import { GeminiQuotaError, GeminiTimeoutError } from "./errors.js";
+import { GeminiNotReadyError, GeminiQuotaError, GeminiTimeoutError } from "./errors.js";
 import type {
   ConversationSnapshot,
   GeminiConfig,
@@ -17,6 +17,22 @@ const QUOTA_PATTERNS = [
   /rate limit/i,
   /try again (in|after) \d/i,
   /daily usage limit/i,
+];
+
+const SIGNED_OUT_PATTERNS = [
+  /you('ve| have) been signed out/i,
+  /sign in to continue/i,
+  /session expired/i,
+  /log in to continue/i,
+];
+
+const RECOVERABLE_PROMPT_PATTERNS = [
+  /input gemini non trovato/i,
+  /prompt gemini non inviato/i,
+  /element was detached/i,
+  /element is not stable/i,
+  /locator\.click/i,
+  /element is not visible/i,
 ];
 
 function sleep(ms: number): Promise<void> {
@@ -42,13 +58,16 @@ export class GeminiProvider {
 
   async ensureReady(page: Page): Promise<void> {
     await this.goto(page);
+    await this.assertInteractive(page);
     const selector = await this.findFirstVisible(page, this.config.readySelectors, 30_000);
     if (!selector) {
-      throw new Error("Gemini non pronto. Controlla il login.");
+      throw new GeminiNotReadyError(await this.describeNotReady(page));
     }
+    await this.assertInteractive(page);
   }
 
   async isReady(page: Page): Promise<boolean> {
+    if (await this.hasBlockingOverlay(page)) return false;
     const selector = await this.findFirstVisible(page, this.config.readySelectors, 1_500);
     return Boolean(selector);
   }
@@ -94,77 +113,23 @@ export class GeminiProvider {
   }
 
   async sendPrompt(page: Page, prompt: string): Promise<void> {
-    await this.ensureReady(page);
-    if (await this.isBusy(page).catch(() => false)) {
-      await this.waitUntilIdle(page, 800);
-    }
+    let lastError: unknown = null;
 
-    // Wait for Angular to finish replacing DOM elements after page load.
-    // We verify the input is STABLE (same element) for two consecutive checks
-    // before trusting it with click+type operations.
-    const input = await this.waitForStableInput(page, 350);
-    if (!input) throw new Error("Input Gemini non trovato.");
-
-    await input.click();
-
-    const tagName = await input.evaluate((el: Element) => el.tagName.toLowerCase());
-    if (tagName === "textarea" || tagName === "input") {
-      await input.fill(prompt);
-    } else {
-      const insertedDirectly = await input.evaluate((el: Element, value: string) => {
-        const target = el as HTMLElement;
-        if (!target) return false;
-        target.focus();
-
-        const setContent = (): void => {
-          target.textContent = "";
-          const lines = String(value).split("\n");
-          lines.forEach((line, index) => {
-            if (index > 0) target.appendChild(document.createElement("br"));
-            target.appendChild(document.createTextNode(line));
-          });
-        };
-
-        try {
-          setContent();
-          target.dispatchEvent(new InputEvent("beforeinput", {
-            inputType: "insertText",
-            data: value,
-            bubbles: true,
-            cancelable: true,
-          }));
-          target.dispatchEvent(new InputEvent("input", {
-            inputType: "insertText",
-            data: value,
-            bubbles: true,
-          }));
-          target.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        } catch {
-          return false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this.sendPromptOnce(page, prompt);
+        return;
+      } catch (error) {
+        lastError = error;
+        await this.assertInteractive(page);
+        if (!this.isRecoverablePromptError(error) || attempt === 2) {
+          throw error;
         }
-      }, prompt).catch(() => false);
-
-      if (!insertedDirectly) {
-        await input.evaluate((el: Element) => {
-          (el as { focus?: () => void; textContent: string | null }).focus?.();
-          el.textContent = "";
-        });
-        const lines = prompt.split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          if (i > 0) await input.press("Shift+Enter");
-          if (lines[i]) await input.pressSequentially(lines[i], { delay: 0 });
-        }
+        await this.recoverPromptSurface(page, attempt);
       }
     }
 
-    // Re-focus in case the rich-textarea lost focus during typing.
-    // No extra long wait here: once the cursor is live, we want to submit immediately.
-    await input.click().catch(() => undefined);
-
-    const baselineAssistantCount = await this.countAssistantNodes(page).catch(() => 0);
-    await this.submitPrompt(page);
-    await this.ensurePromptSubmitted(page, prompt, baselineAssistantCount);
+    throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? "Prompt Gemini non inviato.")));
   }
 
   /**
@@ -621,7 +586,7 @@ export class GeminiProvider {
         400,
       );
       if (!freshInput) {
-        return true;
+        return await this.isBusy(page);
       }
       const current = await freshInput
         .evaluate((el: Element) => {
@@ -656,6 +621,159 @@ export class GeminiProvider {
 
       await this.submitPrompt(page);
     }
+
+    throw new Error("Prompt Gemini non inviato correttamente.");
+  }
+
+  private async sendPromptOnce(page: Page, prompt: string): Promise<void> {
+    await this.ensureReady(page);
+    if (await this.isBusy(page).catch(() => false)) {
+      await this.waitUntilIdle(page, 800);
+    }
+
+    const input = await this.waitForStableInput(page, 1_500);
+    if (!input) throw new Error("Input Gemini non trovato.");
+
+    await input.scrollIntoViewIfNeeded().catch(() => undefined);
+    await input.evaluate((el: Element) => (el as HTMLElement).focus?.()).catch(() => undefined);
+
+    const tagName = await input.evaluate((el: Element) => el.tagName.toLowerCase());
+    if (tagName === "textarea" || tagName === "input") {
+      await input.fill(prompt);
+    } else {
+      const insertedDirectly = await input.evaluate((el: Element, value: string) => {
+        const target = el as HTMLElement;
+        if (!target) return false;
+        target.focus();
+
+        const setContent = (): void => {
+          target.textContent = "";
+          const lines = String(value).split("\n");
+          lines.forEach((line, index) => {
+            if (index > 0) target.appendChild(document.createElement("br"));
+            target.appendChild(document.createTextNode(line));
+          });
+        };
+
+        try {
+          setContent();
+          target.dispatchEvent(new InputEvent("beforeinput", {
+            inputType: "insertText",
+            data: value,
+            bubbles: true,
+            cancelable: true,
+          }));
+          target.dispatchEvent(new InputEvent("input", {
+            inputType: "insertText",
+            data: value,
+            bubbles: true,
+          }));
+          target.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        } catch {
+          return false;
+        }
+      }, prompt).catch(() => false);
+
+      if (!insertedDirectly) {
+        await input.evaluate((el: Element) => {
+          (el as { focus?: () => void; textContent: string | null }).focus?.();
+          el.textContent = "";
+        });
+        const lines = prompt.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (i > 0) await input.press("Shift+Enter");
+          if (lines[i]) await input.pressSequentially(lines[i], { delay: 0 });
+        }
+      }
+    }
+
+    await input.evaluate((el: Element) => (el as HTMLElement).focus?.()).catch(() => undefined);
+
+    const baselineAssistantCount = await this.countAssistantNodes(page).catch(() => 0);
+    await this.submitPrompt(page);
+    await this.ensurePromptSubmitted(page, prompt, baselineAssistantCount);
+  }
+
+  private isRecoverablePromptError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error ?? "");
+    return RECOVERABLE_PROMPT_PATTERNS.some((pattern) => pattern.test(message));
+  }
+
+  private async recoverPromptSurface(page: Page, attempt: number): Promise<void> {
+    if (attempt === 0) {
+      await page.reload({ waitUntil: "domcontentloaded" }).catch(async () => {
+        await page.goto(this.config.baseUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+      });
+    } else {
+      await page.goto(this.config.baseUrl, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+    }
+    await sleep(250);
+    await this.assertInteractive(page);
+  }
+
+  private async describeNotReady(page: Page): Promise<string> {
+    const blockingText = await this.readBlockingOverlayText(page);
+    if (blockingText) {
+      if (SIGNED_OUT_PATTERNS.some((pattern) => pattern.test(blockingText))) {
+        return "Sessione Gemini scaduta o login richiesto. Accedi di nuovo da VNC.";
+      }
+      return `Interfaccia Gemini bloccata: ${blockingText.slice(0, 180)}`;
+    }
+
+    const mainText = await this.readMainText(page).catch(() => "");
+    if (this.isQuotaExhausted(mainText)) {
+      return "Quota o rate limit Gemini rilevati.";
+    }
+    return "Controlla login, overlay e stato della sessione browser.";
+  }
+
+  private async assertInteractive(page: Page): Promise<void> {
+    const blockingText = await this.readBlockingOverlayText(page);
+    if (blockingText) {
+      if (SIGNED_OUT_PATTERNS.some((pattern) => pattern.test(blockingText))) {
+        throw new GeminiNotReadyError("Sessione Gemini scaduta o login richiesto. Accedi di nuovo da VNC.");
+      }
+      if (this.isQuotaExhausted(blockingText)) {
+        throw new GeminiQuotaError(blockingText.slice(0, 500));
+      }
+    }
+
+    const mainText = await this.readMainText(page).catch(() => "");
+    if (this.isQuotaExhausted(mainText)) {
+      throw new GeminiQuotaError(mainText.slice(0, 500));
+    }
+  }
+
+  private async hasBlockingOverlay(page: Page): Promise<boolean> {
+    return Boolean(await this.readBlockingOverlayText(page));
+  }
+
+  private async readBlockingOverlayText(page: Page): Promise<string> {
+    const selectors = [
+      '[role="dialog"]',
+      'mat-dialog-container',
+      '.mat-mdc-dialog-container',
+      '.cdk-overlay-container [role="dialog"]',
+      '.cdk-overlay-container',
+    ];
+
+    for (const selector of selectors) {
+      const locator = page.locator(selector);
+      const count = await locator.count().catch(() => 0);
+      for (let index = count - 1; index >= 0; index--) {
+        const node = locator.nth(index);
+        const visible = await node.isVisible().catch(() => false);
+        if (!visible) continue;
+        const text = ((await node.innerText().catch(() => "")) || "").trim();
+        if (!text) continue;
+        if (SIGNED_OUT_PATTERNS.some((pattern) => pattern.test(text)) || this.isQuotaExhausted(text)) {
+          return text;
+        }
+      }
+    }
+
+    return "";
   }
 
   private async readLastVisibleText(page: Page, selectors: string[]): Promise<string> {
