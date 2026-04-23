@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+.env
+.playwright/
+.turbo/
+profiles/
+coverage/
+*.log
