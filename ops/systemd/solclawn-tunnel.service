@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare Tunnel for solclawn
+Wants=network-online.target gemrouterfe.service novnc.service
+After=network-online.target gemrouterfe.service novnc.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/funboy
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/bin/cloudflared tunnel --config /home/funboy/.cloudflared/solclawn.yml run 0bd7b93f-2880-4a85-804b-d82d97d04d49
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

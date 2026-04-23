@@ -18,20 +18,27 @@ import {
   sanitizeSessionHint,
   type ChatCompletionsRequest,
   type ResponsesRequest,
+  type UsageSummary,
 } from './lib/openai.js';
 import { createTeGemClient } from './llm/providers/tegem/client.js';
-import type { LLMOptions } from './llm/types.js';
+import type { LLMMessage, LLMOptions } from './llm/types.js';
 import { AuditLogger } from './store/audit.js';
-import { AppStore } from './store/appStore.js';
+import { AdminSessionStore } from './store/adminSessions.js';
+import { AppStore, type ApiAppRecord } from './store/appStore.js';
+import { InteractionStore } from './store/interactions.js';
+import { renderAppShell } from './ui.js';
 
 const PROJECT_NAME = 'GemRouterFE';
 const SERVICE_NAME = 'gem-router-fe';
 const STUDY_PATH = '/home/funboy/bairbi-stack/PROJECT_STUDY.md';
+const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 
 const config = loadConfig();
 const llm = createTeGemClient(config.llm);
 const appStore = new AppStore(config.appsStorePath);
 const audit = new AuditLogger(config.auditLogPath);
+const adminSessions = new AdminSessionStore(config.adminSessionTtlMs);
+const interactions = new InteractionStore(config.interactionsStorePath);
 
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
@@ -72,6 +79,40 @@ function getBearerToken(request: FastifyRequest): string | null {
   return apiKey || null;
 }
 
+function parseCookies(request: FastifyRequest): Record<string, string> {
+  const raw = String(request.headers.cookie ?? '');
+  const entries = raw
+    .split(';')
+    .map((chunk) => chunk.trim())
+    .filter(Boolean)
+    .map((chunk) => {
+      const separator = chunk.indexOf('=');
+      if (separator < 0) return [chunk, ''];
+      return [chunk.slice(0, separator), decodeURIComponent(chunk.slice(separator + 1))];
+    });
+  return Object.fromEntries(entries);
+}
+
+function getAdminSessionId(request: FastifyRequest): string | undefined {
+  return parseCookies(request)[ADMIN_COOKIE_NAME];
+}
+
+function setAdminCookie(reply: FastifyReply, sessionId: string): void {
+  reply.header(
+    'set-cookie',
+    `${ADMIN_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(
+      config.adminSessionTtlMs / 1000,
+    )}`,
+  );
+}
+
+function clearAdminCookie(reply: FastifyReply): void {
+  reply.header(
+    'set-cookie',
+    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+  );
+}
+
 function sendError(
   reply: FastifyReply,
   statusCode: number,
@@ -88,8 +129,38 @@ function readHeaderValue(request: FastifyRequest, ...keys: string[]): string | u
   return undefined;
 }
 
+function getRequestOrigin(request: FastifyRequest): string | undefined {
+  return readHeaderValue(request, 'origin');
+}
+
+function inferPublicBaseUrl(request: FastifyRequest): string {
+  if (config.publicBaseUrl?.trim()) return config.publicBaseUrl.trim();
+  const proto = readHeaderValue(request, 'x-forwarded-proto') ?? 'http';
+  const host = readHeaderValue(request, 'x-forwarded-host') ?? String(request.headers.host ?? `127.0.0.1:${config.port}`);
+  return `${proto}://${host}`;
+}
+
+function inferVncUrl(request: FastifyRequest): string {
+  if (config.vncPublicUrl?.trim()) return config.vncPublicUrl.trim();
+  const host = readHeaderValue(request, 'x-forwarded-host') ?? String(request.headers.host ?? '');
+  if (/solclawn\.com$/i.test(host)) {
+    return 'https://vnc.solclawn.com/vnc.html?autoconnect=true&resize=scale';
+  }
+  return 'http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale';
+}
+
+function wantsHtml(request: FastifyRequest): boolean {
+  const accept = String(request.headers.accept ?? '').toLowerCase();
+  return accept.includes('text/html');
+}
+
+function sanitizeAdminApp(appRecord: ApiAppRecord): Omit<ApiAppRecord, 'apiKeyHash'> {
+  const { apiKeyHash: _apiKeyHash, ...rest } = appRecord;
+  return rest;
+}
+
 function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
-  const origin = typeof request.headers.origin === 'string' ? request.headers.origin : null;
+  const origin = getRequestOrigin(request) ?? null;
   if (origin && appStore.isOriginAllowedGlobally(origin)) {
     reply.header('access-control-allow-origin', origin);
     reply.header('vary', 'Origin');
@@ -111,14 +182,19 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
       'OpenAI-Project',
     ].join(', '),
   );
-  reply.header('access-control-allow-methods', 'GET,POST,OPTIONS');
+  reply.header('access-control-allow-methods', 'GET,POST,PUT,DELETE,OPTIONS');
+}
+
+function hasAdminAccess(request: FastifyRequest): boolean {
+  const token = getBearerToken(request);
+  if (token === config.adminToken) return true;
+  return adminSessions.verify(getAdminSessionId(request));
 }
 
 function ensureAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
-  const token = getBearerToken(request);
-  if (token !== config.adminToken) {
+  if (!hasAdminAccess(request)) {
     sendError(reply, 401, {
-      message: 'Invalid admin token',
+      message: 'Invalid admin token or session',
       type: 'authentication_error',
       code: 'invalid_admin_token',
     });
@@ -148,7 +224,7 @@ function ensureClientAccess(request: FastifyRequest, reply: FastifyReply): Authe
     return null;
   }
 
-  const origin = typeof request.headers.origin === 'string' ? request.headers.origin : null;
+  const origin = getRequestOrigin(request) ?? null;
   if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
     sendError(reply, 403, {
       message: `Origin not allowed for app ${clientApp.name}`,
@@ -181,9 +257,8 @@ function ensureClientAccess(request: FastifyRequest, reply: FastifyReply): Authe
 }
 
 function ensureModelAllowed(
-  request: FastifyRequest,
   reply: FastifyReply,
-  clientApp: AuthenticatedClientApp,
+  clientApp: AuthenticatedClientApp | ApiAppRecord,
   modelId: string,
 ): boolean {
   if (!appStore.isModelAllowed(clientApp, modelId)) {
@@ -198,7 +273,30 @@ function ensureModelAllowed(
   return true;
 }
 
-function buildLlmOptions(input: {
+function buildSessionOptions(input: {
+  model: string;
+  maxTokens?: number;
+  temperature?: number;
+  sessionNamespace: string;
+  sessionHint?: string;
+  user?: string;
+  stateful?: boolean;
+  fingerprintFallback: string;
+}): LLMOptions {
+  const rawSessionHint = input.sessionHint || input.user;
+  const sessionHint = sanitizeSessionHint(rawSessionHint, input.fingerprintFallback);
+  const sessionKey = `${input.sessionNamespace}:${sessionHint}`;
+  return {
+    model: input.model,
+    maxTokens: input.maxTokens,
+    temperature: input.temperature,
+    sessionKey,
+    sessionLabel: sessionKey,
+    resetSession: input.stateful !== true,
+  };
+}
+
+function buildRequestLlmOptions(input: {
   request: FastifyRequest;
   user?: string;
   sessionNamespace: string;
@@ -213,18 +311,85 @@ function buildLlmOptions(input: {
     input.user;
   const statefulHeader = String(
     readHeaderValue(input.request, 'x-gemrouter-stateful', 'x-baribi-stateful') ?? '',
-  ).trim().toLowerCase();
+  )
+    .trim()
+    .toLowerCase();
   const stateful = ['1', 'true', 'yes', 'on'].includes(statefulHeader);
-  const sessionHint = sanitizeSessionHint(rawSessionHint, input.fingerprintFallback);
-  const sessionKey = `${input.sessionNamespace}:${sessionHint}`;
-  return {
+  return buildSessionOptions({
     model: input.model,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
-    sessionKey,
-    sessionLabel: sessionKey,
-    resetSession: !stateful,
+    sessionNamespace: input.sessionNamespace,
+    sessionHint: rawSessionHint,
+    user: input.user,
+    stateful,
+    fingerprintFallback: input.fingerprintFallback,
+  });
+}
+
+function flattenPrompt(messages: LLMMessage[]): string {
+  return messages.map((message) => `${message.role}: ${message.content}`).join('\n');
+}
+
+function recordInteraction(input: {
+  request: FastifyRequest;
+  route: string;
+  appRecord: ApiAppRecord;
+  model: string;
+  messages: LLMMessage[];
+  responseText?: string;
+  usage?: UsageSummary;
+  status: 'succeeded' | 'failed';
+  statusCode: number;
+  provider?: string;
+  error?: string;
+}): void {
+  interactions.record({
+    requestId: input.request.id,
+    appId: input.appRecord.id,
+    appName: input.appRecord.name,
+    route: input.route,
+    model: input.model,
+    prompt: flattenPrompt(input.messages),
+    response: input.responseText,
+    usage: input.usage,
+    status: input.status,
+    statusCode: input.statusCode,
+    latencyMs: Date.now() - getStartedAt(input.request),
+    origin: getRequestOrigin(input.request),
+    provider: input.provider,
+    error: input.error,
+  });
+}
+
+function getRuntimeSnapshot(): Record<string, unknown> {
+  const profileDir = path.join(config.llm.baseProfileDir, config.llm.profileNamespace);
+  const cookiesFile = path.join(profileDir, '_shared', 'Default', 'Cookies');
+  return {
+    ok: true,
+    project: PROJECT_NAME,
+    service: SERVICE_NAME,
+    ts: new Date().toISOString(),
+    bootstrapAppId: bootstrapApp.id,
+    models: config.modelIds,
+    runtime: {
+      display: process.env.DISPLAY ?? null,
+      headless: config.llm.headless,
+    },
+    playwright: {
+      executablePath: config.llm.browserExecutablePath ?? null,
+      executableExists: config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false,
+      profileDir,
+      profileExists: existsSync(profileDir),
+      cookiesExists: existsSync(cookiesFile),
+      profileNamespace: config.llm.profileNamespace,
+    },
   };
+}
+
+function normalizeAllowedModels(values: unknown): string[] {
+  if (!Array.isArray(values) || values.length === 0) return config.bootstrapApp.allowedModels;
+  return values.map((value) => normalizeModelId(String(value)));
 }
 
 app.addHook('onRequest', async (request, reply) => {
@@ -243,56 +408,304 @@ app.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
-app.get('/', async () => ({
-  ok: true,
-  project: PROJECT_NAME,
-  service: SERVICE_NAME,
-  repoPath: config.rootDir,
-  studyPath: STUDY_PATH,
-  endpoints: ['/health', '/v1/models', '/v1/chat/completions', '/v1/responses'],
-}));
-
-app.get('/health', async () => {
-  const profileDir = path.join(config.llm.baseProfileDir, config.llm.profileNamespace);
-  const cookiesFile = path.join(profileDir, '_shared', 'Default', 'Cookies');
+app.get('/', async (request, reply) => {
+  if (wantsHtml(request)) {
+    return reply
+      .type('text/html; charset=utf-8')
+      .send(
+        renderAppShell({
+          projectName: PROJECT_NAME,
+          serviceName: SERVICE_NAME,
+          publicBaseUrl: inferPublicBaseUrl(request),
+          vncUrl: inferVncUrl(request),
+          studyPath: STUDY_PATH,
+          modelIds: config.modelIds,
+        }),
+      );
+  }
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
+    repoPath: config.rootDir,
     studyPath: STUDY_PATH,
-    ts: new Date().toISOString(),
-    bootstrapAppId: bootstrapApp.id,
-    models: config.modelIds,
+    endpoints: [
+      '/',
+      '/health',
+      '/v1/models',
+      '/v1/chat/completions',
+      '/v1/responses',
+      '/admin',
+    ],
+  };
+});
+
+app.get('/admin', async (request, reply) =>
+  reply
+    .type('text/html; charset=utf-8')
+    .send(
+      renderAppShell({
+        projectName: PROJECT_NAME,
+        serviceName: SERVICE_NAME,
+        publicBaseUrl: inferPublicBaseUrl(request),
+        vncUrl: inferVncUrl(request),
+        studyPath: STUDY_PATH,
+        modelIds: config.modelIds,
+      }),
+    ),
+);
+
+app.get('/health', async () => ({
+  ...getRuntimeSnapshot(),
+  studyPath: STUDY_PATH,
+}));
+
+app.post<{ Body: { token?: string } }>('/admin/login', async (request, reply) => {
+  const token = String(request.body?.token ?? '').trim();
+  if (token !== config.adminToken) {
+    return sendError(reply, 401, {
+      message: 'Invalid admin token',
+      type: 'authentication_error',
+      code: 'invalid_admin_token',
+    });
+  }
+  const sessionId = adminSessions.create();
+  setAdminCookie(reply, sessionId);
+  audit.write({
+    type: 'admin.login',
+    requestId: request.id,
+    route: request.url,
+    statusCode: 200,
+    latencyMs: Date.now() - getStartedAt(request),
+  });
+  return {
+    ok: true,
+    project: PROJECT_NAME,
+  };
+});
+
+app.post('/admin/logout', async (request, reply) => {
+  adminSessions.revoke(getAdminSessionId(request));
+  clearAdminCookie(reply);
+  return {
+    ok: true,
+  };
+});
+
+app.get('/admin/me', async (request, reply) => {
+  if (!hasAdminAccess(request)) {
+    return sendError(reply, 401, {
+      message: 'Admin session required',
+      type: 'authentication_error',
+      code: 'admin_session_required',
+    });
+  }
+  return {
+    ok: true,
+    project: PROJECT_NAME,
+    service: SERVICE_NAME,
+  };
+});
+
+app.get('/admin/summary', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const runtime = getRuntimeSnapshot();
+  return {
+    ok: true,
+    project: PROJECT_NAME,
+    service: SERVICE_NAME,
+    publicBaseUrl: inferPublicBaseUrl(request),
+    vncUrl: inferVncUrl(request),
     runtime: {
       display: process.env.DISPLAY ?? null,
       headless: config.llm.headless,
+      profileDir: (runtime.playwright as Record<string, unknown>).profileDir,
+      executablePath: (runtime.playwright as Record<string, unknown>).executablePath,
+      executableExists: (runtime.playwright as Record<string, unknown>).executableExists,
+      profileExists: (runtime.playwright as Record<string, unknown>).profileExists,
+      cookiesExists: (runtime.playwright as Record<string, unknown>).cookiesExists,
+      profileNamespace: (runtime.playwright as Record<string, unknown>).profileNamespace,
+      apps: appStore.list().length,
+      auditLogPath: config.auditLogPath,
     },
-    playwright: {
-      executablePath: config.llm.browserExecutablePath ?? null,
-      executableExists: config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false,
-      profileDir,
-      profileExists: existsSync(profileDir),
-      cookiesExists: existsSync(cookiesFile),
-      profileNamespace: config.llm.profileNamespace,
-    },
+    models: config.modelIds,
+    apps: appStore.list().map(sanitizeAdminApp),
+    stats: interactions.summary(60),
   };
+});
+
+app.get('/admin/interactions', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  return {
+    ok: true,
+    ...interactions.summary(100),
+  };
+});
+
+app.post<{ Params: { id: string }; Body: { feedback?: string; notes?: string } }>(
+  '/admin/interactions/:id/feedback',
+  async (request, reply) => {
+    if (!ensureAdmin(request, reply)) return reply;
+    const feedback = String(request.body?.feedback ?? '').trim().toLowerCase();
+    if (feedback !== 'good' && feedback !== 'bad') {
+      return sendError(reply, 400, {
+        message: 'feedback must be "good" or "bad"',
+        type: 'invalid_request_error',
+        code: 'invalid_feedback',
+      });
+    }
+    const updated = interactions.setFeedback(request.params.id, feedback, request.body?.notes);
+    if (!updated) {
+      return sendError(reply, 404, {
+        message: 'Interaction not found',
+        type: 'invalid_request_error',
+        code: 'interaction_not_found',
+      });
+    }
+    return {
+      ok: true,
+      interaction: updated,
+    };
+  },
+);
+
+app.delete<{ Params: { id: string } }>('/admin/interactions/:id/feedback', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const updated = interactions.clearFeedback(request.params.id);
+  if (!updated) {
+    return sendError(reply, 404, {
+      message: 'Interaction not found',
+      type: 'invalid_request_error',
+      code: 'interaction_not_found',
+    });
+  }
+  return {
+    ok: true,
+    interaction: updated,
+  };
+});
+
+app.post<{
+  Body: {
+    appId?: string;
+    prompt?: string;
+    systemPrompt?: string;
+    model?: string;
+    sessionHint?: string;
+    stateful?: boolean;
+    maxTokens?: number;
+    temperature?: number;
+  };
+}>('/admin/test-chat', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const body = request.body ?? {};
+  const selectedApp = (body.appId && appStore.findById(String(body.appId))) || bootstrapApp;
+  if (!selectedApp || selectedApp.revokedAt) {
+    return sendError(reply, 404, {
+      message: 'App not found',
+      type: 'invalid_request_error',
+      code: 'app_not_found',
+    });
+  }
+
+  const prompt = String(body.prompt ?? '').trim();
+  if (!prompt) {
+    return sendError(reply, 400, {
+      message: 'prompt is required',
+      type: 'invalid_request_error',
+      code: 'missing_prompt',
+    });
+  }
+
+  const model = normalizeModelId(body.model);
+  if (!ensureModelAllowed(reply, selectedApp, model)) return reply;
+
+  const messages: LLMMessage[] = [];
+  const systemPrompt = String(body.systemPrompt ?? '').trim();
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  messages.push({ role: 'user', content: prompt });
+
+  try {
+    const options = buildSessionOptions({
+      model,
+      maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
+      temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+      sessionNamespace: selectedApp.sessionNamespace,
+      sessionHint: typeof body.sessionHint === 'string' ? body.sessionHint : undefined,
+      stateful: body.stateful === true,
+      fingerprintFallback: createRequestFingerprint(messages),
+    });
+    const response = await llm.chat(messages, options);
+    const usage = estimateUsage(messages, response.content);
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: selectedApp,
+      model,
+      messages,
+      responseText: response.content,
+      usage,
+      status: 'succeeded',
+      statusCode: 200,
+      provider: response.provider,
+    });
+    return {
+      ok: true,
+      app: sanitizeAdminApp(selectedApp),
+      model,
+      text: response.content,
+      usage,
+      provider: response.provider,
+      latencyMs: Date.now() - getStartedAt(request),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: selectedApp,
+      model,
+      messages,
+      status: 'failed',
+      statusCode: 500,
+      error: message,
+    });
+    audit.write({
+      type: 'admin.test-chat.error',
+      requestId: request.id,
+      appId: selectedApp.id,
+      route: request.url,
+      model,
+      statusCode: 500,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 500, {
+      message,
+      type: 'server_error',
+      code: 'test_chat_failed',
+    });
+  }
 });
 
 app.get('/v1/models', async (request, reply) => {
   const access = ensureClientAccess(request, reply);
   if (!access) return reply;
-  access.release();
-  return {
-    object: 'list',
-    data: config.modelIds
-      .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
-      .map((modelId) => ({
-        id: modelId,
-        object: 'model',
-        created: 0,
-        owned_by: PROJECT_NAME,
-      })),
-  };
+  try {
+    return {
+      object: 'list',
+      data: config.modelIds
+        .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
+        .map((modelId) => ({
+          id: modelId,
+          object: 'model',
+          created: 0,
+          owned_by: PROJECT_NAME,
+        })),
+    };
+  } finally {
+    access.release();
+  }
 });
 
 app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) => {
@@ -301,8 +714,8 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
 
   try {
     const parsed = parseChatCompletionsRequest(request.body ?? {});
-    if (!ensureModelAllowed(request, reply, access.app, parsed.model)) return reply;
-    const sessionOptions = buildLlmOptions({
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const sessionOptions = buildRequestLlmOptions({
       request,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
@@ -315,6 +728,18 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       const usage = estimateUsage(parsed.messages, response.content);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: response.content,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: response.provider,
+      });
       audit.write({
         type: 'chat.completion',
         requestId: request.id,
@@ -355,9 +780,7 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
     let emitted = '';
     let finalText = '';
     try {
-      const stream = llm.streamChat
-        ? llm.streamChat(parsed.messages, sessionOptions)
-        : null;
+      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
@@ -380,6 +803,17 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
       }
 
       const usage = estimateUsage(parsed.messages, finalText);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+      });
       sendChunk({
         id: completionId,
         object: 'chat.completion.chunk',
@@ -411,11 +845,25 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
       reply.raw.end();
       return reply;
     } catch (error) {
-      sendChunk(buildOpenAIError({
-        message: error instanceof Error ? error.message : String(error),
-        type: 'server_error',
-        code: 'stream_failed',
-      }));
+      const message = error instanceof Error ? error.message : String(error);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText || emitted,
+        status: 'failed',
+        statusCode: 500,
+        error: message,
+      });
+      sendChunk(
+        buildOpenAIError({
+          message,
+          type: 'server_error',
+          code: 'stream_failed',
+        }),
+      );
       reply.raw.end();
       audit.write({
         type: 'chat.stream.error',
@@ -425,11 +873,12 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
         model: parsed.model,
         statusCode: 500,
         latencyMs: Date.now() - getStartedAt(request),
-        details: { error: error instanceof Error ? error.message : String(error) },
+        details: { error: message },
       });
       return reply;
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'chat.completion.error',
       requestId: request.id,
@@ -437,10 +886,10 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
       route: request.url,
       statusCode: 400,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: error instanceof Error ? error.message : String(error) },
+      details: { error: message },
     });
     return sendError(reply, 400, {
-      message: error instanceof Error ? error.message : String(error),
+      message,
       type: 'invalid_request_error',
       code: 'invalid_request',
     });
@@ -455,8 +904,8 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
 
   try {
     const parsed = parseResponsesRequest(request.body ?? {});
-    if (!ensureModelAllowed(request, reply, access.app, parsed.model)) return reply;
-    const sessionOptions = buildLlmOptions({
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const sessionOptions = buildRequestLlmOptions({
       request,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
@@ -469,6 +918,18 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       const usage = estimateUsage(parsed.messages, response.content);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: response.content,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: response.provider,
+      });
       audit.write({
         type: 'responses.create',
         requestId: request.id,
@@ -533,9 +994,7 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
     let emitted = '';
     let finalText = '';
     try {
-      const stream = llm.streamChat
-        ? llm.streamChat(parsed.messages, sessionOptions)
-        : null;
+      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
@@ -557,6 +1016,17 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
       }
 
       const usage = estimateUsage(parsed.messages, finalText);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+      });
       sendEvent({
         type: 'response.output_text.done',
         output_index: 0,
@@ -614,10 +1084,22 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
       reply.raw.end();
       return reply;
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText || emitted,
+        status: 'failed',
+        statusCode: 500,
+        error: message,
+      });
       sendEvent({
         type: 'error',
         error: buildOpenAIError({
-          message: error instanceof Error ? error.message : String(error),
+          message,
           type: 'server_error',
           code: 'stream_failed',
         }).error,
@@ -631,11 +1113,12 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
         model: parsed.model,
         statusCode: 500,
         latencyMs: Date.now() - getStartedAt(request),
-        details: { error: error instanceof Error ? error.message : String(error) },
+        details: { error: message },
       });
       return reply;
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'responses.create.error',
       requestId: request.id,
@@ -643,10 +1126,10 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
       route: request.url,
       statusCode: 400,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: error instanceof Error ? error.message : String(error) },
+      details: { error: message },
     });
     return sendError(reply, 400, {
-      message: error instanceof Error ? error.message : String(error),
+      message,
       type: 'invalid_request_error',
       code: 'invalid_request',
     });
@@ -659,7 +1142,7 @@ app.get('/admin/apps', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   return {
     object: 'list',
-    data: appStore.list(),
+    data: appStore.list().map(sanitizeAdminApp),
   };
 });
 
@@ -678,11 +1161,10 @@ app.post<{
   const created = appStore.create({
     name: String(body.name ?? '').trim() || 'frontend-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
-    allowedModels: Array.isArray(body.allowedModels)
-      ? body.allowedModels.map((value) => normalizeModelId(value))
-      : config.bootstrapApp.allowedModels,
+    allowedModels: normalizeAllowedModels(body.allowedModels),
     sessionNamespace: String(body.sessionNamespace ?? body.name ?? 'frontend-app'),
-    rateLimitPerMinute: typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
+    rateLimitPerMinute:
+      typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
     maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : config.bootstrapApp.maxConcurrency,
   });
   audit.write({
@@ -695,9 +1177,51 @@ app.post<{
   });
   return reply.code(201).send({
     ok: true,
-    app: created.record,
+    app: sanitizeAdminApp(created.record),
     apiKey: created.rawKey,
   });
+});
+
+app.put<{
+  Params: { id: string };
+  Body: {
+    name?: string;
+    allowedOrigins?: string[];
+    allowedModels?: string[];
+    sessionNamespace?: string;
+    rateLimitPerMinute?: number;
+    maxConcurrency?: number;
+  };
+}>('/admin/apps/:id', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const body = request.body ?? {};
+  const updated = appStore.update(request.params.id, {
+    name: typeof body.name === 'string' ? body.name : undefined,
+    allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : undefined,
+    allowedModels: Array.isArray(body.allowedModels) ? normalizeAllowedModels(body.allowedModels) : undefined,
+    sessionNamespace: typeof body.sessionNamespace === 'string' ? body.sessionNamespace : undefined,
+    rateLimitPerMinute: typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : undefined,
+    maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : undefined,
+  });
+  if (!updated) {
+    return sendError(reply, 404, {
+      message: 'App not found',
+      type: 'invalid_request_error',
+      code: 'app_not_found',
+    });
+  }
+  audit.write({
+    type: 'admin.app.updated',
+    requestId: request.id,
+    appId: updated.id,
+    route: request.url,
+    statusCode: 200,
+    latencyMs: Date.now() - getStartedAt(request),
+  });
+  return {
+    ok: true,
+    app: sanitizeAdminApp(updated),
+  };
 });
 
 app.post<{ Params: { id: string } }>('/admin/apps/:id/rotate', async (request, reply) => {
@@ -720,7 +1244,7 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/rotate', async (request, r
   });
   return {
     ok: true,
-    app: rotated.record,
+    app: sanitizeAdminApp(rotated.record),
     apiKey: rotated.rawKey,
   };
 });
@@ -745,23 +1269,26 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/revoke', async (request, r
   });
   return {
     ok: true,
-    app: revoked,
+    app: sanitizeAdminApp(revoked),
   };
 });
 
 app.get('/admin/runtime', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
+  const runtime = getRuntimeSnapshot();
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
-    profileDir: path.join(config.llm.baseProfileDir, config.llm.profileNamespace),
-    executablePath: config.llm.browserExecutablePath ?? null,
-    executableExists: config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false,
+    profileDir: (runtime.playwright as Record<string, unknown>).profileDir,
+    executablePath: (runtime.playwright as Record<string, unknown>).executablePath,
+    executableExists: (runtime.playwright as Record<string, unknown>).executableExists,
     display: process.env.DISPLAY ?? null,
     headless: config.llm.headless,
     apps: appStore.list().length,
     auditLogPath: config.auditLogPath,
+    publicBaseUrl: inferPublicBaseUrl(request),
+    vncUrl: inferVncUrl(request),
   };
 });
 
@@ -776,7 +1303,8 @@ process.on('SIGTERM', () => {
   void shutdown().finally(() => process.exit(0));
 });
 
-app.listen({ host: config.host, port: config.port })
+app
+  .listen({ host: config.host, port: config.port })
   .then((address) => {
     console.log(`${PROJECT_NAME} listening on ${address}`);
     console.log(`bootstrap app: ${bootstrapApp.id} (${bootstrapApp.name})`);

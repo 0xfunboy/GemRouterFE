@@ -1,0 +1,21 @@
+[Unit]
+Description=GemRouterFE service
+Wants=network-online.target xvfb.service x11vnc.service novnc.service
+After=network-online.target xvfb.service x11vnc.service novnc.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/funboy/bairbi-stack/GemRouterFE
+EnvironmentFile=-/home/funboy/bairbi-stack/GemRouterFE/.env
+Environment=HOME=/home/funboy
+Environment=NODE_ENV=production
+Environment=PATH=/home/funboy/.nvm/versions/node/v24.9.0/bin:/home/funboy/.local/bin:/home/funboy/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/home/funboy/.local/share/pnpm/pnpm build
+ExecStart=/usr/bin/env DISPLAY=:99 PORT=4000 PLAYWRIGHT_HEADLESS=false GEMROUTER_PUBLIC_BASE_URL=https://solclawn.com GEMROUTER_VNC_PUBLIC_URL=https://vnc.solclawn.com/vnc.html?autoconnect=true&resize=scale /home/funboy/.nvm/versions/node/v24.9.0/bin/node /home/funboy/bairbi-stack/GemRouterFE/dist/index.js
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
