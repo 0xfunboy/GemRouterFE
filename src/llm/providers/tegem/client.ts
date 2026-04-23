@@ -21,6 +21,7 @@ export interface TeGemProviderConfig {
   streamFirstChunkTimeoutMs: number;
   streamMaxDurationMs: number;
   legacyProfileImportPath?: string;
+  promptPackingStyle: 'minimal' | 'copilotrm';
 }
 
 interface TeGemRuntime {
@@ -38,6 +39,7 @@ function runtimeKey(config: TeGemProviderConfig): string {
     browserExecutablePath: config.browserExecutablePath,
     baseProfileDir: path.resolve(config.baseProfileDir),
     profileNamespace: config.profileNamespace,
+    promptPackingStyle: config.promptPackingStyle,
   });
 }
 
@@ -81,7 +83,7 @@ function seedLegacyProfile(config: TeGemProviderConfig): void {
   sanitizeProfileLocks(profilePath);
 }
 
-function flattenMessages(messages: LLMMessage[]): string {
+function flattenMessagesCopilotrm(messages: LLMMessage[]): string {
   const system = messages.filter((message) => message.role === 'system').map((message) => message.content.trim()).filter(Boolean);
   const dialog = messages.filter((message) => message.role !== 'system');
 
@@ -101,6 +103,45 @@ function flattenMessages(messages: LLMMessage[]): string {
 
   parts.push('Respond to the latest user request. Be precise and follow the system instructions.');
   return parts.join('\n\n');
+}
+
+function flattenMessagesMinimal(messages: LLMMessage[]): string {
+  const meaningful = messages
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+    }))
+    .filter((message) => message.content);
+
+  if (meaningful.length === 0) return '';
+
+  if (meaningful.length === 1 && meaningful[0]?.role === 'user') {
+    return meaningful[0].content;
+  }
+
+  const system = meaningful.filter((message) => message.role === 'system').map((message) => message.content);
+  const dialog = meaningful.filter((message) => message.role !== 'system');
+  const parts: string[] = [];
+
+  if (system.length > 0) {
+    parts.push(`System:\n${system.join('\n\n')}`);
+  }
+
+  if (dialog.length === 1 && dialog[0]?.role === 'user' && system.length === 0) {
+    parts.push(dialog[0].content);
+    return parts.join('\n\n');
+  }
+
+  for (const message of dialog) {
+    const label = message.role === 'assistant' ? 'Assistant' : 'User';
+    parts.push(`${label}:\n${message.content}`);
+  }
+
+  return parts.join('\n\n');
+}
+
+function flattenMessages(messages: LLMMessage[], style: 'minimal' | 'copilotrm'): string {
+  return style === 'copilotrm' ? flattenMessagesCopilotrm(messages) : flattenMessagesMinimal(messages);
 }
 
 function getStreamOverrides(opts?: LLMOptions): { maxDurationMs?: number; firstChunkTimeoutMs?: number } {
@@ -183,7 +224,7 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
     async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
       const sessionKey = opts?.sessionKey?.trim() || 'shared/default';
       const sessionLabel = opts?.sessionLabel?.trim() || sessionKey;
-      const prompt = flattenMessages(messages);
+      const prompt = flattenMessages(messages, config.promptPackingStyle);
 
       return runtime.sessionManager.withLock(sessionKey, async () => {
         if (opts?.resetSession) {
@@ -217,7 +258,7 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
     async *streamChat(messages: LLMMessage[], opts?: LLMOptions): AsyncGenerator<{ content: string }, LLMResponse, void> {
       const sessionKey = opts?.sessionKey?.trim() || 'shared/default';
       const sessionLabel = opts?.sessionLabel?.trim() || sessionKey;
-      const prompt = flattenMessages(messages);
+      const prompt = flattenMessages(messages, config.promptPackingStyle);
       const release = await runtime.sessionManager.acquireLock(sessionKey);
       try {
         if (opts?.resetSession) {

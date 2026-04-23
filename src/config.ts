@@ -58,6 +58,14 @@ function readList(env: Record<string, string | undefined>, fallback: string[], .
     .filter(Boolean);
 }
 
+function readPromptPackingStyle(
+  env: Record<string, string | undefined>,
+  ...keys: string[]
+): 'minimal' | 'copilotrm' {
+  const value = pick(env, ...keys)?.toLowerCase();
+  return value === 'copilotrm' ? 'copilotrm' : 'minimal';
+}
+
 function resolveDefaultChromePath(rootDir: string): string | undefined {
   const homeDir = pick(process.env, 'HOME') ?? path.dirname(rootDir);
   const candidates = [
@@ -164,6 +172,7 @@ export function loadConfig(
       streamFirstChunkTimeoutMs: readNumber(env, 25_000, 'STREAM_FIRST_CHUNK_TIMEOUT_MS', 'TEGEM_STREAM_FIRST_CHUNK_TIMEOUT_MS'),
       streamMaxDurationMs: readNumber(env, 90_000, 'STREAM_MAX_DURATION_MS', 'TEGEM_STREAM_MAX_DURATION_MS'),
       legacyProfileImportPath: pick(env, 'TEGEM_IMPORT_PROFILE_FROM'),
+      promptPackingStyle: readPromptPackingStyle(env, 'TEGEM_PROMPT_PACKING_STYLE'),
     },
     modelIds,
     auditLogPath: path.join(dataDir, 'audit.log'),

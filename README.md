@@ -107,12 +107,15 @@ Important variables:
 - `GEMROUTER_ADMIN_SESSION_TTL_MS`
 - `GEMROUTER_PUBLIC_BASE_URL`
 - `GEMROUTER_VNC_PUBLIC_URL`
+- `TEGEM_PROMPT_PACKING_STYLE`
 - `PLAYWRIGHT_BASE_PROFILE_DIR`
 - `PLAYWRIGHT_PROFILE_NAMESPACE`
 - `PLAYWRIGHT_EXECUTABLE_PATH`
 - `TEGEM_IMPORT_PROFILE_FROM`
 
 Legacy `BARIBI_*` and `BAIRBI_*` names are still accepted as fallbacks.
+
+`TEGEM_PROMPT_PACKING_STYLE=minimal` is the default for this repo. A single user message is forwarded as-is, while multi-turn chats are flattened with minimal `System/User/Assistant` labels. The older `copilotrm` packing style remains available via `TEGEM_PROMPT_PACKING_STYLE=copilotrm`.
 
 ## API examples
 
