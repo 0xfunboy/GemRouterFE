@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
+import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse } from '../../types.js';
 import { GeminiProvider } from './provider.js';
 import { GeminiSessionManager } from './session.js';
@@ -147,12 +148,44 @@ function flattenMessages(messages: LLMMessage[], style: 'minimal' | 'copilotrm')
 function getStreamOverrides(opts?: LLMOptions): { maxDurationMs?: number; firstChunkTimeoutMs?: number } {
   switch (opts?.tier) {
     case 'small':
-      return { firstChunkTimeoutMs: 6_000, maxDurationMs: 18_000 };
+      return { firstChunkTimeoutMs: 20_000, maxDurationMs: 60_000 };
     case 'medium':
-      return { firstChunkTimeoutMs: 8_000, maxDurationMs: 28_000 };
+      return { firstChunkTimeoutMs: 30_000, maxDurationMs: 90_000 };
     default:
       return {};
   }
+}
+
+/**
+ * Tries to repair common Gemini JSON issues (unquoted keys, trailing commas).
+ * Returns the original text if it cannot be repaired into valid JSON.
+ */
+function repairJsonContent(text: string): string {
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return text;
+
+  // Already valid
+  try { JSON.parse(text); return text; } catch { /* fall through */ }
+
+  let repaired = text;
+  // Quote unquoted property names: {key: or , key:
+  repaired = repaired.replace(/([{,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)\s*:/g, '$1"$2":');
+  // Remove trailing commas before } or ]
+  repaired = repaired.replace(/,(\s*[}\]])/g, '$1');
+
+  try { JSON.parse(repaired); return repaired; } catch { return text; }
+}
+
+function isRecoverableGeminiError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return [
+    /input gemini non trovato/i,
+    /prompt gemini non inviato/i,
+    /element was detached/i,
+    /element is not stable/i,
+    /locator\.click/i,
+    /timeout gemini: nessuna risposta entro il timeout iniziale/i,
+  ].some((pattern) => pattern.test(message));
 }
 
 function getRuntime(config: TeGemProviderConfig): TeGemRuntime {
@@ -224,79 +257,123 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
     async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
       const sessionKey = opts?.sessionKey?.trim() || 'shared/default';
       const sessionLabel = opts?.sessionLabel?.trim() || sessionKey;
-      const prompt = flattenMessages(messages, config.promptPackingStyle);
+      const promptMessages = applySemanticPrompt(messages, opts?.semanticProfile);
+      const prompt = flattenMessages(promptMessages, config.promptPackingStyle);
 
       return runtime.sessionManager.withLock(sessionKey, async () => {
-        if (opts?.resetSession) {
-          await runtime.sessionManager.clearSession(runtime.provider.config, sessionKey).catch(() => undefined);
-        }
-        const page = await runtime.sessionManager.getOrCreate(runtime.provider.config, sessionKey, sessionLabel);
-        await runtime.provider.ensureReady(page);
-        await runtime.provider.ensureConversationNotFull(page);
+        const maxAttempts = 2;
+        let lastError: unknown = null;
 
-        const baseline = await runtime.provider.snapshotConversation(page);
-        await runtime.provider.sendPrompt(page, prompt);
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          try {
+            if (opts?.resetSession) {
+              await runtime.sessionManager.clearSession(runtime.provider.config, sessionKey).catch(() => undefined);
+            }
+            const page = await runtime.sessionManager.getOrCreate(runtime.provider.config, sessionKey, sessionLabel);
+            await runtime.provider.ensureReady(page);
+            await runtime.provider.ensureConversationNotFull(page);
 
-        const stream = runtime.provider.streamResponse(page, baseline, getStreamOverrides(opts));
-        let finalContent = '';
-        while (true) {
-          const next = await stream.next();
-          if (next.done) {
-            finalContent = next.value.text.trim();
-            break;
+            const baseline = await runtime.provider.snapshotConversation(page);
+            await runtime.provider.sendPrompt(page, prompt);
+
+            const stream = runtime.provider.streamResponse(page, baseline, getStreamOverrides(opts));
+            let finalContent = '';
+            while (true) {
+              const next = await stream.next();
+              if (next.done) {
+                finalContent = normalizeSemanticOutput(
+                  repairJsonContent(next.value.text.trim()),
+                  opts?.semanticProfile,
+                );
+                break;
+              }
+            }
+
+            return {
+              content: finalContent,
+              provider: 'tegem',
+              model: opts?.model ?? 'gemini-web',
+            };
+          } catch (error) {
+            lastError = error;
+            if (!isRecoverableGeminiError(error) || attempt === maxAttempts - 1) {
+              throw error;
+            }
+            await runtime.sessionManager.recreateSession(runtime.provider.config, sessionKey).catch(() => undefined);
           }
         }
 
-        return {
-          content: finalContent,
-          provider: 'tegem',
-          model: opts?.model ?? 'gemini-web',
-        };
+        throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Gemini request failed.')));
       });
     },
 
     async *streamChat(messages: LLMMessage[], opts?: LLMOptions): AsyncGenerator<{ content: string }, LLMResponse, void> {
       const sessionKey = opts?.sessionKey?.trim() || 'shared/default';
       const sessionLabel = opts?.sessionLabel?.trim() || sessionKey;
-      const prompt = flattenMessages(messages, config.promptPackingStyle);
+      const promptMessages = applySemanticPrompt(messages, opts?.semanticProfile);
+      const prompt = flattenMessages(promptMessages, config.promptPackingStyle);
       const release = await runtime.sessionManager.acquireLock(sessionKey);
       try {
-        if (opts?.resetSession) {
-          await runtime.sessionManager.clearSession(runtime.provider.config, sessionKey).catch(() => undefined);
-        }
-        const page = await runtime.sessionManager.getOrCreate(runtime.provider.config, sessionKey, sessionLabel);
-        await runtime.provider.ensureReady(page);
-        await runtime.provider.ensureConversationNotFull(page);
+        const maxAttempts = 2;
+        let lastError: unknown = null;
 
-        const baseline = await runtime.provider.snapshotConversation(page);
-        await runtime.provider.sendPrompt(page, prompt);
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+          try {
+            if (opts?.resetSession) {
+              await runtime.sessionManager.clearSession(runtime.provider.config, sessionKey).catch(() => undefined);
+            }
+            const page = await runtime.sessionManager.getOrCreate(runtime.provider.config, sessionKey, sessionLabel);
+            await runtime.provider.ensureReady(page);
+            await runtime.provider.ensureConversationNotFull(page);
 
-        const stream = runtime.provider.streamResponse(page, baseline, getStreamOverrides(opts));
-        let latest = '';
-        let accumulated = '';
-        while (true) {
-          const next: IteratorResult<string, { text: string }> = await stream.next();
-          if (next.done) {
-            latest = next.value.text.trim() || accumulated.trim();
-            break;
+            const baseline = await runtime.provider.snapshotConversation(page);
+            await runtime.provider.sendPrompt(page, prompt);
+
+            const stream = runtime.provider.streamResponse(page, baseline, getStreamOverrides(opts));
+            let latest = '';
+            let accumulated = '';
+            while (true) {
+              const next: IteratorResult<string, { text: string }> = await stream.next();
+              if (next.done) {
+                latest = next.value.text.trim() || accumulated.trim();
+                break;
+              }
+              const chunk = next.value.trim();
+              if (chunk) {
+                accumulated += chunk;
+                latest = normalizeSemanticOutput(accumulated.trim(), opts?.semanticProfile, { partial: true });
+                if (!latest) continue;
+                yield { content: latest };
+              }
+            }
+
+            latest = normalizeSemanticOutput(latest, opts?.semanticProfile);
+            return {
+              content: latest,
+              provider: 'tegem',
+              model: opts?.model ?? 'gemini-web',
+            } satisfies LLMResponse;
+          } catch (error) {
+            lastError = error;
+            if (!isRecoverableGeminiError(error) || attempt === maxAttempts - 1) {
+              throw error;
+            }
+            await runtime.sessionManager.recreateSession(runtime.provider.config, sessionKey).catch(() => undefined);
           }
-          const chunk = next.value.trim();
-          if (chunk) {
-            accumulated += chunk;
-            latest = accumulated.trim();
-            if (!latest) continue;
-            yield { content: latest };
-          }
         }
 
-        return {
-          content: latest,
-          provider: 'tegem',
-          model: opts?.model ?? 'gemini-web',
-        } satisfies LLMResponse;
+        throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Gemini stream failed.')));
       } finally {
         release();
       }
+    },
+    getDiagnostics(): Record<string, unknown> {
+      return {
+        provider: 'tegem',
+        model: 'gemini-web',
+        promptPackingStyle: config.promptPackingStyle,
+        ...runtime.sessionManager.getDiagnostics(),
+      };
     },
   };
 }

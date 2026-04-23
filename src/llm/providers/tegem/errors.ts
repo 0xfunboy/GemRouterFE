@@ -15,8 +15,8 @@ export class GeminiTimeoutError extends Error {
 }
 
 export class GeminiNotReadyError extends Error {
-  constructor() {
-    super("Gemini non è pronto. Esegui il login prima.");
+  constructor(reason = "Esegui il login prima.") {
+    super(`Gemini non è pronto. ${reason}`);
     this.name = "GeminiNotReadyError";
   }
 }

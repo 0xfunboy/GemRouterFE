@@ -106,6 +106,8 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
   user?: string;
   maxTokens?: number;
   temperature?: number;
+  outputMode: 'text' | 'json';
+  jsonSchema?: unknown;
 } {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new Error('messages must be a non-empty array');
@@ -126,6 +128,16 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
     } satisfies LLMMessage;
   });
 
+  const responseFormat = body.response_format;
+  const responseFormatType = String(responseFormat?.type ?? '').trim().toLowerCase();
+  const jsonSchema =
+    responseFormatType === 'json_schema'
+      ? responseFormat?.schema ??
+        (responseFormat?.json_schema && typeof responseFormat.json_schema === 'object'
+          ? (responseFormat.json_schema as Record<string, unknown>).schema
+          : undefined)
+      : undefined;
+
   return {
     model: normalizeModelId(body.model),
     messages: prependSystemInstruction(messages, buildResponseFormatInstruction(body.response_format)),
@@ -134,6 +146,8 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
     user: typeof body.user === 'string' ? body.user.trim() : undefined,
     maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    outputMode: responseFormatType.startsWith('json') ? 'json' : 'text',
+    jsonSchema,
   };
 }
 
@@ -144,6 +158,8 @@ export function parseResponsesRequest(body: ResponsesRequest): {
   user?: string;
   maxTokens?: number;
   temperature?: number;
+  outputMode: 'text' | 'json';
+  jsonSchema?: unknown;
 } {
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     throw new Error('Tool calling is not supported on gemini-web');
@@ -177,6 +193,16 @@ export function parseResponsesRequest(body: ResponsesRequest): {
     throw new Error('input must contain at least one message');
   }
 
+  const responseFormat = body.text?.format;
+  const responseFormatType = String(responseFormat?.type ?? '').trim().toLowerCase();
+  const jsonSchema =
+    responseFormatType === 'json_schema'
+      ? responseFormat?.schema ??
+        (responseFormat?.json_schema && typeof responseFormat.json_schema === 'object'
+          ? (responseFormat.json_schema as Record<string, unknown>).schema
+          : undefined)
+      : undefined;
+
   return {
     model: normalizeModelId(body.model),
     messages: prependSystemInstruction(messages, buildResponseFormatInstruction(body.text?.format)),
@@ -184,6 +210,8 @@ export function parseResponsesRequest(body: ResponsesRequest): {
     user: typeof body.user === 'string' ? body.user.trim() : undefined,
     maxTokens: typeof body.max_output_tokens === 'number' ? body.max_output_tokens : undefined,
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    outputMode: responseFormatType.startsWith('json') ? 'json' : 'text',
+    jsonSchema,
   };
 }
 

@@ -49,6 +49,19 @@ export function renderAppShell(input: {
           linear-gradient(180deg, #05060d 0%, #070914 42%, #05060d 100%);
         color: var(--text);
       }
+      body.embed .shell {
+        width: min(100vw, calc(100vw - 8px));
+        margin: 6px auto 12px;
+      }
+      body.embed .landing {
+        margin-top: 10px;
+      }
+      body.embed .topbar {
+        padding: 14px 16px;
+      }
+      body.embed .section {
+        padding: 16px;
+      }
       a { color: inherit; text-decoration: none; }
       h1, h2, h3, h4, p { margin: 0; }
       .shell {
@@ -320,8 +333,8 @@ export function renderAppShell(input: {
         <span class="eyebrow">Private Admin</span>
         <h1>${escapeHtml(input.projectName)}</h1>
         <p class="lede">
-          OpenAI-compatible Gemini frontend router. Use the admin secret to unlock the prompt lab, app management,
-          recent interactions, and the noVNC operator view.
+          Gemini frontend router with OpenAI, DeepSeek, and Ollama compatibility surfaces. Use the admin secret to
+          unlock the prompt lab, app management, recent interactions, and the noVNC operator view.
         </p>
         <div class="model-row">
           ${input.modelIds.map((modelId) => `<span class="pill">${escapeHtml(modelId)}</span>`).join('')}
@@ -359,6 +372,45 @@ export function renderAppShell(input: {
             </div>
           </div>
           <div id="stats-grid" class="stats-grid"></div>
+        </section>
+
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Compatibility</h3>
+              <p class="section-copy">Choose which API surfaces stay enabled and which one the dashboard treats as primary.</p>
+            </div>
+          </div>
+          <div class="shell-grid">
+            <div>
+              <form id="compatibility-form">
+                <label>
+                  Primary surface
+                  <select name="defaultSurface">
+                    <option value="openai">openai</option>
+                    <option value="deepseek">deepseek</option>
+                    <option value="ollama">ollama</option>
+                  </select>
+                </label>
+                <div class="button-row">
+                  <label class="pill"><input type="checkbox" name="enabledSurfaces" value="openai" style="margin-right:8px" />Enable openai</label>
+                  <label class="pill"><input type="checkbox" name="enabledSurfaces" value="deepseek" style="margin-right:8px" />Enable deepseek</label>
+                  <label class="pill"><input type="checkbox" name="enabledSurfaces" value="ollama" style="margin-right:8px" />Enable ollama</label>
+                </div>
+                <div class="button-row">
+                  <button type="submit">Save Compatibility</button>
+                </div>
+                <div id="compatibility-status" class="status"></div>
+              </form>
+            </div>
+            <div>
+              <div id="compatibility-output" class="response-box mono">Loading compatibility snapshot…</div>
+              <div class="footer-note">
+                For Eliza <span class="mono">modelProvider=ollama</span>, set <span class="mono">OLLAMA_SERVER_URL</span> without <span class="mono">/api</span>.
+                If the client cannot send headers, use a URL with the API key in the userinfo section.
+              </div>
+            </div>
+          </div>
         </section>
 
         <div class="shell-grid">
@@ -505,8 +557,13 @@ export function renderAppShell(input: {
     </script>
     <script>
       const bootstrap = window.__GEMROUTER_BOOTSTRAP__;
+      const isEmbed = new URLSearchParams(window.location.search).get('embed') === '1';
+      if (isEmbed) {
+        document.body.classList.add('embed');
+      }
       const state = {
         apps: [],
+        compatibility: null,
         vncUrl: '',
       };
 
@@ -518,6 +575,9 @@ export function renderAppShell(input: {
       const logoutButton = document.getElementById('logout-button');
       const runtimePills = document.getElementById('runtime-pills');
       const statsGrid = document.getElementById('stats-grid');
+      const compatibilityForm = document.getElementById('compatibility-form');
+      const compatibilityStatus = document.getElementById('compatibility-status');
+      const compatibilityOutput = document.getElementById('compatibility-output');
       const promptForm = document.getElementById('prompt-form');
       const promptApp = document.getElementById('prompt-app');
       const promptModel = document.getElementById('prompt-model');
@@ -593,10 +653,12 @@ export function renderAppShell(input: {
 
       function renderRuntimePills(data) {
         const runtime = data.runtime || {};
+        const compatibility = data.compatibility || {};
         const pills = [
           bootstrap.modelIds.map((model) => '<span class="pill">' + escapeHtml(model) + '</span>').join(''),
           '<span class="pill ' + (runtime.headed ? 'good' : 'warn') + '">' + (runtime.headed ? 'Headed mode' : 'Headless mode') + '</span>',
           '<span class="pill ' + (runtime.profileReady ? 'good' : 'bad') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile needs attention') + '</span>',
+          '<span class="pill good">Primary ' + escapeHtml(compatibility.defaultSurface || 'openai') + '</span>',
           '<span class="pill">Apps ' + escapeHtml(String(runtime.apps || 0)) + '</span>',
         ];
         runtimePills.innerHTML = pills.join('');
@@ -661,6 +723,57 @@ export function renderAppShell(input: {
         }).join('');
       }
 
+      function renderCompatibility(compatibility) {
+        state.compatibility = compatibility || null;
+        if (!compatibility) {
+          compatibilityOutput.textContent = 'Compatibility snapshot unavailable.';
+          return;
+        }
+
+        const endpoints = compatibility.endpoints || {};
+        compatibilityForm.elements.defaultSurface.value = compatibility.defaultSurface || 'openai';
+        Array.from(compatibilityForm.querySelectorAll('input[name="enabledSurfaces"]')).forEach((input) => {
+          input.checked = (compatibility.enabledSurfaces || []).includes(input.value);
+        });
+
+        const openai = endpoints.openai || { enabled: false, routes: {} };
+        const deepseek = endpoints.deepseek || { enabled: false, routes: {} };
+        const ollama = endpoints.ollama || { enabled: false, routes: {} };
+        const ollamaServerUrl = ollama.routes ? (ollama.routes.baseUrl || '') : '';
+        const ollamaAuthExample = ollamaServerUrl
+          ? ollamaServerUrl.replace(/^https?:\/\//, function(prefix) { return prefix + '<API_KEY>@'; })
+          : '';
+
+        compatibilityOutput.textContent = [
+          'default_surface=' + (compatibility.defaultSurface || 'openai'),
+          'enabled_surfaces=' + (compatibility.enabledSurfaces || []).join(','),
+          '',
+          '[openai]',
+          'enabled=' + String(Boolean(openai.enabled)),
+          'OPENAI_API_URL=' + String(openai.routes && openai.routes.baseUrl || ''),
+          'models=' + String(openai.routes && openai.routes.models || ''),
+          'chat=' + String(openai.routes && openai.routes.chat || ''),
+          'responses=' + String(openai.routes && openai.routes.responses || ''),
+          '',
+          '[deepseek]',
+          'enabled=' + String(Boolean(deepseek.enabled)),
+          'DEEPSEEK_API_URL=' + String(deepseek.routes && deepseek.routes.baseUrl || ''),
+          'models=' + String(deepseek.routes && deepseek.routes.models || ''),
+          'chat=' + String(deepseek.routes && deepseek.routes.chat || ''),
+          '',
+          '[ollama]',
+          'enabled=' + String(Boolean(ollama.enabled)),
+          'OLLAMA_SERVER_URL=' + ollamaServerUrl,
+          'OLLAMA_SERVER_URL_with_basic_auth=' + ollamaAuthExample,
+          'api_base=' + String(ollama.routes && (ollama.routes.apiBaseUrl || ollama.routes.baseUrl) || ''),
+          'tags=' + String(ollama.routes && ollama.routes.tags || ''),
+          'chat=' + String(ollama.routes && ollama.routes.chat || ''),
+          'generate=' + String(ollama.routes && ollama.routes.generate || ''),
+          'show=' + String(ollama.routes && ollama.routes.show || ''),
+          'version=' + String(ollama.routes && ollama.routes.version || ''),
+        ].join('\n');
+      }
+
       function populateAppForm(app) {
         appForm.elements.id.value = app.id;
         appForm.elements.name.value = app.name;
@@ -675,11 +788,13 @@ export function renderAppShell(input: {
       async function loadDashboard() {
         const data = await request('/admin/summary');
         state.apps = data.apps;
+        state.compatibility = data.compatibility || null;
         state.vncUrl = data.vncUrl || '';
         fillModelOptions(data.models);
         fillAppOptions(data.apps);
         renderRuntimePills(data);
         renderStats(data.stats);
+        renderCompatibility(data.compatibility);
         renderApps(data.apps);
         renderInteractions(data.stats);
         openVncLink.href = state.vncUrl || '#';
@@ -727,6 +842,27 @@ export function renderAppShell(input: {
           authStatus.textContent = 'Admin session required.';
           loginForm.classList.remove('hidden');
           await refreshAuth();
+        }
+      });
+
+      compatibilityForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        compatibilityStatus.textContent = 'Saving compatibility settings…';
+        const enabledSurfaces = Array.from(
+          compatibilityForm.querySelectorAll('input[name="enabledSurfaces"]:checked')
+        ).map((input) => input.value);
+        try {
+          await request('/admin/compatibility', {
+            method: 'POST',
+            body: JSON.stringify({
+              defaultSurface: compatibilityForm.elements.defaultSurface.value,
+              enabledSurfaces,
+            }),
+          });
+          compatibilityStatus.textContent = 'Compatibility updated.';
+          await loadDashboard();
+        } catch (error) {
+          compatibilityStatus.textContent = error.message;
         }
       });
 

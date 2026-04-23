@@ -6,6 +6,7 @@ import path from 'node:path';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
+import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
 import {
   buildChatCompletionResponse,
   buildOpenAIError,
@@ -20,11 +21,27 @@ import {
   type ResponsesRequest,
   type UsageSummary,
 } from './lib/openai.js';
+import {
+  buildOllamaChatChunk,
+  buildOllamaChatDone,
+  buildOllamaChatResponse,
+  buildOllamaError,
+  buildOllamaGenerateChunk,
+  buildOllamaGenerateDone,
+  buildOllamaGenerateResponse,
+  buildOllamaShowResponse,
+  buildOllamaTagsResponse,
+  parseOllamaChatRequest,
+  parseOllamaGenerateRequest,
+  type OllamaChatRequest,
+  type OllamaGenerateRequest,
+} from './lib/ollama.js';
 import { createTeGemClient } from './llm/providers/tegem/client.js';
 import type { LLMMessage, LLMOptions } from './llm/types.js';
 import { AuditLogger } from './store/audit.js';
 import { AdminSessionStore } from './store/adminSessions.js';
 import { AppStore, type ApiAppRecord } from './store/appStore.js';
+import { CompatibilityStore } from './store/compatibilityStore.js';
 import { InteractionStore } from './store/interactions.js';
 import { renderAppShell } from './ui.js';
 
@@ -38,6 +55,10 @@ const llm = createTeGemClient(config.llm);
 const appStore = new AppStore(config.appsStorePath);
 const audit = new AuditLogger(config.auditLogPath);
 const adminSessions = new AdminSessionStore(config.adminSessionTtlMs);
+const compatibility = new CompatibilityStore(config.compatibility.settingsStorePath, {
+  defaultSurface: config.compatibility.defaultSurface,
+  enabledSurfaces: config.compatibility.enabledSurfaces,
+});
 const interactions = new InteractionStore(config.interactionsStorePath);
 
 const bootstrapApp = appStore.ensureBootstrapApp({
@@ -75,6 +96,21 @@ function getBearerToken(request: FastifyRequest): string | null {
   const auth = String(request.headers.authorization ?? '').trim();
   const bearerMatch = auth.match(/^bearer\s+(.+)$/i);
   if (bearerMatch?.[1]?.trim()) return bearerMatch[1].trim();
+  const basicMatch = auth.match(/^basic\s+(.+)$/i);
+  if (basicMatch?.[1]) {
+    try {
+      const decoded = Buffer.from(basicMatch[1], 'base64').toString('utf8');
+      const separator = decoded.indexOf(':');
+      if (separator >= 0) {
+        const username = decoded.slice(0, separator).trim();
+        const password = decoded.slice(separator + 1).trim();
+        return password || username || null;
+      }
+      return decoded.trim() || null;
+    } catch {
+      return null;
+    }
+  }
   const apiKey = String(request.headers['x-api-key'] ?? '').trim();
   return apiKey || null;
 }
@@ -138,6 +174,59 @@ function inferPublicBaseUrl(request: FastifyRequest): string {
   const proto = readHeaderValue(request, 'x-forwarded-proto') ?? 'http';
   const host = readHeaderValue(request, 'x-forwarded-host') ?? String(request.headers.host ?? `127.0.0.1:${config.port}`);
   return `${proto}://${host}`;
+}
+
+function getCompatibilitySnapshot(request: FastifyRequest): {
+  defaultSurface: ApiSurface;
+  enabledSurfaces: ApiSurface[];
+  updatedAt: string;
+  endpoints: Record<ApiSurface, { enabled: boolean; routes: ReturnType<typeof buildCompatibilityRoutes>[ApiSurface] }>;
+} {
+  const state = compatibility.get();
+  const routes = buildCompatibilityRoutes(inferPublicBaseUrl(request));
+  return {
+    defaultSurface: state.defaultSurface,
+    enabledSurfaces: state.enabledSurfaces,
+    updatedAt: state.updatedAt,
+    endpoints: {
+      openai: {
+        enabled: state.enabledSurfaces.includes('openai'),
+        routes: routes.openai,
+      },
+      deepseek: {
+        enabled: state.enabledSurfaces.includes('deepseek'),
+        routes: routes.deepseek,
+      },
+      ollama: {
+        enabled: state.enabledSurfaces.includes('ollama'),
+        routes: routes.ollama,
+      },
+    },
+  };
+}
+
+function isSurfaceEnabled(surface: ApiSurface): boolean {
+  return compatibility.get().enabledSurfaces.includes(surface);
+}
+
+function ensureOpenAiSurfaceEnabled(surface: ApiSurface, reply: FastifyReply): boolean {
+  if (isSurfaceEnabled(surface)) return true;
+  sendError(reply, 404, {
+    message: `${surface} compatibility surface is disabled`,
+    type: 'invalid_request_error',
+    code: 'surface_disabled',
+  });
+  return false;
+}
+
+function sendOllamaError(reply: FastifyReply, statusCode: number, message: string): FastifyReply {
+  return reply.code(statusCode).send(buildOllamaError(message));
+}
+
+function ensureOllamaSurfaceEnabled(reply: FastifyReply): boolean {
+  if (isSurfaceEnabled('ollama')) return true;
+  sendOllamaError(reply, 404, 'ollama compatibility surface is disabled');
+  return false;
 }
 
 function inferVncUrl(request: FastifyRequest): string {
@@ -282,10 +371,12 @@ function buildSessionOptions(input: {
   user?: string;
   stateful?: boolean;
   fingerprintFallback: string;
+  semanticSurface?: ApiSurface;
 }): LLMOptions {
   const rawSessionHint = input.sessionHint || input.user;
   const sessionHint = sanitizeSessionHint(rawSessionHint, input.fingerprintFallback);
-  const sessionKey = `${input.sessionNamespace}:${sessionHint}`;
+  const semanticSurface = input.semanticSurface ?? 'openai';
+  const sessionKey = `${input.sessionNamespace}:${semanticSurface}:${sessionHint}`;
   return {
     model: input.model,
     maxTokens: input.maxTokens,
@@ -304,6 +395,7 @@ function buildRequestLlmOptions(input: {
   maxTokens?: number;
   temperature?: number;
   fingerprintFallback: string;
+  semanticSurface?: ApiSurface;
 }): LLMOptions {
   const rawSessionHint =
     readHeaderValue(input.request, 'x-gemrouter-session', 'x-baribi-session') ||
@@ -324,6 +416,7 @@ function buildRequestLlmOptions(input: {
     user: input.user,
     stateful,
     fingerprintFallback: input.fingerprintFallback,
+    semanticSurface: input.semanticSurface,
   });
 }
 
@@ -362,12 +455,46 @@ function recordInteraction(input: {
   });
 }
 
-function getRuntimeSnapshot(): Record<string, unknown> {
+function sanitizeLlmDiagnostics(
+  input: Record<string, unknown> | null,
+  options?: { includeSensitive?: boolean },
+): Record<string, unknown> | null {
+  if (!input) return null;
+  const includeSensitive = options?.includeSensitive === true;
+  const base = {
+    provider: input.provider ?? null,
+    model: input.model ?? null,
+    promptPackingStyle: input.promptPackingStyle ?? null,
+    contextAlive: input.contextAlive ?? null,
+    openPages: input.openPages ?? null,
+    storedSessions: input.storedSessions ?? null,
+    lastLaunchAt: input.lastLaunchAt ?? null,
+    lastLaunchOkAt: input.lastLaunchOkAt ?? null,
+    lastLaunchError: input.lastLaunchError ?? null,
+  };
+
+  if (!includeSensitive) return base;
+
+  return {
+    ...base,
+    activeSessionKeys: input.activeSessionKeys ?? [],
+    profilePath: input.profilePath ?? null,
+    idleTimeoutMs: input.idleTimeoutMs ?? null,
+    conversationTtlMs: input.conversationTtlMs ?? null,
+    maxTabs: input.maxTabs ?? null,
+  };
+}
+
+function getRuntimeSnapshot(
+  request?: FastifyRequest,
+  options?: { includeSensitiveLlm?: boolean },
+): Record<string, unknown> {
   const profileDir = path.join(config.llm.baseProfileDir, config.llm.profileNamespace);
   const cookiesFile = path.join(profileDir, '_shared', 'Default', 'Cookies');
   const executableExists = config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false;
   const profileExists = existsSync(profileDir);
   const cookiesExists = existsSync(cookiesFile);
+  const rawLlmDiagnostics = typeof llm.getDiagnostics === 'function' ? llm.getDiagnostics() : null;
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -380,17 +507,815 @@ function getRuntimeSnapshot(): Record<string, unknown> {
       profileReady: executableExists && profileExists && cookiesExists,
     },
     playwright: {
+      executablePath: config.llm.browserExecutablePath ?? null,
       executableExists,
+      profileDir,
       profileExists,
       cookiesExists,
       profileNamespace: config.llm.profileNamespace,
     },
+    compatibility: request ? getCompatibilitySnapshot(request) : compatibility.get(),
+    llm: sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm }),
   };
 }
 
 function normalizeAllowedModels(values: unknown): string[] {
   if (!Array.isArray(values) || values.length === 0) return config.bootstrapApp.allowedModels;
   return values.map((value) => normalizeModelId(String(value)));
+}
+
+function listPublicEndpoints(): string[] {
+  const endpoints = ['/', '/health', '/admin'];
+  if (isSurfaceEnabled('openai')) {
+    endpoints.push('/v1/models', '/v1/chat/completions', '/v1/responses');
+  }
+  if (isSurfaceEnabled('deepseek')) {
+    endpoints.push('/models', '/chat/completions');
+  }
+  if (isSurfaceEnabled('ollama')) {
+    endpoints.push('/api/version', '/api/tags', '/api/chat', '/api/generate', '/api/show');
+  }
+  return endpoints;
+}
+
+async function handleModelsRequest(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  surface: 'openai' | 'deepseek',
+): Promise<FastifyReply | Record<string, unknown>> {
+  if (!ensureOpenAiSurfaceEnabled(surface, reply)) return reply;
+  const access = ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    return {
+      object: 'list',
+      data: config.modelIds
+        .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
+        .map((modelId) => ({
+          id: modelId,
+          object: 'model',
+          created: 0,
+          owned_by: PROJECT_NAME,
+        })),
+    };
+  } finally {
+    access.release();
+  }
+}
+
+async function handleChatCompletionsRequest(
+  request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
+  reply: FastifyReply,
+  surface: 'openai' | 'deepseek',
+): Promise<FastifyReply | Record<string, unknown>> {
+  if (!ensureOpenAiSurfaceEnabled(surface, reply)) return reply;
+  const access = ensureClientAccess(request, reply);
+  if (!access) return reply;
+
+  try {
+    const parsed = parseChatCompletionsRequest(request.body ?? {});
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const sessionOptions = buildRequestLlmOptions({
+      request,
+      user: parsed.user,
+      sessionNamespace: access.app.sessionNamespace,
+      model: parsed.model,
+      maxTokens: parsed.maxTokens,
+      temperature: parsed.temperature,
+      fingerprintFallback: createRequestFingerprint(parsed.messages),
+    });
+
+    if (!parsed.stream) {
+      const response = await llm.chat(parsed.messages, sessionOptions);
+      const usage = estimateUsage(parsed.messages, response.content);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: response.content,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: response.provider,
+      });
+      audit.write({
+        type: 'chat.completion',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      return buildChatCompletionResponse({ model: parsed.model, text: response.content, usage });
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'x-request-id': request.id,
+    });
+
+    const completionId = `chatcmpl_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
+    const created = Math.floor(Date.now() / 1000);
+    const sendChunk = (payload: unknown): void => {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
+    };
+
+    sendChunk({
+      id: completionId,
+      object: 'chat.completion.chunk',
+      created,
+      model: parsed.model,
+      choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+      usage: null,
+    });
+
+    let emitted = '';
+    let finalText = '';
+    let finalProvider: string | undefined;
+    try {
+      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      if (!stream) throw new Error('Streaming is not available');
+      while (true) {
+        const next = await stream.next();
+        if (next.done) {
+          finalText = next.value.content;
+          finalProvider = next.value.provider;
+          break;
+        }
+        const latest = next.value.content;
+        const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
+        emitted = latest;
+        if (!delta) continue;
+        sendChunk({
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created,
+          model: parsed.model,
+          choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+          usage: null,
+        });
+      }
+
+      const usage = estimateUsage(parsed.messages, finalText);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: finalProvider,
+      });
+      sendChunk({
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created,
+        model: parsed.model,
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage: null,
+      });
+      if (parsed.includeUsageChunk) {
+        sendChunk({
+          id: completionId,
+          object: 'chat.completion.chunk',
+          created,
+          model: parsed.model,
+          choices: [],
+          usage,
+        });
+      }
+      reply.raw.write('data: [DONE]\n\n');
+      audit.write({
+        type: 'chat.stream',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      reply.raw.end();
+      return reply;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText || emitted,
+        status: 'failed',
+        statusCode: 500,
+        error: message,
+      });
+      sendChunk(
+        buildOpenAIError({
+          message,
+          type: 'server_error',
+          code: 'stream_failed',
+        }),
+      );
+      reply.raw.end();
+      audit.write({
+        type: 'chat.stream.error',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 500,
+        latencyMs: Date.now() - getStartedAt(request),
+        details: { error: message },
+      });
+      return reply;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'chat.completion.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  } finally {
+    access.release();
+  }
+}
+
+async function handleResponsesRequest(
+  request: FastifyRequest<{ Body: ResponsesRequest }>,
+  reply: FastifyReply,
+): Promise<FastifyReply | Record<string, unknown>> {
+  if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
+  const access = ensureClientAccess(request, reply);
+  if (!access) return reply;
+
+  try {
+    const parsed = parseResponsesRequest(request.body ?? {});
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const sessionOptions = buildRequestLlmOptions({
+      request,
+      user: parsed.user,
+      sessionNamespace: access.app.sessionNamespace,
+      model: parsed.model,
+      maxTokens: parsed.maxTokens,
+      temperature: parsed.temperature,
+      fingerprintFallback: createRequestFingerprint(parsed.messages),
+    });
+
+    if (!parsed.stream) {
+      const response = await llm.chat(parsed.messages, sessionOptions);
+      const usage = estimateUsage(parsed.messages, response.content);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: response.content,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: response.provider,
+      });
+      audit.write({
+        type: 'responses.create',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      return buildResponsesApiResponse({ model: parsed.model, text: response.content, usage });
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'x-request-id': request.id,
+    });
+
+    const responseId = `resp_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
+    const messageId = `msg_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
+    const createdAt = Math.floor(Date.now() / 1000);
+    const sendEvent = (payload: unknown): void => {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+      }
+    };
+
+    sendEvent({
+      type: 'response.created',
+      response: {
+        id: responseId,
+        object: 'response',
+        created_at: createdAt,
+        model: parsed.model,
+        status: 'in_progress',
+      },
+    });
+    sendEvent({
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: {
+        id: messageId,
+        type: 'message',
+        status: 'in_progress',
+        role: 'assistant',
+      },
+    });
+    sendEvent({
+      type: 'response.content_part.added',
+      output_index: 0,
+      item_id: messageId,
+      content_index: 0,
+      part: {
+        type: 'output_text',
+        text: '',
+        annotations: [],
+      },
+    });
+
+    let emitted = '';
+    let finalText = '';
+    let finalProvider: string | undefined;
+    try {
+      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      if (!stream) throw new Error('Streaming is not available');
+      while (true) {
+        const next = await stream.next();
+        if (next.done) {
+          finalText = next.value.content;
+          finalProvider = next.value.provider;
+          break;
+        }
+        const latest = next.value.content;
+        const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
+        emitted = latest;
+        if (!delta) continue;
+        sendEvent({
+          type: 'response.output_text.delta',
+          output_index: 0,
+          item_id: messageId,
+          content_index: 0,
+          delta,
+        });
+      }
+
+      const usage = estimateUsage(parsed.messages, finalText);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: finalProvider,
+      });
+      sendEvent({
+        type: 'response.output_text.done',
+        output_index: 0,
+        item_id: messageId,
+        content_index: 0,
+        text: finalText,
+      });
+      sendEvent({
+        type: 'response.content_part.done',
+        output_index: 0,
+        item_id: messageId,
+        content_index: 0,
+        part: {
+          type: 'output_text',
+          text: finalText,
+          annotations: [],
+        },
+      });
+      sendEvent({
+        type: 'response.output_item.done',
+        output_index: 0,
+        item: {
+          id: messageId,
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              text: finalText,
+              annotations: [],
+            },
+          ],
+        },
+      });
+      sendEvent({
+        type: 'response.completed',
+        response: buildResponsesApiResponse({
+          id: responseId,
+          model: parsed.model,
+          text: finalText,
+          usage,
+          createdAt,
+        }),
+      });
+      audit.write({
+        type: 'responses.stream',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      reply.raw.end();
+      return reply;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText || emitted,
+        status: 'failed',
+        statusCode: 500,
+        error: message,
+      });
+      sendEvent({
+        type: 'error',
+        error: buildOpenAIError({
+          message,
+          type: 'server_error',
+          code: 'stream_failed',
+        }).error,
+      });
+      reply.raw.end();
+      audit.write({
+        type: 'responses.stream.error',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 500,
+        latencyMs: Date.now() - getStartedAt(request),
+        details: { error: message },
+      });
+      return reply;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'responses.create.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  } finally {
+    access.release();
+  }
+}
+
+async function handleOllamaChatRequest(
+  request: FastifyRequest<{ Body: OllamaChatRequest }>,
+  reply: FastifyReply,
+): Promise<FastifyReply | Record<string, unknown>> {
+  if (!ensureOllamaSurfaceEnabled(reply)) return reply;
+  const access = ensureClientAccess(request, reply);
+  if (!access) return reply;
+
+  try {
+    const parsed = parseOllamaChatRequest(request.body ?? {});
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const sessionOptions = buildRequestLlmOptions({
+      request,
+      sessionNamespace: access.app.sessionNamespace,
+      model: parsed.model,
+      maxTokens: parsed.maxTokens,
+      temperature: parsed.temperature,
+      fingerprintFallback: createRequestFingerprint(parsed.messages),
+    });
+    if (parsed.stateful) sessionOptions.resetSession = false;
+
+    if (!parsed.stream) {
+      const response = await llm.chat(parsed.messages, sessionOptions);
+      const usage = estimateUsage(parsed.messages, response.content);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: response.content,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: response.provider,
+      });
+      audit.write({
+        type: 'ollama.chat',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      return buildOllamaChatResponse({ model: parsed.model, text: response.content, usage });
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'x-request-id': request.id,
+    });
+
+    const sendChunk = (payload: unknown): void => {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(`${JSON.stringify(payload)}\n`);
+      }
+    };
+
+    let emitted = '';
+    let finalText = '';
+    let finalProvider: string | undefined;
+    try {
+      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      if (!stream) throw new Error('Streaming is not available');
+      while (true) {
+        const next = await stream.next();
+        if (next.done) {
+          finalText = next.value.content;
+          finalProvider = next.value.provider;
+          break;
+        }
+        const latest = next.value.content;
+        const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
+        emitted = latest;
+        if (!delta) continue;
+        sendChunk(buildOllamaChatChunk({ model: parsed.model, text: delta }));
+      }
+
+      const usage = estimateUsage(parsed.messages, finalText);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: finalProvider,
+      });
+      sendChunk(buildOllamaChatDone({ model: parsed.model, usage }));
+      audit.write({
+        type: 'ollama.chat.stream',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      reply.raw.end();
+      return reply;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText || emitted,
+        status: 'failed',
+        statusCode: 500,
+        error: message,
+      });
+      sendChunk(buildOllamaError(message));
+      reply.raw.end();
+      audit.write({
+        type: 'ollama.chat.stream.error',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 500,
+        latencyMs: Date.now() - getStartedAt(request),
+        details: { error: message },
+      });
+      return reply;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'ollama.chat.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  } finally {
+    access.release();
+  }
+}
+
+async function handleOllamaGenerateRequest(
+  request: FastifyRequest<{ Body: OllamaGenerateRequest }>,
+  reply: FastifyReply,
+): Promise<FastifyReply | Record<string, unknown>> {
+  if (!ensureOllamaSurfaceEnabled(reply)) return reply;
+  const access = ensureClientAccess(request, reply);
+  if (!access) return reply;
+
+  try {
+    const parsed = parseOllamaGenerateRequest(request.body ?? {});
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const sessionOptions = buildRequestLlmOptions({
+      request,
+      sessionNamespace: access.app.sessionNamespace,
+      model: parsed.model,
+      maxTokens: parsed.maxTokens,
+      temperature: parsed.temperature,
+      fingerprintFallback: createRequestFingerprint(parsed.messages),
+    });
+    if (parsed.stateful) sessionOptions.resetSession = false;
+
+    if (!parsed.stream) {
+      const response = await llm.chat(parsed.messages, sessionOptions);
+      const usage = estimateUsage(parsed.messages, response.content);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: response.content,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: response.provider,
+      });
+      audit.write({
+        type: 'ollama.generate',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      return buildOllamaGenerateResponse({ model: parsed.model, text: response.content, usage });
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'x-request-id': request.id,
+    });
+
+    const sendChunk = (payload: unknown): void => {
+      if (!reply.raw.writableEnded) {
+        reply.raw.write(`${JSON.stringify(payload)}\n`);
+      }
+    };
+
+    let emitted = '';
+    let finalText = '';
+    let finalProvider: string | undefined;
+    try {
+      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      if (!stream) throw new Error('Streaming is not available');
+      while (true) {
+        const next = await stream.next();
+        if (next.done) {
+          finalText = next.value.content;
+          finalProvider = next.value.provider;
+          break;
+        }
+        const latest = next.value.content;
+        const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
+        emitted = latest;
+        if (!delta) continue;
+        sendChunk(buildOllamaGenerateChunk({ model: parsed.model, text: delta }));
+      }
+
+      const usage = estimateUsage(parsed.messages, finalText);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText,
+        usage,
+        status: 'succeeded',
+        statusCode: 200,
+        provider: finalProvider,
+      });
+      sendChunk(buildOllamaGenerateDone({ model: parsed.model, usage }));
+      audit.write({
+        type: 'ollama.generate.stream',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 200,
+        latencyMs: Date.now() - getStartedAt(request),
+      });
+      reply.raw.end();
+      return reply;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      recordInteraction({
+        request,
+        route: request.url,
+        appRecord: access.app,
+        model: parsed.model,
+        messages: parsed.messages,
+        responseText: finalText || emitted,
+        status: 'failed',
+        statusCode: 500,
+        error: message,
+      });
+      sendChunk(buildOllamaError(message));
+      reply.raw.end();
+      audit.write({
+        type: 'ollama.generate.stream.error',
+        requestId: request.id,
+        appId: access.app.id,
+        route: request.url,
+        model: parsed.model,
+        statusCode: 500,
+        latencyMs: Date.now() - getStartedAt(request),
+        details: { error: message },
+      });
+      return reply;
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'ollama.generate.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  } finally {
+    access.release();
+  }
 }
 
 app.addHook('onRequest', async (request, reply) => {
@@ -410,7 +1335,7 @@ app.addHook('onSend', async (request, reply, payload) => {
 });
 
 app.get('/', async (request, reply) => {
-  if (wantsHtml(request)) {
+  if (config.dashboardEnabled && wantsHtml(request)) {
     return reply
       .type('text/html; charset=utf-8')
       .send(
@@ -424,14 +1349,8 @@ app.get('/', async (request, reply) => {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
-    endpoints: [
-      '/',
-      '/health',
-      '/v1/models',
-      '/v1/chat/completions',
-      '/v1/responses',
-      '/admin',
-    ],
+    dashboardEnabled: config.dashboardEnabled,
+    endpoints: listPublicEndpoints(),
   };
 });
 
@@ -446,7 +1365,7 @@ app.get('/admin', async (request, reply) =>
     ),
 );
 
-app.get('/health', async () => getRuntimeSnapshot());
+app.get('/health', async (request) => getRuntimeSnapshot(request));
 
 app.post<{ Body: { token?: string } }>('/admin/login', async (request, reply) => {
   const token = String(request.body?.token ?? '').trim();
@@ -497,12 +1416,14 @@ app.get('/admin/me', async (request, reply) => {
 
 app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const runtime = getRuntimeSnapshot();
+  const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+  const llmSnapshot = (runtime.llm as Record<string, unknown> | null) ?? null;
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
     vncUrl: inferVncUrl(request),
+    compatibility: getCompatibilitySnapshot(request),
     runtime: {
       displayAttached: process.env.DISPLAY ? true : false,
       headed: !config.llm.headless,
@@ -515,9 +1436,35 @@ app.get('/admin/summary', async (request, reply) => {
         Boolean((runtime.playwright as Record<string, unknown>).cookiesExists),
       apps: appStore.list().length,
     },
+    llm: llmSnapshot,
     models: config.modelIds,
     apps: appStore.list().map(sanitizeAdminApp),
     stats: interactions.summary(60),
+  };
+});
+
+app.post<{
+  Body: {
+    defaultSurface?: ApiSurface;
+    enabledSurfaces?: ApiSurface[];
+  };
+}>('/admin/compatibility', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const updated = compatibility.update({
+    defaultSurface: request.body?.defaultSurface,
+    enabledSurfaces: request.body?.enabledSurfaces,
+  });
+  audit.write({
+    type: 'admin.compatibility.updated',
+    requestId: request.id,
+    route: request.url,
+    statusCode: 200,
+    latencyMs: Date.now() - getStartedAt(request),
+    details: { ...updated },
+  });
+  return {
+    ok: true,
+    compatibility: getCompatibilitySnapshot(request),
   };
 });
 
@@ -675,206 +1622,52 @@ app.post<{
   }
 });
 
-app.get('/v1/models', async (request, reply) => {
+app.get('/v1/models', async (request, reply) => handleModelsRequest(request, reply, 'openai'));
+app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'deepseek'));
+
+app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) =>
+  handleChatCompletionsRequest(request, reply, 'openai'),
+);
+app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', async (request, reply) =>
+  handleChatCompletionsRequest(request, reply, 'deepseek'),
+);
+app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => handleResponsesRequest(request, reply));
+
+app.get('/api/version', async (request, reply) => {
+  if (!ensureOllamaSurfaceEnabled(reply)) return reply;
   const access = ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
     return {
-      object: 'list',
-      data: config.modelIds
-        .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
-        .map((modelId) => ({
-          id: modelId,
-          object: 'model',
-          created: 0,
-          owned_by: PROJECT_NAME,
-        })),
+      version: '0.1.0-gemrouter',
     };
   } finally {
     access.release();
   }
 });
 
-app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) => {
+app.get('/api/tags', async (request, reply) => {
+  if (!ensureOllamaSurfaceEnabled(reply)) return reply;
   const access = ensureClientAccess(request, reply);
   if (!access) return reply;
-
   try {
-    const parsed = parseChatCompletionsRequest(request.body ?? {});
-    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
-    const sessionOptions = buildRequestLlmOptions({
-      request,
-      user: parsed.user,
-      sessionNamespace: access.app.sessionNamespace,
-      model: parsed.model,
-      maxTokens: parsed.maxTokens,
-      temperature: parsed.temperature,
-      fingerprintFallback: createRequestFingerprint(parsed.messages),
-    });
+    const allowedModels = config.modelIds.filter((modelId) => appStore.isModelAllowed(access.app, modelId));
+    return buildOllamaTagsResponse(allowedModels);
+  } finally {
+    access.release();
+  }
+});
 
-    if (!parsed.stream) {
-      const response = await llm.chat(parsed.messages, sessionOptions);
-      const usage = estimateUsage(parsed.messages, response.content);
-      recordInteraction({
-        request,
-        route: request.url,
-        appRecord: access.app,
-        model: parsed.model,
-        messages: parsed.messages,
-        responseText: response.content,
-        usage,
-        status: 'succeeded',
-        statusCode: 200,
-        provider: response.provider,
-      });
-      audit.write({
-        type: 'chat.completion',
-        requestId: request.id,
-        appId: access.app.id,
-        route: request.url,
-        model: parsed.model,
-        statusCode: 200,
-        latencyMs: Date.now() - getStartedAt(request),
-      });
-      return buildChatCompletionResponse({ model: parsed.model, text: response.content, usage });
-    }
-
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'x-request-id': request.id,
-    });
-
-    const completionId = `chatcmpl_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
-    const created = Math.floor(Date.now() / 1000);
-    const sendChunk = (payload: unknown): void => {
-      if (!reply.raw.writableEnded) {
-        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-      }
-    };
-
-    sendChunk({
-      id: completionId,
-      object: 'chat.completion.chunk',
-      created,
-      model: parsed.model,
-      choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-      usage: null,
-    });
-
-    let emitted = '';
-    let finalText = '';
-    try {
-      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
-      if (!stream) throw new Error('Streaming is not available');
-      while (true) {
-        const next = await stream.next();
-        if (next.done) {
-          finalText = next.value.content;
-          break;
-        }
-        const latest = next.value.content;
-        const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
-        emitted = latest;
-        if (!delta) continue;
-        sendChunk({
-          id: completionId,
-          object: 'chat.completion.chunk',
-          created,
-          model: parsed.model,
-          choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-          usage: null,
-        });
-      }
-
-      const usage = estimateUsage(parsed.messages, finalText);
-      recordInteraction({
-        request,
-        route: request.url,
-        appRecord: access.app,
-        model: parsed.model,
-        messages: parsed.messages,
-        responseText: finalText,
-        usage,
-        status: 'succeeded',
-        statusCode: 200,
-      });
-      sendChunk({
-        id: completionId,
-        object: 'chat.completion.chunk',
-        created,
-        model: parsed.model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        usage: null,
-      });
-      if (parsed.includeUsageChunk) {
-        sendChunk({
-          id: completionId,
-          object: 'chat.completion.chunk',
-          created,
-          model: parsed.model,
-          choices: [],
-          usage,
-        });
-      }
-      reply.raw.write('data: [DONE]\n\n');
-      audit.write({
-        type: 'chat.stream',
-        requestId: request.id,
-        appId: access.app.id,
-        route: request.url,
-        model: parsed.model,
-        statusCode: 200,
-        latencyMs: Date.now() - getStartedAt(request),
-      });
-      reply.raw.end();
-      return reply;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      recordInteraction({
-        request,
-        route: request.url,
-        appRecord: access.app,
-        model: parsed.model,
-        messages: parsed.messages,
-        responseText: finalText || emitted,
-        status: 'failed',
-        statusCode: 500,
-        error: message,
-      });
-      sendChunk(
-        buildOpenAIError({
-          message,
-          type: 'server_error',
-          code: 'stream_failed',
-        }),
-      );
-      reply.raw.end();
-      audit.write({
-        type: 'chat.stream.error',
-        requestId: request.id,
-        appId: access.app.id,
-        route: request.url,
-        model: parsed.model,
-        statusCode: 500,
-        latencyMs: Date.now() - getStartedAt(request),
-        details: { error: message },
-      });
-      return reply;
-    }
+app.post<{ Body: { name?: string; model?: string } }>('/api/show', async (request, reply) => {
+  if (!ensureOllamaSurfaceEnabled(reply)) return reply;
+  const access = ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    const requestedModel = normalizeModelId(String(request.body?.name ?? request.body?.model ?? '').trim() || undefined);
+    if (!ensureModelAllowed(reply, access.app, requestedModel)) return reply;
+    return buildOllamaShowResponse(requestedModel);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    audit.write({
-      type: 'chat.completion.error',
-      requestId: request.id,
-      appId: access.app.id,
-      route: request.url,
-      statusCode: 400,
-      latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
-    });
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -885,245 +1678,10 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
   }
 });
 
-app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => {
-  const access = ensureClientAccess(request, reply);
-  if (!access) return reply;
-
-  try {
-    const parsed = parseResponsesRequest(request.body ?? {});
-    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
-    const sessionOptions = buildRequestLlmOptions({
-      request,
-      user: parsed.user,
-      sessionNamespace: access.app.sessionNamespace,
-      model: parsed.model,
-      maxTokens: parsed.maxTokens,
-      temperature: parsed.temperature,
-      fingerprintFallback: createRequestFingerprint(parsed.messages),
-    });
-
-    if (!parsed.stream) {
-      const response = await llm.chat(parsed.messages, sessionOptions);
-      const usage = estimateUsage(parsed.messages, response.content);
-      recordInteraction({
-        request,
-        route: request.url,
-        appRecord: access.app,
-        model: parsed.model,
-        messages: parsed.messages,
-        responseText: response.content,
-        usage,
-        status: 'succeeded',
-        statusCode: 200,
-        provider: response.provider,
-      });
-      audit.write({
-        type: 'responses.create',
-        requestId: request.id,
-        appId: access.app.id,
-        route: request.url,
-        model: parsed.model,
-        statusCode: 200,
-        latencyMs: Date.now() - getStartedAt(request),
-      });
-      return buildResponsesApiResponse({ model: parsed.model, text: response.content, usage });
-    }
-
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'x-request-id': request.id,
-    });
-
-    const responseId = `resp_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
-    const messageId = `msg_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
-    const createdAt = Math.floor(Date.now() / 1000);
-    const sendEvent = (payload: unknown): void => {
-      if (!reply.raw.writableEnded) {
-        reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-      }
-    };
-
-    sendEvent({
-      type: 'response.created',
-      response: {
-        id: responseId,
-        object: 'response',
-        created_at: createdAt,
-        model: parsed.model,
-        status: 'in_progress',
-      },
-    });
-    sendEvent({
-      type: 'response.output_item.added',
-      output_index: 0,
-      item: {
-        id: messageId,
-        type: 'message',
-        status: 'in_progress',
-        role: 'assistant',
-      },
-    });
-    sendEvent({
-      type: 'response.content_part.added',
-      output_index: 0,
-      item_id: messageId,
-      content_index: 0,
-      part: {
-        type: 'output_text',
-        text: '',
-        annotations: [],
-      },
-    });
-
-    let emitted = '';
-    let finalText = '';
-    try {
-      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
-      if (!stream) throw new Error('Streaming is not available');
-      while (true) {
-        const next = await stream.next();
-        if (next.done) {
-          finalText = next.value.content;
-          break;
-        }
-        const latest = next.value.content;
-        const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
-        emitted = latest;
-        if (!delta) continue;
-        sendEvent({
-          type: 'response.output_text.delta',
-          output_index: 0,
-          item_id: messageId,
-          content_index: 0,
-          delta,
-        });
-      }
-
-      const usage = estimateUsage(parsed.messages, finalText);
-      recordInteraction({
-        request,
-        route: request.url,
-        appRecord: access.app,
-        model: parsed.model,
-        messages: parsed.messages,
-        responseText: finalText,
-        usage,
-        status: 'succeeded',
-        statusCode: 200,
-      });
-      sendEvent({
-        type: 'response.output_text.done',
-        output_index: 0,
-        item_id: messageId,
-        content_index: 0,
-        text: finalText,
-      });
-      sendEvent({
-        type: 'response.content_part.done',
-        output_index: 0,
-        item_id: messageId,
-        content_index: 0,
-        part: {
-          type: 'output_text',
-          text: finalText,
-          annotations: [],
-        },
-      });
-      sendEvent({
-        type: 'response.output_item.done',
-        output_index: 0,
-        item: {
-          id: messageId,
-          type: 'message',
-          status: 'completed',
-          role: 'assistant',
-          content: [
-            {
-              type: 'output_text',
-              text: finalText,
-              annotations: [],
-            },
-          ],
-        },
-      });
-      sendEvent({
-        type: 'response.completed',
-        response: buildResponsesApiResponse({
-          id: responseId,
-          model: parsed.model,
-          text: finalText,
-          usage,
-          createdAt,
-        }),
-      });
-      audit.write({
-        type: 'responses.stream',
-        requestId: request.id,
-        appId: access.app.id,
-        route: request.url,
-        model: parsed.model,
-        statusCode: 200,
-        latencyMs: Date.now() - getStartedAt(request),
-      });
-      reply.raw.end();
-      return reply;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      recordInteraction({
-        request,
-        route: request.url,
-        appRecord: access.app,
-        model: parsed.model,
-        messages: parsed.messages,
-        responseText: finalText || emitted,
-        status: 'failed',
-        statusCode: 500,
-        error: message,
-      });
-      sendEvent({
-        type: 'error',
-        error: buildOpenAIError({
-          message,
-          type: 'server_error',
-          code: 'stream_failed',
-        }).error,
-      });
-      reply.raw.end();
-      audit.write({
-        type: 'responses.stream.error',
-        requestId: request.id,
-        appId: access.app.id,
-        route: request.url,
-        model: parsed.model,
-        statusCode: 500,
-        latencyMs: Date.now() - getStartedAt(request),
-        details: { error: message },
-      });
-      return reply;
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    audit.write({
-      type: 'responses.create.error',
-      requestId: request.id,
-      appId: access.app.id,
-      route: request.url,
-      statusCode: 400,
-      latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
-    });
-    return sendError(reply, 400, {
-      message,
-      type: 'invalid_request_error',
-      code: 'invalid_request',
-    });
-  } finally {
-    access.release();
-  }
-});
+app.post<{ Body: OllamaChatRequest }>('/api/chat', async (request, reply) => handleOllamaChatRequest(request, reply));
+app.post<{ Body: OllamaGenerateRequest }>('/api/generate', async (request, reply) =>
+  handleOllamaGenerateRequest(request, reply),
+);
 
 app.get('/admin/apps', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
@@ -1262,7 +1820,7 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/revoke', async (request, r
 
 app.get('/admin/runtime', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const runtime = getRuntimeSnapshot();
+  const runtime = getRuntimeSnapshot(request);
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -1276,6 +1834,7 @@ app.get('/admin/runtime', async (request, reply) => {
     auditLogPath: config.auditLogPath,
     publicBaseUrl: inferPublicBaseUrl(request),
     vncUrl: inferVncUrl(request),
+    compatibility: getCompatibilitySnapshot(request),
   };
 });
 

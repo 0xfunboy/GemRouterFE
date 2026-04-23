@@ -54,6 +54,9 @@ export class GeminiSessionManager {
   private readonly conversationTtlMs: number;
   /** Max concurrent tabs. 0 = unlimited. */
   private readonly maxTabs: number;
+  private lastLaunchError: string | null = null;
+  private lastLaunchAt: string | null = null;
+  private lastLaunchOkAt: string | null = null;
 
   constructor(
     private readonly config: GeminiConfig,
@@ -110,6 +113,26 @@ export class GeminiSessionManager {
   /** Number of currently open session pages. */
   sessionCount(): number {
     return this.pages.size;
+  }
+
+  storedSessionCount(): number {
+    return Object.keys(this.store.all()).length;
+  }
+
+  getDiagnostics(): Record<string, unknown> {
+    return {
+      contextAlive: this.isAlive(),
+      openPages: this.sessionCount(),
+      storedSessions: this.storedSessionCount(),
+      activeSessionKeys: [...this.pages.keys()],
+      profilePath: this.resolveProfilePath("_shared"),
+      idleTimeoutMs: this.idleTimeoutMs,
+      conversationTtlMs: this.conversationTtlMs,
+      maxTabs: this.maxTabs,
+      lastLaunchAt: this.lastLaunchAt,
+      lastLaunchOkAt: this.lastLaunchOkAt,
+      lastLaunchError: this.lastLaunchError,
+    };
   }
 
   /**
@@ -236,7 +259,20 @@ export class GeminiSessionManager {
     const page = this.getPage(sessionKey);
     if (page) {
       await page.goto(provider.baseUrl, { waitUntil: "domcontentloaded" });
+      await this.ensureFreshConversation(page, provider, sessionKey);
     }
+  }
+
+  async recreateSession(provider: GeminiProviderConfig, sessionKey: string): Promise<void> {
+    this.store.delete(sessionKey);
+    const page = this.getPage(sessionKey);
+    if (page && !page.isClosed()) {
+      await page.close().catch(() => undefined);
+    }
+    this.pages.delete(sessionKey);
+    this.lastActivity.delete(sessionKey);
+
+    await this.getOrCreate(provider, sessionKey, sessionKey).catch(() => undefined);
   }
 
   /** Opens a temporary page for login verification. Caller should close it when done. */
@@ -373,35 +409,43 @@ export class GeminiSessionManager {
   }
 
   private async doLaunch(): Promise<BrowserContext> {
+    this.lastLaunchAt = new Date().toISOString();
     const profilePath = this.resolveProfilePath("_shared");
     await mkdir(profilePath, { recursive: true });
     await sanitizeProfileLocks(profilePath);
+    try {
+      const context = await chromium.launchPersistentContext(profilePath, {
+        channel: this.config.browserExecutablePath ? undefined : this.config.browserChannel,
+        executablePath: this.config.browserExecutablePath,
+        headless: this.config.headless,
+        viewport: { width: 1440, height: 960 },
+        locale: "en-US",
+        colorScheme: "dark",
+        acceptDownloads: true,
+        args: [
+          "--window-size=1440,960",
+          "--disable-blink-features=AutomationControlled",
+          "--no-first-run",
+          "--no-default-browser-check",
+        ],
+      });
 
-    const context = await chromium.launchPersistentContext(profilePath, {
-      channel: this.config.browserExecutablePath ? undefined : this.config.browserChannel,
-      executablePath: this.config.browserExecutablePath,
-      headless: this.config.headless,
-      viewport: { width: 1440, height: 960 },
-      locale: "en-US",
-      colorScheme: "dark",
-      acceptDownloads: true,
-      args: [
-        "--window-size=1440,960",
-        "--disable-blink-features=AutomationControlled",
-        "--no-first-run",
-        "--no-default-browser-check",
-      ],
-    });
+      await context.addInitScript(STEALTH_INIT_SCRIPT);
 
-    await context.addInitScript(STEALTH_INIT_SCRIPT);
+      context.on("close", () => {
+        this.context = null;
+        this.pages.clear();
+        this.lastActivity.clear();
+      });
 
-    context.on("close", () => {
-      this.context = null;
-      this.pages.clear();
-    });
-
-    this.context = context;
-    return context;
+      this.lastLaunchError = null;
+      this.lastLaunchOkAt = new Date().toISOString();
+      this.context = context;
+      return context;
+    } catch (error) {
+      this.lastLaunchError = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
   }
 
   private async ensureFreshConversation(
