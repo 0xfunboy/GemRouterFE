@@ -1,0 +1,19 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "tasks": {
+    "build:app": {
+      "outputs": [
+        "dist/**"
+      ]
+    },
+    "check:app": {},
+    "dev:app": {
+      "cache": false,
+      "persistent": true
+    },
+    "start:app": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}

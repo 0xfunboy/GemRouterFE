@@ -1,0 +1,33 @@
+{
+  "name": "gem-router-fe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.26.1",
+  "scripts": {
+    "build": "pnpm exec turbo run build:app",
+    "build:app": "tsc -p tsconfig.json",
+    "check": "pnpm exec turbo run check:app",
+    "check:app": "tsc --noEmit -p tsconfig.json",
+    "dev": "pnpm run dev:app",
+    "dev:app": "tsx watch src/index.ts",
+    "dev:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run dev:app",
+    "dev:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run dev:app",
+    "start": "pnpm run start:app",
+    "start:app": "node dist/index.js",
+    "start:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run start:app",
+    "start:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run start:app",
+    "smoke": "pnpm build && bash ./scripts/smoke.sh"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "fastify": "^4.29.1",
+    "playwright": "^1.59.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "turbo": "^2.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
