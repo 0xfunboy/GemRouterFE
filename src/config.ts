@@ -19,11 +19,15 @@ export interface RuntimeConfig {
   rootDir: string;
   dataDir: string;
   adminToken: string;
+  adminSessionTtlMs: number;
   bootstrapApp: BootstrapAppConfig;
   llm: TeGemProviderConfig;
   modelIds: string[];
   auditLogPath: string;
   appsStorePath: string;
+  interactionsStorePath: string;
+  publicBaseUrl?: string;
+  vncPublicUrl?: string;
 }
 
 function pick(env: Record<string, string | undefined>, ...keys: string[]): string | undefined {
@@ -103,6 +107,7 @@ export function loadConfig(
     rootDir,
     dataDir,
     adminToken: requireEnv(env, 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
+    adminSessionTtlMs: readNumber(env, 24 * 60 * 60_000, 'GEMROUTER_ADMIN_SESSION_TTL_MS', 'BAIRBI_ADMIN_SESSION_TTL_MS', 'BARIBI_ADMIN_SESSION_TTL_MS'),
     bootstrapApp: {
       name: pick(env, 'GEMROUTER_BOOTSTRAP_APP_NAME', 'BAIRBI_BOOTSTRAP_APP_NAME', 'BARIBI_BOOTSTRAP_APP_NAME') ?? 'local-frontend',
       apiKey: requireEnv(env, 'GEMROUTER_BOOTSTRAP_API_KEY', 'BAIRBI_BOOTSTRAP_API_KEY', 'BARIBI_BOOTSTRAP_API_KEY'),
@@ -163,5 +168,8 @@ export function loadConfig(
     modelIds,
     auditLogPath: path.join(dataDir, 'audit.log'),
     appsStorePath: path.join(dataDir, 'apps.json'),
+    interactionsStorePath: path.join(dataDir, 'interactions.json'),
+    publicBaseUrl: pick(env, 'GEMROUTER_PUBLIC_BASE_URL', 'BAIRBI_PUBLIC_BASE_URL', 'BARIBI_PUBLIC_BASE_URL'),
+    vncPublicUrl: pick(env, 'GEMROUTER_VNC_PUBLIC_URL', 'BAIRBI_VNC_PUBLIC_URL', 'BARIBI_VNC_PUBLIC_URL'),
   };
 }

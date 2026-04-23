@@ -28,6 +28,15 @@ interface CreateAppInput {
   maxConcurrency: number;
 }
 
+interface UpdateAppInput {
+  name?: string;
+  allowedOrigins?: string[];
+  allowedModels?: string[];
+  sessionNamespace?: string;
+  rateLimitPerMinute?: number;
+  maxConcurrency?: number;
+}
+
 interface PersistedState {
   apps: ApiAppRecord[];
 }
@@ -203,6 +212,32 @@ export class AppStore {
         this.inFlight.set(app.id, next);
       }
     };
+  }
+
+  update(id: string, input: UpdateAppInput): ApiAppRecord | null {
+    const current = this.findById(id);
+    if (!current || current.revokedAt) return null;
+    if (typeof input.name === 'string' && input.name.trim()) {
+      current.name = input.name.trim();
+    }
+    if (Array.isArray(input.allowedOrigins)) {
+      current.allowedOrigins = uniqueStrings(input.allowedOrigins);
+    }
+    if (Array.isArray(input.allowedModels)) {
+      current.allowedModels = uniqueStrings(input.allowedModels);
+    }
+    if (typeof input.sessionNamespace === 'string' && input.sessionNamespace.trim()) {
+      current.sessionNamespace = sanitizeSegment(input.sessionNamespace);
+    }
+    if (typeof input.rateLimitPerMinute === 'number' && Number.isFinite(input.rateLimitPerMinute)) {
+      current.rateLimitPerMinute = Math.max(0, input.rateLimitPerMinute);
+    }
+    if (typeof input.maxConcurrency === 'number' && Number.isFinite(input.maxConcurrency)) {
+      current.maxConcurrency = Math.max(0, input.maxConcurrency);
+    }
+    current.updatedAt = nowIso();
+    this.save();
+    return current;
   }
 
   private load(): void {
