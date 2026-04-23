@@ -2,14 +2,14 @@
 
 GemRouterFE is an OpenAI-compatible router on top of Gemini Web, using Playwright and a persistent Chrome profile instead of the official Google API.
 
-Repo path: `/home/funboy/bairbi-stack/GemRouterFE`  
-Project study path: `/home/funboy/bairbi-stack/PROJECT_STUDY.md`
+Repo path: `/bairbi-stack/GemRouterFE`  
+Project study path: `/bairbi-stack/PROJECT_STUDY.md`
 
 ## Public endpoints
 
-- UI and admin deck: `https://solclawn.com`
-- API alias: `https://api.solclawn.com`
-- noVNC login surface: `https://vnc.solclawn.com`
+- UI and admin deck: `
+- API alias: ``
+- noVNC login surface: ``
 
 The UI is served by the same Fastify process as the API. Browser requests to `/` return the admin/test interface, while API clients can keep using `/v1/*`.
 
@@ -66,7 +66,7 @@ pnpm start:xvfb
 Persistent services are managed with user systemd units:
 
 - `gemrouterfe.service`
-- `solclawn-tunnel.service`
+- `tunnel.service`
 
 Unit files are versioned in [ops/systemd](ops/systemd).
 
@@ -74,16 +74,16 @@ Useful commands:
 
 ```bash
 systemctl --user status gemrouterfe.service
-systemctl --user status solclawn-tunnel.service
+systemctl --user status tunnel.service
 journalctl --user -u gemrouterfe.service -n 100 --no-pager
-journalctl --user -u solclawn-tunnel.service -n 100 --no-pager
+journalctl --user -u tunnel.service -n 100 --no-pager
 ```
 
-The hosted service runs on local port `4000`, in headed mode, and is exposed through the `solclawn` Cloudflare tunnel.
+The hosted service runs on local port `4000`, in headed mode, and is exposed through the Cloudflare tunnel.
 
 ## Admin UI
 
-Open `https://solclawn.com` and log in with `GEMROUTER_ADMIN_TOKEN`.
+Open `https://example.com` and log in with `GEMROUTER_ADMIN_TOKEN`.
 
 The dashboard provides:
 
@@ -92,7 +92,7 @@ The dashboard provides:
 - runtime status for Playwright/profile/display
 - prompt testing through `/admin/test-chat`
 - recent interactions, token usage, latency, and manual good/bad labels
-- embedded link/iframe to `vnc.solclawn.com`
+- embedded link/iframe to `vnc.example.com`
 
 If Gemini is signed out, log in through the VNC page first, then return to the prompt lab.
 
@@ -122,21 +122,21 @@ Legacy `BARIBI_*` and `BAIRBI_*` names are still accepted as fallbacks.
 Hosted health:
 
 ```bash
-curl https://solclawn.com/health
-curl https://api.solclawn.com/health
+curl https://example.com/health
+curl https://api.example.com/health
 ```
 
 Hosted models:
 
 ```bash
-curl https://api.solclawn.com/v1/models \
+curl https://api.example.com/v1/models \
   -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY"
 ```
 
 Hosted chat:
 
 ```bash
-curl https://api.solclawn.com/v1/chat/completions \
+curl https://api.example.com/v1/chat/completions \
   -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -150,7 +150,7 @@ curl https://api.solclawn.com/v1/chat/completions \
 Hosted streaming:
 
 ```bash
-curl -N https://api.solclawn.com/v1/chat/completions \
+curl -N https://api.example.com/v1/chat/completions \
   -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -166,7 +166,7 @@ curl -N https://api.solclawn.com/v1/chat/completions \
 Responses API:
 
 ```bash
-curl https://api.solclawn.com/v1/responses \
+curl https://api.example.com/v1/responses \
   -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
