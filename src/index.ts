@@ -365,23 +365,24 @@ function recordInteraction(input: {
 function getRuntimeSnapshot(): Record<string, unknown> {
   const profileDir = path.join(config.llm.baseProfileDir, config.llm.profileNamespace);
   const cookiesFile = path.join(profileDir, '_shared', 'Default', 'Cookies');
+  const executableExists = config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false;
+  const profileExists = existsSync(profileDir);
+  const cookiesExists = existsSync(cookiesFile);
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
     ts: new Date().toISOString(),
-    bootstrapAppId: bootstrapApp.id,
     models: config.modelIds,
     runtime: {
-      display: process.env.DISPLAY ?? null,
-      headless: config.llm.headless,
+      display: process.env.DISPLAY ? 'attached' : null,
+      headed: !config.llm.headless,
+      profileReady: executableExists && profileExists && cookiesExists,
     },
     playwright: {
-      executablePath: config.llm.browserExecutablePath ?? null,
-      executableExists: config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false,
-      profileDir,
-      profileExists: existsSync(profileDir),
-      cookiesExists: existsSync(cookiesFile),
+      executableExists,
+      profileExists,
+      cookiesExists,
       profileNamespace: config.llm.profileNamespace,
     },
   };
@@ -415,10 +416,6 @@ app.get('/', async (request, reply) => {
       .send(
         renderAppShell({
           projectName: PROJECT_NAME,
-          serviceName: SERVICE_NAME,
-          publicBaseUrl: inferPublicBaseUrl(request),
-          vncUrl: inferVncUrl(request),
-          studyPath: STUDY_PATH,
           modelIds: config.modelIds,
         }),
       );
@@ -427,8 +424,6 @@ app.get('/', async (request, reply) => {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
-    repoPath: config.rootDir,
-    studyPath: STUDY_PATH,
     endpoints: [
       '/',
       '/health',
@@ -446,19 +441,12 @@ app.get('/admin', async (request, reply) =>
     .send(
       renderAppShell({
         projectName: PROJECT_NAME,
-        serviceName: SERVICE_NAME,
-        publicBaseUrl: inferPublicBaseUrl(request),
-        vncUrl: inferVncUrl(request),
-        studyPath: STUDY_PATH,
         modelIds: config.modelIds,
       }),
     ),
 );
 
-app.get('/health', async () => ({
-  ...getRuntimeSnapshot(),
-  studyPath: STUDY_PATH,
-}));
+app.get('/health', async () => getRuntimeSnapshot());
 
 app.post<{ Body: { token?: string } }>('/admin/login', async (request, reply) => {
   const token = String(request.body?.token ?? '').trim();
@@ -514,19 +502,18 @@ app.get('/admin/summary', async (request, reply) => {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
-    publicBaseUrl: inferPublicBaseUrl(request),
     vncUrl: inferVncUrl(request),
     runtime: {
-      display: process.env.DISPLAY ?? null,
-      headless: config.llm.headless,
-      profileDir: (runtime.playwright as Record<string, unknown>).profileDir,
-      executablePath: (runtime.playwright as Record<string, unknown>).executablePath,
+      displayAttached: process.env.DISPLAY ? true : false,
+      headed: !config.llm.headless,
       executableExists: (runtime.playwright as Record<string, unknown>).executableExists,
       profileExists: (runtime.playwright as Record<string, unknown>).profileExists,
       cookiesExists: (runtime.playwright as Record<string, unknown>).cookiesExists,
-      profileNamespace: (runtime.playwright as Record<string, unknown>).profileNamespace,
+      profileReady:
+        Boolean((runtime.playwright as Record<string, unknown>).executableExists) &&
+        Boolean((runtime.playwright as Record<string, unknown>).profileExists) &&
+        Boolean((runtime.playwright as Record<string, unknown>).cookiesExists),
       apps: appStore.list().length,
-      auditLogPath: config.auditLogPath,
     },
     models: config.modelIds,
     apps: appStore.list().map(sanitizeAdminApp),
