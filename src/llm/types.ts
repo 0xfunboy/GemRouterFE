@@ -1,3 +1,5 @@
+import type { SemanticProfile } from '../lib/semantics.js';
+
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -14,6 +16,7 @@ export interface LLMOptions {
   sessionKey?: string;
   sessionLabel?: string;
   resetSession?: boolean;
+  semanticProfile?: SemanticProfile;
 }
 
 export interface LLMResponse {
@@ -34,6 +37,7 @@ export interface LLMClient {
     opts?: LLMOptions
   ): AsyncGenerator<LLMStreamChunk, LLMResponse, void>;
   prewarmSessions?(sessions: LLMOptions[]): Promise<void>;
+  getDiagnostics?(): Record<string, unknown>;
   readonly provider: string;
   readonly model: string;
 }
