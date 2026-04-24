@@ -38,7 +38,13 @@ import {
 } from './lib/ollama.js';
 import { createTeGemClient } from './llm/providers/tegem/client.js';
 import type { LLMMessage, LLMOptions } from './llm/types.js';
-import type { SemanticChannel, SemanticOutputMode, SemanticProfile } from './lib/semantics.js';
+import type {
+  SemanticActionPolicy,
+  SemanticChannel,
+  SemanticJsonPresentation,
+  SemanticOutputMode,
+  SemanticProfile,
+} from './lib/semantics.js';
 import { AuditLogger } from './store/audit.js';
 import { AdminSessionStore } from './store/adminSessions.js';
 import { AppStore, type ApiAppRecord } from './store/appStore.js';
@@ -83,6 +89,10 @@ type AuthenticatedClientAccess = {
   release: () => void;
   app: AuthenticatedClientApp;
 };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function getStartedAt(request: FastifyRequest): number {
   const raw = (request as FastifyRequest & { startedAt?: number }).startedAt;
@@ -293,7 +303,10 @@ function ensureAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
   return true;
 }
 
-function ensureClientAccess(request: FastifyRequest, reply: FastifyReply): AuthenticatedClientAccess | null {
+async function ensureClientAccess(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<AuthenticatedClientAccess | null> {
   const token = getBearerToken(request);
   if (!token) {
     sendError(reply, 401, {
@@ -333,7 +346,15 @@ function ensureClientAccess(request: FastifyRequest, reply: FastifyReply): Authe
     return null;
   }
 
-  const release = appStore.acquireConcurrency(clientApp);
+  let release = appStore.acquireConcurrency(clientApp);
+  if (!release && clientApp.maxConcurrency > 0 && config.bootstrapApp.concurrencyWaitMs > 0) {
+    const deadline = Date.now() + config.bootstrapApp.concurrencyWaitMs;
+    while (!release && Date.now() < deadline) {
+      await sleep(250);
+      release = appStore.acquireConcurrency(clientApp);
+    }
+  }
+
   if (!release) {
     sendError(reply, 429, {
       message: 'Concurrency limit exceeded',
@@ -426,12 +447,16 @@ function buildSemanticProfile(input: {
   channel: SemanticChannel;
   outputMode: SemanticOutputMode;
   jsonSchema?: unknown;
+  jsonPresentation?: SemanticJsonPresentation;
+  actionPolicy?: SemanticActionPolicy;
 }): SemanticProfile {
   return {
     surface: input.surface,
     channel: input.channel,
     outputMode: input.outputMode,
     jsonSchema: input.jsonSchema,
+    jsonPresentation: input.jsonPresentation,
+    actionPolicy: input.actionPolicy,
   };
 }
 
@@ -559,7 +584,7 @@ async function handleModelsRequest(
   surface: 'openai' | 'deepseek',
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (!ensureOpenAiSurfaceEnabled(surface, reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
     return {
@@ -584,7 +609,7 @@ async function handleChatCompletionsRequest(
   surface: 'openai' | 'deepseek',
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (!ensureOpenAiSurfaceEnabled(surface, reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
   try {
@@ -605,6 +630,8 @@ async function handleChatCompletionsRequest(
       channel: 'chat',
       outputMode: parsed.outputMode,
       jsonSchema: parsed.jsonSchema,
+      jsonPresentation: parsed.jsonPresentation,
+      actionPolicy: parsed.actionPolicy,
     });
 
     if (!parsed.stream) {
@@ -788,7 +815,7 @@ async function handleResponsesRequest(
   reply: FastifyReply,
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
   try {
@@ -809,6 +836,8 @@ async function handleResponsesRequest(
       channel: 'responses',
       outputMode: parsed.outputMode,
       jsonSchema: parsed.jsonSchema,
+      jsonPresentation: parsed.jsonPresentation,
+      actionPolicy: parsed.actionPolicy,
     });
 
     if (!parsed.stream) {
@@ -1042,7 +1071,7 @@ async function handleOllamaChatRequest(
   reply: FastifyReply,
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
   try {
@@ -1204,7 +1233,7 @@ async function handleOllamaGenerateRequest(
   reply: FastifyReply,
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
   try {
@@ -1678,7 +1707,7 @@ app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => 
 
 app.get('/api/version', async (request, reply) => {
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
     return {
@@ -1691,7 +1720,7 @@ app.get('/api/version', async (request, reply) => {
 
 app.get('/api/tags', async (request, reply) => {
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
     const allowedModels = config.modelIds.filter((modelId) => appStore.isModelAllowed(access.app, modelId));
@@ -1703,7 +1732,7 @@ app.get('/api/tags', async (request, reply) => {
 
 app.post<{ Body: { name?: string; model?: string } }>('/api/show', async (request, reply) => {
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
-  const access = ensureClientAccess(request, reply);
+  const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
     const requestedModel = normalizeModelId(String(request.body?.name ?? request.body?.model ?? '').trim() || undefined);

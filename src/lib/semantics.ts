@@ -3,12 +3,16 @@ import type { LLMMessage } from '../llm/types.js';
 
 export type SemanticChannel = 'chat' | 'responses' | 'generate' | 'admin';
 export type SemanticOutputMode = 'text' | 'json';
+export type SemanticJsonPresentation = 'bare' | 'markdown_block';
+export type SemanticActionPolicy = 'default' | 'none_only';
 
 export interface SemanticProfile {
   surface: ApiSurface;
   channel: SemanticChannel;
   outputMode: SemanticOutputMode;
   jsonSchema?: unknown;
+  jsonPresentation?: SemanticJsonPresentation;
+  actionPolicy?: SemanticActionPolicy;
 }
 
 function buildBaseInstruction(profile: SemanticProfile): string {
@@ -67,7 +71,8 @@ export function applySemanticPrompt(messages: LLMMessage[], profile?: SemanticPr
 function sanitizeActionField(value: string): string {
   const trimmed = value.trim();
   const wrapped = trimmed.match(/^\(\s*([A-Za-z0-9_:-]+)\s*\)$/);
-  return wrapped?.[1] ?? trimmed;
+  const normalized = wrapped?.[1] ?? trimmed;
+  return /^[A-Za-z0-9_:-]+$/.test(normalized) ? normalized.toUpperCase() : normalized;
 }
 
 function sanitizeParsedJsonValue(value: unknown, key?: string): unknown {
@@ -89,6 +94,15 @@ function sanitizeParsedJsonValue(value: unknown, key?: string): unknown {
   }
 
   return value;
+}
+
+function applyJsonActionPolicy(value: unknown, profile?: SemanticProfile): unknown {
+  if (profile?.actionPolicy !== 'none_only') return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return {
+    ...(value as Record<string, unknown>),
+    action: 'NONE',
+  };
 }
 
 function stripThinkBlocks(text: string, partial = false): string {
@@ -175,7 +189,7 @@ function normalizeLooseJson(text: string): string {
   return normalized.trim();
 }
 
-function tryNormalizeJsonPayload(text: string): string | null {
+function tryNormalizeJsonPayload(text: string, profile?: SemanticProfile): string | null {
   const raw = stripAssistantPrefix(stripThinkBlocks(text)).trim();
   const fenced = unwrapSingleFence(raw).trim();
   const candidates = [
@@ -187,7 +201,7 @@ function tryNormalizeJsonPayload(text: string): string | null {
 
   for (const candidate of candidates) {
     try {
-      return JSON.stringify(sanitizeParsedJsonValue(JSON.parse(candidate)));
+      return JSON.stringify(applyJsonActionPolicy(sanitizeParsedJsonValue(JSON.parse(candidate)), profile));
     } catch {
       // keep trying
     }
@@ -196,9 +210,19 @@ function tryNormalizeJsonPayload(text: string): string | null {
   return null;
 }
 
-function normalizeJsonPayload(text: string): string {
+function normalizeJsonPayload(text: string, profile?: SemanticProfile): string {
   const raw = stripAssistantPrefix(stripThinkBlocks(text)).trim();
-  return tryNormalizeJsonPayload(text) ?? raw;
+  return tryNormalizeJsonPayload(text, profile) ?? raw;
+}
+
+function formatJsonForPresentation(
+  jsonText: string,
+  presentation: SemanticJsonPresentation | undefined,
+): string {
+  if (presentation === 'markdown_block') {
+    return `\`\`\`json\n${jsonText}\n\`\`\``;
+  }
+  return jsonText;
 }
 
 function looksLikeJsonPayload(text: string): boolean {
@@ -221,12 +245,42 @@ type TradeMetric = {
 
 const TRADE_NUMBER_PATTERN = '\\$?\\d[\\d,]*(?:\\.\\d+)?';
 const TRADE_PERCENT_PATTERN = '\\(([+\\-−]?\\d+(?:\\.\\d+)?)%\\)';
+const TRADE_SECTION_MARKERS = [
+  /🪙\s+[^.\n]*Trade Setup\./,
+  /😊\s+MARKET SENTIMENT:/,
+  /💧\s+DEFI CROWDING:/,
+  /🌐\s+MARKET BIAS:/,
+  /💹\s+PRICE ACTION:/,
+  /🏦\s+EMA ALIGNMENT:/,
+  /📊\s+RSI ANALYSIS:/,
+  /🌪️\s+VOLUME ANOMALY:/,
+  /🎯\s+PIVOT LEVELS:/,
+  /⚠️\s+NEXT UNLOCK:/,
+  /🧭\s+ACTION STRATEGY:/,
+  /◻️\s+CONSIDERATIONS:/,
+  /📣\s+This is my personal approach/i,
+] as const;
 
 function splitParagraphs(text: string): string[] {
   return text
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
+}
+
+function reflowTradeSections(text: string): string {
+  let normalized = text.replace(/\r\n?/g, '\n').trim();
+
+  for (const marker of TRADE_SECTION_MARKERS) {
+    normalized = normalized.replace(new RegExp(`\\s+(?=${marker.source})`, marker.flags.includes('i') ? 'gi' : 'g'), '\n\n');
+  }
+
+  normalized = normalized
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return normalized;
 }
 
 function extractTradeDirection(text: string): TradeDirection | null {
@@ -326,7 +380,8 @@ function normalizeTradeActionParagraph(paragraph: string): string {
 }
 
 function normalizeTradeOutput(text: string): string {
-  const paragraphs = splitParagraphs(text);
+  const reflown = reflowTradeSections(text);
+  const paragraphs = splitParagraphs(reflown);
   if (paragraphs.length === 0) return text;
   let changed = false;
   const next = paragraphs.map((paragraph) => {
@@ -334,7 +389,8 @@ function normalizeTradeOutput(text: string): string {
     changed ||= normalized !== paragraph;
     return normalized;
   });
-  return changed ? next.join('\n\n') : text;
+  const formatted = next.join('\n\n');
+  return changed || formatted !== text ? formatted : text;
 }
 
 function normalizeTextPayload(text: string, profile?: SemanticProfile, partial = false): string {
@@ -360,12 +416,14 @@ export function normalizeSemanticOutput(
 ): string {
   const partial = options?.partial === true;
   if (!partial && (profile?.outputMode === 'json' || looksLikeJsonPayload(text))) {
-    const normalizedJson = tryNormalizeJsonPayload(text);
-    if (normalizedJson) return normalizedJson;
+    const normalizedJson = tryNormalizeJsonPayload(text, profile);
+    if (normalizedJson) {
+      return formatJsonForPresentation(normalizedJson, profile?.jsonPresentation);
+    }
   }
   if (!profile) return normalizeTextPayload(text, undefined, partial);
   if (profile.outputMode === 'json' && !partial) {
-    return normalizeJsonPayload(text);
+    return formatJsonForPresentation(normalizeJsonPayload(text, profile), profile.jsonPresentation);
   }
   return normalizeTextPayload(text, profile, partial);
 }
