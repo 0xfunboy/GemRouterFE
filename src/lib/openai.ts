@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { LLMMessage } from '../llm/types.js';
+import type { SemanticActionPolicy } from './semantics.js';
 
 export interface ChatCompletionsRequest {
   model?: string;
@@ -33,6 +34,52 @@ export interface UsageSummary {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+}
+
+function prefersJsonMarkdownBlock(messages: LLMMessage[]): boolean {
+  const combined = messages.map((message) => message.content).join('\n');
+  return (
+    /Response format should be formatted in a valid JSON block like this:/i.test(combined) &&
+    /```json/i.test(combined)
+  );
+}
+
+function extractPromptSection(source: string, marker: string, terminators: string[]): string {
+  const markerIndex = source.lastIndexOf(marker);
+  if (markerIndex < 0) return '';
+  const start = markerIndex + marker.length;
+  let end = source.length;
+  for (const terminator of terminators) {
+    const nextIndex = source.indexOf(terminator, start);
+    if (nextIndex >= 0 && nextIndex < end) {
+      end = nextIndex;
+    }
+  }
+  return source.slice(start, end).trim();
+}
+
+function detectJsonActionPolicy(messages: LLMMessage[]): SemanticActionPolicy {
+  const combined = messages.map((message) => message.content).join('\n');
+  const noActionHint = /no action tools;\s*provide insights/i;
+
+  const currentPost = extractPromptSection(combined, 'Current Post:', [
+    '\nThread of Tweets You Are Replying To:',
+    '\n# INSTRUCTIONS:',
+    '\nOBLIGATORY STYLE RULES:',
+  ]);
+  if (noActionHint.test(currentPost)) return 'none_only';
+
+  const userRequest = extractPromptSection(combined, 'USER REQUEST:', ['\nTASK:', '\nDATA:']);
+  if (noActionHint.test(userRequest)) return 'none_only';
+
+  const userRawText = extractPromptSection(combined, 'USER RAW TEXT:', ['\nREWRITING RULES:']);
+  if (noActionHint.test(userRawText)) return 'none_only';
+
+  if (/<hidden>\s*no action tools;\s*provide insights\s*<\/hidden>/i.test(combined)) {
+    return 'none_only';
+  }
+
+  return 'default';
 }
 
 function parseTextContent(content: unknown, role: string): string {
@@ -108,6 +155,8 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
   temperature?: number;
   outputMode: 'text' | 'json';
   jsonSchema?: unknown;
+  jsonPresentation: 'bare' | 'markdown_block';
+  actionPolicy: SemanticActionPolicy;
 } {
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
     throw new Error('messages must be a non-empty array');
@@ -148,6 +197,9 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
     outputMode: responseFormatType.startsWith('json') ? 'json' : 'text',
     jsonSchema,
+    jsonPresentation:
+      responseFormatType.startsWith('json') ? 'bare' : prefersJsonMarkdownBlock(messages) ? 'markdown_block' : 'bare',
+    actionPolicy: detectJsonActionPolicy(messages),
   };
 }
 
@@ -160,6 +212,8 @@ export function parseResponsesRequest(body: ResponsesRequest): {
   temperature?: number;
   outputMode: 'text' | 'json';
   jsonSchema?: unknown;
+  jsonPresentation: 'bare' | 'markdown_block';
+  actionPolicy: SemanticActionPolicy;
 } {
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     throw new Error('Tool calling is not supported on gemini-web');
@@ -212,6 +266,9 @@ export function parseResponsesRequest(body: ResponsesRequest): {
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
     outputMode: responseFormatType.startsWith('json') ? 'json' : 'text',
     jsonSchema,
+    jsonPresentation:
+      responseFormatType.startsWith('json') ? 'bare' : prefersJsonMarkdownBlock(messages) ? 'markdown_block' : 'bare',
+    actionPolicy: detectJsonActionPolicy(messages),
   };
 }
 
