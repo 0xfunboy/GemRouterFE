@@ -12,6 +12,7 @@ export interface BootstrapAppConfig {
   sessionNamespace: string;
   rateLimitPerMinute: number;
   maxConcurrency: number;
+  concurrencyWaitMs: number;
 }
 
 export interface RuntimeConfig {
@@ -181,6 +182,13 @@ export function loadConfig(
         'GEMROUTER_BOOTSTRAP_MAX_CONCURRENCY',
         'BAIRBI_BOOTSTRAP_MAX_CONCURRENCY',
         'BARIBI_BOOTSTRAP_MAX_CONCURRENCY',
+      ),
+      concurrencyWaitMs: readNumber(
+        env,
+        90_000,
+        'GEMROUTER_BOOTSTRAP_CONCURRENCY_WAIT_MS',
+        'BAIRBI_BOOTSTRAP_CONCURRENCY_WAIT_MS',
+        'BARIBI_BOOTSTRAP_CONCURRENCY_WAIT_MS',
       ),
     },
     compatibility: {
