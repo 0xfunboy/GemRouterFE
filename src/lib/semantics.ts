@@ -64,6 +64,33 @@ export function applySemanticPrompt(messages: LLMMessage[], profile?: SemanticPr
   return [{ role: 'system', content: buildBaseInstruction(profile) }, ...messages];
 }
 
+function sanitizeActionField(value: string): string {
+  const trimmed = value.trim();
+  const wrapped = trimmed.match(/^\(\s*([A-Za-z0-9_:-]+)\s*\)$/);
+  return wrapped?.[1] ?? trimmed;
+}
+
+function sanitizeParsedJsonValue(value: unknown, key?: string): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeParsedJsonValue(entry));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
+        entryKey,
+        sanitizeParsedJsonValue(entryValue, entryKey),
+      ]),
+    );
+  }
+
+  if (key === 'action' && typeof value === 'string') {
+    return sanitizeActionField(value);
+  }
+
+  return value;
+}
+
 function stripThinkBlocks(text: string, partial = false): string {
   if (!text) return '';
   if (partial) {
@@ -148,7 +175,7 @@ function normalizeLooseJson(text: string): string {
   return normalized.trim();
 }
 
-function normalizeJsonPayload(text: string): string {
+function tryNormalizeJsonPayload(text: string): string | null {
   const raw = stripAssistantPrefix(stripThinkBlocks(text)).trim();
   const fenced = unwrapSingleFence(raw).trim();
   const candidates = [
@@ -160,13 +187,154 @@ function normalizeJsonPayload(text: string): string {
 
   for (const candidate of candidates) {
     try {
-      return JSON.stringify(JSON.parse(candidate));
+      return JSON.stringify(sanitizeParsedJsonValue(JSON.parse(candidate)));
     } catch {
       // keep trying
     }
   }
 
-  return raw;
+  return null;
+}
+
+function normalizeJsonPayload(text: string): string {
+  const raw = stripAssistantPrefix(stripThinkBlocks(text)).trim();
+  return tryNormalizeJsonPayload(text) ?? raw;
+}
+
+function looksLikeJsonPayload(text: string): boolean {
+  const raw = stripAssistantPrefix(stripThinkBlocks(text)).trim();
+  if (!raw) return false;
+  const unfenced = unwrapSingleFence(raw).trim();
+  if (!unfenced) return false;
+  if (/^json\b/i.test(unfenced)) return true;
+  if (unfenced.startsWith('{') || unfenced.startsWith('[')) return true;
+  const extracted = extractBalancedJson(unfenced);
+  return extracted !== null;
+}
+
+type TradeDirection = 'LONG' | 'SHORT';
+type TradeMetric = {
+  value: string;
+  pct?: string;
+  qualifier?: 'around' | 'near' | 'at' | 'below' | 'above';
+};
+
+const TRADE_NUMBER_PATTERN = '\\$?\\d[\\d,]*(?:\\.\\d+)?';
+const TRADE_PERCENT_PATTERN = '\\(([+\\-−]?\\d+(?:\\.\\d+)?)%\\)';
+
+function splitParagraphs(text: string): string[] {
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+function extractTradeDirection(text: string): TradeDirection | null {
+  const hasLong = /\bLONG\b/i.test(text);
+  const hasShort = /\bSHORT\b/i.test(text);
+  if (hasLong === hasShort) return null;
+  return hasLong ? 'LONG' : 'SHORT';
+}
+
+function extractTradeMetric(
+  text: string,
+  patterns: RegExp[],
+): TradeMetric | null {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const groups = match?.groups as
+      | {
+          value?: string;
+          qualifier?: string;
+          pct?: string;
+        }
+      | undefined;
+    const value = (groups?.value ?? match?.[1])?.replace(/,+$/g, '');
+    if (!value) continue;
+    const qualifier = groups?.qualifier?.toLowerCase() as TradeMetric['qualifier'] | undefined;
+    const pct = groups?.pct ? `${groups.pct.replace(/−/g, '-')}` : undefined;
+    return {
+      value,
+      qualifier,
+      pct,
+    };
+  }
+  return null;
+}
+
+function normalizeTradePctForDirection(
+  pct: string | undefined,
+  positive: boolean,
+): string | undefined {
+  if (!pct) return undefined;
+  const trimmed = pct.trim().replace(/−/g, '-');
+  if (!trimmed) return undefined;
+  const unsigned = trimmed.replace(/^[+\-]/, '');
+  return `${positive ? '+' : '-'}${unsigned}`;
+}
+
+function formatPct(pct?: string): string {
+  return pct ? ` (${pct}%)` : '';
+}
+
+function normalizeTradeActionParagraph(paragraph: string): string {
+  if (!/ACTION STRATEGY:/i.test(paragraph) || /\bSTAY OUT\b/i.test(paragraph)) {
+    return paragraph;
+  }
+
+  const alreadyCanonical =
+    /\bENTRY\b/i.test(paragraph) &&
+    /\bTAKE\s+PROFIT\b/i.test(paragraph) &&
+    /\bSTOP\s+LOSS\b/i.test(paragraph);
+  if (alreadyCanonical) return paragraph;
+
+  const direction = extractTradeDirection(paragraph);
+  if (!direction) return paragraph;
+
+  const entry = extractTradeMetric(paragraph, [
+    new RegExp(`\\bENTRY\\b[^\\d$]{0,32}(?<value>${TRADE_NUMBER_PATTERN})`, 'i'),
+    new RegExp(`\\benter(?:ing)?\\b(?:\\s+(?:a|an))?(?:\\s+(?:LONG|SHORT))?(?:\\s+position)?[^\\d$]{0,24}(?<value>${TRADE_NUMBER_PATTERN})`, 'i'),
+    new RegExp(`\\b(?:LONG|SHORT)\\b[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})`, 'i'),
+  ]);
+  const takeProfit = extractTradeMetric(paragraph, [
+    new RegExp(`\\bTAKE\\s+PROFIT\\b(?:\\s+(?<qualifier>around|near|at))?[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})(?:\\s*\\((?<pct>[+\\-−]?\\d+(?:\\.\\d+)?)%\\))?`, 'i'),
+    new RegExp(`\\bTP\\b(?:\\s+(?<qualifier>around|near|at))?[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})(?:\\s*\\((?<pct>[+\\-−]?\\d+(?:\\.\\d+)?)%\\))?`, 'i'),
+    new RegExp(`\\btarget(?:ing)?\\b[^\\d$]{0,20}(?:TP|TAKE\\s+PROFIT)?(?:\\s+(?<qualifier>around|near|at))?[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})(?:\\s*\\((?<pct>[+\\-−]?\\d+(?:\\.\\d+)?)%\\))?`, 'i'),
+  ]);
+  const stopLoss = extractTradeMetric(paragraph, [
+    new RegExp(`\\bSTOP\\s+LOSS\\b(?:\\s+(?<qualifier>below|above|at|near))?[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})(?:\\s*\\((?<pct>[+\\-−]?\\d+(?:\\.\\d+)?)%\\))?`, 'i'),
+    new RegExp(`\\bSL\\b(?:\\s+(?<qualifier>below|above|at|near))?[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})(?:\\s*\\((?<pct>[+\\-−]?\\d+(?:\\.\\d+)?)%\\))?`, 'i'),
+    new RegExp(`\\b(?:place|set)\\b[^\\d$]{0,20}(?:STOP\\s+LOSS|SL)(?:\\s+(?<qualifier>below|above|at|near))?[^\\d$]{0,20}(?<value>${TRADE_NUMBER_PATTERN})(?:\\s*\\((?<pct>[+\\-−]?\\d+(?:\\.\\d+)?)%\\))?`, 'i'),
+  ]);
+
+  if (!entry || !takeProfit || !stopLoss) return paragraph;
+
+  const prefix = paragraph.replace(/^(\s*🧭\s*)?ACTION STRATEGY:\s*/i, '').trim();
+  const shortLead = prefix
+    .replace(/\s+/g, ' ')
+    .replace(/\b(?:I|We)\s+(?:would|will)\b[\s\S]*$/i, '')
+    .replace(/\b(?:LONG|SHORT)\b[\s\S]*$/i, '')
+    .replace(/[,:;.\s]+$/g, '')
+    .trim();
+  const qualifier = stopLoss.qualifier ?? (direction === 'LONG' ? 'below' : 'above');
+  const lead = shortLead ? `${shortLead}. ` : `${direction} setup. `;
+
+  return [
+    '🧭 ACTION STRATEGY:',
+    `${lead}I would look for an ENTRY around ${entry.value}, aim for a TAKE PROFIT ${takeProfit.qualifier ?? 'near'} ${takeProfit.value}${formatPct(normalizeTradePctForDirection(takeProfit.pct, direction === 'LONG'))}, and place the STOP LOSS ${qualifier} ${stopLoss.value}${formatPct(normalizeTradePctForDirection(stopLoss.pct, direction === 'SHORT'))} to manage risk.`,
+  ].join(' ');
+}
+
+function normalizeTradeOutput(text: string): string {
+  const paragraphs = splitParagraphs(text);
+  if (paragraphs.length === 0) return text;
+  let changed = false;
+  const next = paragraphs.map((paragraph) => {
+    const normalized = normalizeTradeActionParagraph(paragraph);
+    changed ||= normalized !== paragraph;
+    return normalized;
+  });
+  return changed ? next.join('\n\n') : text;
 }
 
 function normalizeTextPayload(text: string, profile?: SemanticProfile, partial = false): string {
@@ -182,7 +350,7 @@ function normalizeTextPayload(text: string, profile?: SemanticProfile, partial =
     if (quoted?.[1]) return quoted[1];
   }
 
-  return normalized;
+  return partial ? normalized : normalizeTradeOutput(normalized);
 }
 
 export function normalizeSemanticOutput(
@@ -190,9 +358,14 @@ export function normalizeSemanticOutput(
   profile?: SemanticProfile,
   options?: { partial?: boolean },
 ): string {
-  if (!profile) return normalizeTextPayload(text, undefined, options?.partial === true);
-  if (profile.outputMode === 'json' && options?.partial !== true) {
+  const partial = options?.partial === true;
+  if (!partial && (profile?.outputMode === 'json' || looksLikeJsonPayload(text))) {
+    const normalizedJson = tryNormalizeJsonPayload(text);
+    if (normalizedJson) return normalizedJson;
+  }
+  if (!profile) return normalizeTextPayload(text, undefined, partial);
+  if (profile.outputMode === 'json' && !partial) {
     return normalizeJsonPayload(text);
   }
-  return normalizeTextPayload(text, profile, options?.partial === true);
+  return normalizeTextPayload(text, profile, partial);
 }
