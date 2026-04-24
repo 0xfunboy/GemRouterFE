@@ -1,7 +1,7 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
-import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
+import { normalizeSemanticOutput } from '../../../lib/semantics.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse } from '../../types.js';
 import { GeminiProvider } from './provider.js';
 import { GeminiSessionManager } from './session.js';
@@ -257,8 +257,7 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
     async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
       const sessionKey = opts?.sessionKey?.trim() || 'shared/default';
       const sessionLabel = opts?.sessionLabel?.trim() || sessionKey;
-      const promptMessages = applySemanticPrompt(messages, opts?.semanticProfile);
-      const prompt = flattenMessages(promptMessages, config.promptPackingStyle);
+      const prompt = flattenMessages(messages, config.promptPackingStyle);
 
       return runtime.sessionManager.withLock(sessionKey, async () => {
         const maxAttempts = 2;
@@ -310,8 +309,7 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
     async *streamChat(messages: LLMMessage[], opts?: LLMOptions): AsyncGenerator<{ content: string }, LLMResponse, void> {
       const sessionKey = opts?.sessionKey?.trim() || 'shared/default';
       const sessionLabel = opts?.sessionLabel?.trim() || sessionKey;
-      const promptMessages = applySemanticPrompt(messages, opts?.semanticProfile);
-      const prompt = flattenMessages(promptMessages, config.promptPackingStyle);
+      const prompt = flattenMessages(messages, config.promptPackingStyle);
       const release = await runtime.sessionManager.acquireLock(sessionKey);
       try {
         const maxAttempts = 2;

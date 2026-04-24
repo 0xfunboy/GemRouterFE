@@ -38,6 +38,7 @@ import {
 } from './lib/ollama.js';
 import { createTeGemClient } from './llm/providers/tegem/client.js';
 import type { LLMMessage, LLMOptions } from './llm/types.js';
+import type { SemanticChannel, SemanticOutputMode, SemanticProfile } from './lib/semantics.js';
 import { AuditLogger } from './store/audit.js';
 import { AdminSessionStore } from './store/adminSessions.js';
 import { AppStore, type ApiAppRecord } from './store/appStore.js';
@@ -420,6 +421,20 @@ function buildRequestLlmOptions(input: {
   });
 }
 
+function buildSemanticProfile(input: {
+  surface: ApiSurface;
+  channel: SemanticChannel;
+  outputMode: SemanticOutputMode;
+  jsonSchema?: unknown;
+}): SemanticProfile {
+  return {
+    surface: input.surface,
+    channel: input.channel,
+    outputMode: input.outputMode,
+    jsonSchema: input.jsonSchema,
+  };
+}
+
 function flattenPrompt(messages: LLMMessage[]): string {
   return messages.map((message) => `${message.role}: ${message.content}`).join('\n');
 }
@@ -583,6 +598,13 @@ async function handleChatCompletionsRequest(
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
+      semanticSurface: surface,
+    });
+    sessionOptions.semanticProfile = buildSemanticProfile({
+      surface,
+      channel: 'chat',
+      outputMode: parsed.outputMode,
+      jsonSchema: parsed.jsonSchema,
     });
 
     if (!parsed.stream) {
@@ -780,6 +802,13 @@ async function handleResponsesRequest(
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
+      semanticSurface: 'openai',
+    });
+    sessionOptions.semanticProfile = buildSemanticProfile({
+      surface: 'openai',
+      channel: 'responses',
+      outputMode: parsed.outputMode,
+      jsonSchema: parsed.jsonSchema,
     });
 
     if (!parsed.stream) {
@@ -1026,6 +1055,13 @@ async function handleOllamaChatRequest(
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
+      semanticSurface: 'ollama',
+    });
+    sessionOptions.semanticProfile = buildSemanticProfile({
+      surface: 'ollama',
+      channel: 'chat',
+      outputMode: parsed.outputMode,
+      jsonSchema: parsed.jsonSchema,
     });
     if (parsed.stateful) sessionOptions.resetSession = false;
 
@@ -1181,6 +1217,13 @@ async function handleOllamaGenerateRequest(
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
+      semanticSurface: 'ollama',
+    });
+    sessionOptions.semanticProfile = buildSemanticProfile({
+      surface: 'ollama',
+      channel: 'generate',
+      outputMode: parsed.outputMode,
+      jsonSchema: parsed.jsonSchema,
     });
     if (parsed.stateful) sessionOptions.resetSession = false;
 
