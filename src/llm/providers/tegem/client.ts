@@ -17,6 +17,8 @@ export interface TeGemProviderConfig {
   sessionIdleTimeoutMs: number;
   conversationTtlMs: number;
   maxSessionTabs: number;
+  respondedSessionTtlMs: number;
+  orphanSessionTtlMs: number;
   streamPollIntervalMs: number;
   streamStableTicks: number;
   streamFirstChunkTimeoutMs: number;
@@ -40,6 +42,8 @@ function runtimeKey(config: TeGemProviderConfig): string {
     browserExecutablePath: config.browserExecutablePath,
     baseProfileDir: path.resolve(config.baseProfileDir),
     profileNamespace: config.profileNamespace,
+    respondedSessionTtlMs: config.respondedSessionTtlMs,
+    orphanSessionTtlMs: config.orphanSessionTtlMs,
     promptPackingStyle: config.promptPackingStyle,
   });
 }
@@ -229,6 +233,8 @@ function getRuntime(config: TeGemProviderConfig): TeGemRuntime {
       config.sessionIdleTimeoutMs,
       config.conversationTtlMs,
       config.maxSessionTabs,
+      config.respondedSessionTtlMs,
+      config.orphanSessionTtlMs,
     ),
     provider: new GeminiProvider(providerConfig, geminiConfig),
   };
@@ -284,6 +290,7 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
                   repairJsonContent(next.value.text.trim()),
                   opts?.semanticProfile,
                 );
+                runtime.sessionManager.markResponseCaptured(sessionKey);
                 break;
               }
             }
@@ -346,6 +353,7 @@ export function createTeGemClient(config: TeGemProviderConfig): LLMClient {
             }
 
             latest = normalizeSemanticOutput(latest, opts?.semanticProfile);
+            runtime.sessionManager.markResponseCaptured(sessionKey);
             return {
               content: latest,
               provider: 'tegem',

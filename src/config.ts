@@ -15,6 +15,11 @@ export interface BootstrapAppConfig {
   concurrencyWaitMs: number;
 }
 
+export interface DashboardAdminUser {
+  username: string;
+  password: string;
+}
+
 export interface RuntimeConfig {
   host: string;
   port: number;
@@ -23,6 +28,7 @@ export interface RuntimeConfig {
   dashboardEnabled: boolean;
   adminToken: string;
   adminSessionTtlMs: number;
+  dashboardAdminUsers: DashboardAdminUser[];
   bootstrapApp: BootstrapAppConfig;
   compatibility: {
     settingsStorePath: string;
@@ -64,6 +70,28 @@ function readList(env: Record<string, string | undefined>, fallback: string[], .
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function readDashboardUsers(
+  env: Record<string, string | undefined>,
+  fallback: DashboardAdminUser[],
+  ...keys: string[]
+): DashboardAdminUser[] {
+  const value = pick(env, ...keys);
+  if (!value) return fallback;
+
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .flatMap((entry) => {
+      const separator = entry.indexOf(':');
+      if (separator <= 0) return [];
+      const username = entry.slice(0, separator).trim();
+      const password = entry.slice(separator + 1).trim();
+      if (!username || !password) return [];
+      return [{ username, password }];
+    });
 }
 
 function readPromptPackingStyle(
@@ -146,6 +174,18 @@ export function loadConfig(
     ),
     adminToken: requireEnv(env, 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
     adminSessionTtlMs: readNumber(env, 24 * 60 * 60_000, 'GEMROUTER_ADMIN_SESSION_TTL_MS', 'BAIRBI_ADMIN_SESSION_TTL_MS', 'BARIBI_ADMIN_SESSION_TTL_MS'),
+    dashboardAdminUsers: readDashboardUsers(
+      env,
+      [
+        {
+          username: 'admin',
+          password: requireEnv(env, 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
+        },
+      ],
+      'GEMROUTER_DASHBOARD_ADMIN_USERS',
+      'BAIRBI_DASHBOARD_ADMIN_USERS',
+      'BARIBI_DASHBOARD_ADMIN_USERS',
+    ),
     bootstrapApp: {
       name: pick(env, 'GEMROUTER_BOOTSTRAP_APP_NAME', 'BAIRBI_BOOTSTRAP_APP_NAME', 'BARIBI_BOOTSTRAP_APP_NAME') ?? 'local-frontend',
       apiKey: requireEnv(env, 'GEMROUTER_BOOTSTRAP_API_KEY', 'BAIRBI_BOOTSTRAP_API_KEY', 'BARIBI_BOOTSTRAP_API_KEY'),
@@ -209,6 +249,18 @@ export function loadConfig(
       sessionIdleTimeoutMs: readNumber(env, 30 * 60_000, 'SESSION_IDLE_TIMEOUT_MS', 'TEGEM_SESSION_IDLE_TIMEOUT_MS'),
       conversationTtlMs: readNumber(env, 24 * 60 * 60_000, 'SESSION_CONVERSATION_TTL_MS', 'TEGEM_SESSION_CONVERSATION_TTL_MS'),
       maxSessionTabs: readNumber(env, 20, 'MAX_SESSION_TABS', 'TEGEM_MAX_SESSION_TABS'),
+      respondedSessionTtlMs: readNumber(
+        env,
+        90_000,
+        'RESPONDED_SESSION_TTL_MS',
+        'TEGEM_RESPONDED_SESSION_TTL_MS',
+      ),
+      orphanSessionTtlMs: readNumber(
+        env,
+        10 * 60_000,
+        'ORPHAN_SESSION_TTL_MS',
+        'TEGEM_ORPHAN_SESSION_TTL_MS',
+      ),
       streamPollIntervalMs: readNumber(env, 700, 'STREAM_POLL_INTERVAL_MS', 'TEGEM_STREAM_POLL_INTERVAL_MS'),
       streamStableTicks: readNumber(env, 4, 'STREAM_STABLE_TICKS', 'TEGEM_STREAM_STABLE_TICKS'),
       streamFirstChunkTimeoutMs: readNumber(env, 25_000, 'STREAM_FIRST_CHUNK_TIMEOUT_MS', 'TEGEM_STREAM_FIRST_CHUNK_TIMEOUT_MS'),
