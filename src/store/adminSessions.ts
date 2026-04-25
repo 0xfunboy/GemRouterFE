@@ -4,6 +4,7 @@ interface SessionRecord {
   createdAt: number;
   expiresAt: number;
   lastSeenAt: number;
+  username?: string;
 }
 
 export class AdminSessionStore {
@@ -11,7 +12,7 @@ export class AdminSessionStore {
 
   constructor(private readonly ttlMs: number) {}
 
-  create(): string {
+  create(input?: { username?: string }): string {
     this.pruneExpired();
     const id = `adm_${randomBytes(24).toString('base64url')}`;
     const now = Date.now();
@@ -19,22 +20,27 @@ export class AdminSessionStore {
       createdAt: now,
       expiresAt: now + this.ttlMs,
       lastSeenAt: now,
+      username: input?.username?.trim() || undefined,
     });
     return id;
   }
 
-  verify(id: string | undefined): boolean {
-    if (!id) return false;
+  read(id: string | undefined): SessionRecord | null {
+    if (!id) return null;
     const record = this.sessions.get(id);
-    if (!record) return false;
+    if (!record) return null;
     const now = Date.now();
     if (record.expiresAt <= now) {
       this.sessions.delete(id);
-      return false;
+      return null;
     }
     record.lastSeenAt = now;
     record.expiresAt = now + this.ttlMs;
-    return true;
+    return record;
+  }
+
+  verify(id: string | undefined): boolean {
+    return this.read(id) !== null;
   }
 
   revoke(id: string | undefined): void {

@@ -1,7 +1,9 @@
 import 'dotenv/config';
 
-import { existsSync } from 'node:fs';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
@@ -56,6 +58,20 @@ const PROJECT_NAME = 'GemRouterFE';
 const SERVICE_NAME = 'gem-router-fe';
 const STUDY_PATH = '/home/funboy/bairbi-stack/PROJECT_STUDY.md';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
+const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SOCIAL_PREVIEW_PATH = '/social-preview.png';
+const SOCIAL_PREVIEW_IMAGE = (() => {
+  try {
+    const assetPath = path.resolve(SRC_DIR, '../docs/assets/GemRouterFE_Web_Preview.png');
+    const buffer = readFileSync(assetPath);
+    return {
+      buffer,
+      version: createHash('sha1').update(buffer).digest('hex').slice(0, 12),
+    };
+  } catch {
+    return null;
+  }
+})();
 
 const config = loadConfig();
 const llm = createTeGemClient(config.llm);
@@ -83,6 +99,13 @@ const app = Fastify({
   requestIdHeader: 'x-request-id',
   disableRequestLogging: true,
 });
+
+function stableCompare(left: string, right: string): boolean {
+  const a = Buffer.from(left, 'utf8');
+  const b = Buffer.from(right, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 type AuthenticatedClientApp = NonNullable<ReturnType<AppStore['verify']>>;
 type AuthenticatedClientAccess = {
@@ -144,6 +167,10 @@ function getAdminSessionId(request: FastifyRequest): string | undefined {
   return parseCookies(request)[ADMIN_COOKIE_NAME];
 }
 
+function getAdminSession(request: FastifyRequest) {
+  return adminSessions.read(getAdminSessionId(request));
+}
+
 function setAdminCookie(reply: FastifyReply, sessionId: string): void {
   reply.header(
     'set-cookie',
@@ -158,6 +185,18 @@ function clearAdminCookie(reply: FastifyReply): void {
     'set-cookie',
     `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
   );
+}
+
+function findDashboardAdminUser(username: string, password: string): { username: string } | null {
+  const normalizedUsername = username.trim();
+  const normalizedPassword = password.trim();
+  if (!normalizedUsername || !normalizedPassword) return null;
+
+  const match = config.dashboardAdminUsers.find((entry) => (
+    stableCompare(entry.username, normalizedUsername) &&
+    stableCompare(entry.password, normalizedPassword)
+  ));
+  return match ? { username: match.username } : null;
 }
 
 function sendError(
@@ -254,6 +293,21 @@ function wantsHtml(request: FastifyRequest): boolean {
   return accept.includes('text/html');
 }
 
+function isSocialPreviewBot(request: FastifyRequest): boolean {
+  const userAgent = String(request.headers['user-agent'] ?? '').toLowerCase();
+  return /(discordbot|facebookexternalhit|linkedinbot|slackbot|telegrambot|twitterbot|whatsapp|skypeuripreview|embedly|crawler|spider|preview)/i.test(userAgent);
+}
+
+function wantsHtmlShell(request: FastifyRequest): boolean {
+  return wantsHtml(request) || isSocialPreviewBot(request);
+}
+
+function buildSocialPreviewUrl(request: FastifyRequest): string | undefined {
+  if (!SOCIAL_PREVIEW_IMAGE) return undefined;
+  const baseUrl = inferPublicBaseUrl(request).replace(/\/+$/, '');
+  return `${baseUrl}${SOCIAL_PREVIEW_PATH}?v=${SOCIAL_PREVIEW_IMAGE.version}`;
+}
+
 function sanitizeAdminApp(appRecord: ApiAppRecord): Omit<ApiAppRecord, 'apiKeyHash'> {
   const { apiKeyHash: _apiKeyHash, ...rest } = appRecord;
   return rest;
@@ -288,7 +342,7 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
 function hasAdminAccess(request: FastifyRequest): boolean {
   const token = getBearerToken(request);
   if (token === config.adminToken) return true;
-  return adminSessions.verify(getAdminSessionId(request));
+  return getAdminSession(request) !== null;
 }
 
 function ensureAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
@@ -508,6 +562,9 @@ function sanitizeLlmDiagnostics(
     contextAlive: input.contextAlive ?? null,
     openPages: input.openPages ?? null,
     storedSessions: input.storedSessions ?? null,
+    respondedOpenTabs: input.respondedOpenTabs ?? null,
+    unresolvedOpenTabs: input.unresolvedOpenTabs ?? null,
+    busyOpenTabs: input.busyOpenTabs ?? null,
     lastLaunchAt: input.lastLaunchAt ?? null,
     lastLaunchOkAt: input.lastLaunchOkAt ?? null,
     lastLaunchError: input.lastLaunchError ?? null,
@@ -522,6 +579,98 @@ function sanitizeLlmDiagnostics(
     idleTimeoutMs: input.idleTimeoutMs ?? null,
     conversationTtlMs: input.conversationTtlMs ?? null,
     maxTabs: input.maxTabs ?? null,
+    respondedSessionTtlMs: input.respondedSessionTtlMs ?? null,
+    orphanSessionTtlMs: input.orphanSessionTtlMs ?? null,
+    lifecycle: input.lifecycle ?? [],
+  };
+}
+
+function classifyInteractionRoute(route: string): string {
+  if (route.includes('/chat/completions')) return 'chat';
+  if (route.includes('/responses')) return 'responses';
+  if (route.includes('/api/chat')) return 'ollama_chat';
+  if (route.includes('/api/generate')) return 'ollama_generate';
+  if (route.includes('/models') || route.includes('/api/tags') || route.includes('/api/show')) return 'models';
+  return 'other';
+}
+
+function formatHourLabel(timestamp: number): string {
+  return new Date(timestamp).toISOString().slice(11, 16);
+}
+
+function buildGuestSummary() {
+  const runtime = getRuntimeSnapshot();
+  const stats = interactions.summary(24);
+  const recent = interactions.list(240);
+  const now = Date.now();
+  const currentHour = Math.floor(now / (60 * 60_000)) * (60 * 60_000);
+  const start = currentHour - 23 * 60 * 60_000;
+  const hourBuckets = Array.from({ length: 24 }, (_, index) => {
+    const bucketStart = start + index * 60 * 60_000;
+    return {
+      key: Math.floor(bucketStart / (60 * 60_000)),
+      label: formatHourLabel(bucketStart),
+      requests: 0,
+      failed: 0,
+    };
+  });
+  const hourlyIndex = new Map(hourBuckets.map((bucket) => [bucket.key, bucket]));
+  const routeCounts = new Map<string, number>();
+
+  for (const record of recent) {
+    const createdAt = Date.parse(record.createdAt);
+    if (Number.isFinite(createdAt) && createdAt >= start) {
+      const key = Math.floor(createdAt / (60 * 60_000));
+      const bucket = hourlyIndex.get(key);
+      if (bucket) {
+        bucket.requests += 1;
+        if (record.status === 'failed') bucket.failed += 1;
+      }
+    }
+
+    const routeKey = classifyInteractionRoute(record.route);
+    routeCounts.set(routeKey, (routeCounts.get(routeKey) ?? 0) + 1);
+  }
+
+  const totalRequests = stats.totals.requests || 0;
+  const totalSucceeded = stats.totals.succeeded || 0;
+  const totalFailed = stats.totals.failed || 0;
+  const successRatePct = totalRequests > 0 ? Math.round((totalSucceeded / totalRequests) * 1000) / 10 : 0;
+
+  return {
+    ok: true,
+    project: PROJECT_NAME,
+    service: SERVICE_NAME,
+    ts: new Date().toISOString(),
+    runtime: {
+      headed: !config.llm.headless,
+      profileReady: Boolean((runtime.runtime as Record<string, unknown>)?.profileReady),
+      openPages: (runtime.llm as Record<string, unknown> | null)?.openPages ?? 0,
+      busyOpenTabs: (runtime.llm as Record<string, unknown> | null)?.busyOpenTabs ?? 0,
+      respondedOpenTabs: (runtime.llm as Record<string, unknown> | null)?.respondedOpenTabs ?? 0,
+      unresolvedOpenTabs: (runtime.llm as Record<string, unknown> | null)?.unresolvedOpenTabs ?? 0,
+    },
+    compatibility: {
+      defaultSurface: compatibility.get().defaultSurface,
+      enabledSurfaces: compatibility.get().enabledSurfaces,
+    },
+    stats: {
+      requests: totalRequests,
+      succeeded: totalSucceeded,
+      failed: totalFailed,
+      successRatePct,
+      avgLatencyMs: stats.totals.avgLatencyMs,
+      totalTokens: stats.totals.totalTokens,
+      promptTokens: stats.totals.promptTokens,
+      completionTokens: stats.totals.completionTokens,
+    },
+    charts: {
+      hourly: hourBuckets,
+      routes: [...routeCounts.entries()]
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, 6)
+        .map(([label, requests]) => ({ label, requests })),
+    },
   };
 }
 
@@ -565,7 +714,7 @@ function normalizeAllowedModels(values: unknown): string[] {
 }
 
 function listPublicEndpoints(): string[] {
-  const endpoints = ['/', '/health', '/admin'];
+  const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
   if (isSurfaceEnabled('openai')) {
     endpoints.push('/v1/models', '/v1/chat/completions', '/v1/responses');
   }
@@ -1407,13 +1556,15 @@ app.addHook('onSend', async (request, reply, payload) => {
 });
 
 app.get('/', async (request, reply) => {
-  if (config.dashboardEnabled && wantsHtml(request)) {
+  if (config.dashboardEnabled && wantsHtmlShell(request)) {
     return reply
       .type('text/html; charset=utf-8')
       .send(
         renderAppShell({
           projectName: PROJECT_NAME,
           modelIds: config.modelIds,
+          publicBaseUrl: inferPublicBaseUrl(request),
+          socialPreviewUrl: buildSocialPreviewUrl(request),
         }),
       );
   }
@@ -1433,22 +1584,42 @@ app.get('/admin', async (request, reply) =>
       renderAppShell({
         projectName: PROJECT_NAME,
         modelIds: config.modelIds,
+        publicBaseUrl: inferPublicBaseUrl(request),
+        socialPreviewUrl: buildSocialPreviewUrl(request),
       }),
     ),
 );
 
+app.get(SOCIAL_PREVIEW_PATH, async (_request, reply) => {
+  if (!SOCIAL_PREVIEW_IMAGE) {
+    return reply.code(404).send('social preview not available');
+  }
+  return reply
+    .header('cache-control', 'public, max-age=3600')
+    .type('image/png')
+    .send(SOCIAL_PREVIEW_IMAGE.buffer);
+});
+
 app.get('/health', async (request) => getRuntimeSnapshot(request));
 
-app.post<{ Body: { token?: string } }>('/admin/login', async (request, reply) => {
+async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: string; username?: string; password?: string } }>, reply: FastifyReply) {
   const token = String(request.body?.token ?? '').trim();
-  if (token !== config.adminToken) {
+  const username = String(request.body?.username ?? '').trim();
+  const password = String(request.body?.password ?? '').trim();
+
+  const adminUser = token === config.adminToken
+    ? { username: 'token-admin' }
+    : findDashboardAdminUser(username, password);
+
+  if (!adminUser) {
     return sendError(reply, 401, {
-      message: 'Invalid admin token',
+      message: 'Invalid dashboard credentials',
       type: 'authentication_error',
-      code: 'invalid_admin_token',
+      code: 'invalid_dashboard_credentials',
     });
   }
-  const sessionId = adminSessions.create();
+
+  const sessionId = adminSessions.create({ username: adminUser.username });
   setAdminCookie(reply, sessionId);
   audit.write({
     type: 'admin.login',
@@ -1460,18 +1631,51 @@ app.post<{ Body: { token?: string } }>('/admin/login', async (request, reply) =>
   return {
     ok: true,
     project: PROJECT_NAME,
+    role: 'admin',
+    username: adminUser.username,
   };
-});
+}
 
-app.post('/admin/logout', async (request, reply) => {
+async function handleDashboardLogout(request: FastifyRequest, reply: FastifyReply) {
   adminSessions.revoke(getAdminSessionId(request));
   clearAdminCookie(reply);
   return {
     ok: true,
   };
+}
+
+app.get('/dashboard/summary', async () => buildGuestSummary());
+
+app.post<{ Body: { token?: string; username?: string; password?: string } }>('/auth/login', async (request, reply) =>
+  handleDashboardLogin(request, reply),
+);
+app.post('/auth/logout', async (request, reply) => handleDashboardLogout(request, reply));
+app.get('/auth/me', async (request) => {
+  const session = getAdminSession(request);
+  if (!session) {
+    return {
+      ok: true,
+      authenticated: false,
+      role: 'guest',
+    };
+  }
+  return {
+    ok: true,
+    authenticated: true,
+    role: 'admin',
+    username: session.username ?? 'admin',
+    project: PROJECT_NAME,
+    service: SERVICE_NAME,
+  };
 });
 
+app.post<{ Body: { token?: string; username?: string; password?: string } }>('/admin/login', async (request, reply) =>
+  handleDashboardLogin(request, reply),
+);
+app.post('/admin/logout', async (request, reply) => handleDashboardLogout(request, reply));
+
 app.get('/admin/me', async (request, reply) => {
+  const session = getAdminSession(request);
   if (!hasAdminAccess(request)) {
     return sendError(reply, 401, {
       message: 'Admin session required',
@@ -1481,6 +1685,8 @@ app.get('/admin/me', async (request, reply) => {
   }
   return {
     ok: true,
+    role: 'admin',
+    username: session?.username ?? 'admin',
     project: PROJECT_NAME,
     service: SERVICE_NAME,
   };

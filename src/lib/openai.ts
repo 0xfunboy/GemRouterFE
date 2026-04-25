@@ -79,6 +79,10 @@ function detectJsonActionPolicy(messages: LLMMessage[]): SemanticActionPolicy {
     return 'none_only';
   }
 
+  if (noActionHint.test(combined)) {
+    return 'none_only';
+  }
+
   return 'default';
 }
 
