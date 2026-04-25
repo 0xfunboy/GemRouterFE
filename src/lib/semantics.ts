@@ -96,6 +96,44 @@ function sanitizeParsedJsonValue(value: unknown, key?: string): unknown {
   return value;
 }
 
+function looksLikeTradeSetupText(text: string): boolean {
+  return [
+    /\btrade setup\b/i,
+    /\baction strategy\b/i,
+    /\bentry\b/i,
+    /\btake profit\b/i,
+    /\bstop loss\b/i,
+    /\bpivot levels\b/i,
+    /\bmarket bias\b/i,
+    /\bema alignment\b/i,
+    /\brsi analysis\b/i,
+    /\b1h\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function alignJsonActionWithText(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const payload = value as Record<string, unknown>;
+  const action = typeof payload.action === 'string' ? payload.action.trim().toUpperCase() : '';
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  if (!action || !text) return value;
+
+  const isChartAction =
+    action === 'GET_CRYPTO_CHART' ||
+    action === 'CRYPTOCHART' ||
+    action === 'GET_TOKEN_CHART' ||
+    action === 'TOKENCHART';
+
+  if (isChartAction && !looksLikeTradeSetupText(text)) {
+    return {
+      ...payload,
+      action: 'NONE',
+    };
+  }
+
+  return value;
+}
+
 function applyJsonActionPolicy(value: unknown, profile?: SemanticProfile): unknown {
   if (profile?.actionPolicy !== 'none_only') return value;
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
@@ -201,7 +239,9 @@ function tryNormalizeJsonPayload(text: string, profile?: SemanticProfile): strin
 
   for (const candidate of candidates) {
     try {
-      return JSON.stringify(applyJsonActionPolicy(sanitizeParsedJsonValue(JSON.parse(candidate)), profile));
+      const parsed = sanitizeParsedJsonValue(JSON.parse(candidate));
+      const aligned = alignJsonActionWithText(parsed);
+      return JSON.stringify(applyJsonActionPolicy(aligned, profile));
     } catch {
       // keep trying
     }

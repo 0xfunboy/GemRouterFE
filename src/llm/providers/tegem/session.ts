@@ -31,6 +31,13 @@ async function sanitizeProfileLocks(profilePath: string): Promise<void> {
   );
 }
 
+interface SessionLifecycleState {
+  createdAt: number;
+  lastRequestedAt: number;
+  lastRespondedAt: number | null;
+  pendingRequests: number;
+}
+
 export class GeminiSessionManager {
   private context: BrowserContext | null = null;
   private pendingLaunch: Promise<BrowserContext> | null = null;
@@ -38,6 +45,8 @@ export class GeminiSessionManager {
   private pages: Map<string, Page> = new Map();
   /** Tracks last activity time per session key for idle eviction. */
   private lastActivity: Map<string, number> = new Map();
+  /** Tracks whether a tab already produced a response and whether it is still busy. */
+  private lifecycle: Map<string, SessionLifecycleState> = new Map();
   /** Persistent mapping: sessionKey → conversationId / URL. */
   private store: ConversationStore;
   /**
@@ -54,6 +63,10 @@ export class GeminiSessionManager {
   private readonly conversationTtlMs: number;
   /** Max concurrent tabs. 0 = unlimited. */
   private readonly maxTabs: number;
+  /** Responded tabs can be closed sooner than the generic idle timeout. 0 = disabled. */
+  private readonly respondedSessionTtlMs: number;
+  /** Tabs that never answered can be reaped separately after they go orphan/stale. 0 = disabled. */
+  private readonly orphanSessionTtlMs: number;
   private lastLaunchError: string | null = null;
   private lastLaunchAt: string | null = null;
   private lastLaunchOkAt: string | null = null;
@@ -63,6 +76,8 @@ export class GeminiSessionManager {
     idleTimeoutMs = 0,
     conversationTtlMs = 0,
     maxTabs = 0,
+    respondedSessionTtlMs = 0,
+    orphanSessionTtlMs = 0,
   ) {
     const storeDir = path.join(
       config.baseProfileDir,
@@ -72,10 +87,17 @@ export class GeminiSessionManager {
     this.idleTimeoutMs = idleTimeoutMs;
     this.conversationTtlMs = conversationTtlMs;
     this.maxTabs = maxTabs;
+    this.respondedSessionTtlMs = respondedSessionTtlMs;
+    this.orphanSessionTtlMs = orphanSessionTtlMs;
     this.pruneExpiredStoredSessions();
 
-    // Start eviction sweep every 60s if idle timeout is configured
-    if (this.idleTimeoutMs > 0 || this.conversationTtlMs > 0) {
+    // Start eviction sweep every 60s whenever any cleanup policy is configured.
+    if (
+      this.idleTimeoutMs > 0 ||
+      this.conversationTtlMs > 0 ||
+      this.respondedSessionTtlMs > 0 ||
+      this.orphanSessionTtlMs > 0
+    ) {
       this.evictionTimer = setInterval(() => this.evictIdleSessions(), 60_000);
       this.evictionTimer.unref();
     }
@@ -119,7 +141,31 @@ export class GeminiSessionManager {
     return Object.keys(this.store.all()).length;
   }
 
+  markResponseCaptured(sessionKey: string): void {
+    const state = this.ensureLifecycleState(sessionKey);
+    const now = Date.now();
+    state.lastRespondedAt = now;
+    this.lastActivity.set(sessionKey, now);
+    this.store.touch(sessionKey);
+  }
+
   getDiagnostics(): Record<string, unknown> {
+    const now = Date.now();
+    const lifecycle = [...this.pages.keys()].map((sessionKey) => {
+      const state = this.lifecycle.get(sessionKey);
+      const lastActivity = this.lastActivity.get(sessionKey) ?? null;
+      return {
+        sessionKey,
+        pendingRequests: state?.pendingRequests ?? 0,
+        hasResponse: state?.lastRespondedAt !== null && state?.lastRespondedAt !== undefined,
+        ageMs: state ? now - state.createdAt : null,
+        idleMs: lastActivity ? now - lastActivity : null,
+        sinceLastResponseMs:
+          state?.lastRespondedAt !== null && state?.lastRespondedAt !== undefined
+            ? now - state.lastRespondedAt
+            : null,
+      };
+    });
     return {
       contextAlive: this.isAlive(),
       openPages: this.sessionCount(),
@@ -129,6 +175,12 @@ export class GeminiSessionManager {
       idleTimeoutMs: this.idleTimeoutMs,
       conversationTtlMs: this.conversationTtlMs,
       maxTabs: this.maxTabs,
+      respondedSessionTtlMs: this.respondedSessionTtlMs,
+      orphanSessionTtlMs: this.orphanSessionTtlMs,
+      respondedOpenTabs: lifecycle.filter((entry) => entry.hasResponse).length,
+      unresolvedOpenTabs: lifecycle.filter((entry) => !entry.hasResponse).length,
+      busyOpenTabs: lifecycle.filter((entry) => entry.pendingRequests > 0).length,
+      lifecycle,
       lastLaunchAt: this.lastLaunchAt,
       lastLaunchOkAt: this.lastLaunchOkAt,
       lastLaunchError: this.lastLaunchError,
@@ -146,6 +198,10 @@ export class GeminiSessionManager {
     const next = new Promise<void>((res) => { releaseLock = res; });
     this.locks.set(sessionKey, prev.then(() => next));
 
+    const state = this.ensureLifecycleState(sessionKey);
+    state.pendingRequests += 1;
+    state.lastRequestedAt = Date.now();
+
     await prev; // wait for any prior request on this session to finish
     // Touch activity timestamp — this session is actively being used
     this.lastActivity.set(sessionKey, Date.now());
@@ -153,6 +209,8 @@ export class GeminiSessionManager {
     return () => {
       if (released) return;
       released = true;
+      const currentState = this.ensureLifecycleState(sessionKey);
+      currentState.pendingRequests = Math.max(0, currentState.pendingRequests - 1);
       this.lastActivity.set(sessionKey, Date.now());
       this.store.touch(sessionKey);
       releaseLock();
@@ -194,7 +252,8 @@ export class GeminiSessionManager {
     const page = await context.newPage();
 
     this.pages.set(sessionKey, page);
-    page.on("close", () => this.pages.delete(sessionKey));
+    this.ensureLifecycleState(sessionKey);
+    page.on("close", () => this.dropSessionTracking(sessionKey));
 
     // Start URL tracking so we capture the conversation ID after first message
     this.trackConversationUrl(page, sessionKey, label ?? sessionKey, provider.baseUrl);
@@ -269,8 +328,7 @@ export class GeminiSessionManager {
     if (page && !page.isClosed()) {
       await page.close().catch(() => undefined);
     }
-    this.pages.delete(sessionKey);
-    this.lastActivity.delete(sessionKey);
+    this.dropSessionTracking(sessionKey);
 
     await this.getOrCreate(provider, sessionKey, sessionKey).catch(() => undefined);
   }
@@ -293,36 +351,52 @@ export class GeminiSessionManager {
   private evictIdleSessions(): void {
     const now = Date.now();
 
-    // 1. Evict sessions idle beyond timeout
-    if (this.idleTimeoutMs > 0) {
-      for (const [sessionKey, lastTs] of this.lastActivity) {
-        if (now - lastTs > this.idleTimeoutMs) {
-          const page = this.pages.get(sessionKey);
-          if (page && !page.isClosed()) {
-            console.log(`[Session] Evicting idle tab: ${sessionKey} (idle ${Math.round((now - lastTs) / 1000)}s)`);
-            page.close().catch(() => undefined);
-          }
-          this.pages.delete(sessionKey);
-          this.lastActivity.delete(sessionKey);
+    // 1. Recycle tabs that already produced a response and are safe to reopen later.
+    if (this.respondedSessionTtlMs > 0) {
+      for (const [sessionKey, state] of this.lifecycle) {
+        if (state.pendingRequests > 0 || state.lastRespondedAt === null) continue;
+        if (now - state.lastRespondedAt > this.respondedSessionTtlMs) {
+          this.closeSessionPage(
+            sessionKey,
+            `responded ${Math.round((now - state.lastRespondedAt) / 1000)}s ago`,
+          );
         }
       }
     }
 
-    // 2. Enforce max tabs by evicting LRU sessions
+    // 2. Reap stale tabs that never produced a response.
+    if (this.orphanSessionTtlMs > 0) {
+      for (const [sessionKey, state] of this.lifecycle) {
+        if (state.pendingRequests > 0 || state.lastRespondedAt !== null) continue;
+        if (now - state.lastRequestedAt > this.orphanSessionTtlMs) {
+          this.closeSessionPage(
+            sessionKey,
+            `orphaned after ${Math.round((now - state.lastRequestedAt) / 1000)}s without a response`,
+          );
+        }
+      }
+    }
+
+    // 3. Evict sessions idle beyond timeout
+    if (this.idleTimeoutMs > 0) {
+      for (const [sessionKey, lastTs] of this.lastActivity) {
+        const state = this.lifecycle.get(sessionKey);
+        if ((state?.pendingRequests ?? 0) > 0) continue;
+        if (now - lastTs > this.idleTimeoutMs) {
+          this.closeSessionPage(sessionKey, `idle ${Math.round((now - lastTs) / 1000)}s`);
+        }
+      }
+    }
+
+    // 4. Enforce max tabs by evicting LRU sessions
     if (this.maxTabs > 0 && this.pages.size > this.maxTabs) {
       const sorted = [...this.lastActivity.entries()]
-        .filter(([key]) => this.pages.has(key))
+        .filter(([key]) => this.pages.has(key) && (this.lifecycle.get(key)?.pendingRequests ?? 0) === 0)
         .sort((a, b) => a[1] - b[1]); // oldest first
 
       const toEvict = sorted.slice(0, this.pages.size - this.maxTabs);
       for (const [sessionKey] of toEvict) {
-        const page = this.pages.get(sessionKey);
-        if (page && !page.isClosed()) {
-          console.log(`[Session] Evicting LRU tab (max tabs ${this.maxTabs}): ${sessionKey}`);
-          page.close().catch(() => undefined);
-        }
-        this.pages.delete(sessionKey);
-        this.lastActivity.delete(sessionKey);
+        this.closeSessionPage(sessionKey, `LRU tab (max tabs ${this.maxTabs})`);
       }
     }
 
@@ -339,6 +413,7 @@ export class GeminiSessionManager {
     }
     this.pages.clear();
     this.lastActivity.clear();
+    this.lifecycle.clear();
     if (this.context) {
       await this.context.close().catch(() => undefined);
       this.context = null;
@@ -436,6 +511,7 @@ export class GeminiSessionManager {
         this.context = null;
         this.pages.clear();
         this.lastActivity.clear();
+        this.lifecycle.clear();
       });
 
       this.lastLaunchError = null;
@@ -517,5 +593,35 @@ export class GeminiSessionManager {
       console.log(`[Session] Removing expired stored conversation for ${sessionKey}.`);
       this.store.delete(sessionKey);
     }
+  }
+
+  private ensureLifecycleState(sessionKey: string): SessionLifecycleState {
+    const existing = this.lifecycle.get(sessionKey);
+    if (existing) return existing;
+
+    const now = Date.now();
+    const state: SessionLifecycleState = {
+      createdAt: now,
+      lastRequestedAt: now,
+      lastRespondedAt: null,
+      pendingRequests: 0,
+    };
+    this.lifecycle.set(sessionKey, state);
+    return state;
+  }
+
+  private dropSessionTracking(sessionKey: string): void {
+    this.pages.delete(sessionKey);
+    this.lastActivity.delete(sessionKey);
+    this.lifecycle.delete(sessionKey);
+  }
+
+  private closeSessionPage(sessionKey: string, reason: string): void {
+    const page = this.pages.get(sessionKey);
+    if (page && !page.isClosed()) {
+      console.log(`[Session] Closing tab ${sessionKey}: ${reason}`);
+      page.close().catch(() => undefined);
+    }
+    this.dropSessionTracking(sessionKey);
   }
 }

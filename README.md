@@ -1,262 +1,145 @@
 # GemRouterFE
 
-GemRouterFE is a Gemini Web router that exposes OpenAI-, DeepSeek-, and Ollama-compatible surfaces on top of the same Playwright-managed browser session.
+<p align="center">
+  <img src="./docs/assets/GemRouterFE_Docs_header.png" alt="GemRouterFE" width="960" />
+</p>
 
-Repo path: `/bairbi-stack/GemRouterFE`  
-Project study path: `/bairbi-stack/PROJECT_STUDY.md`
+<p align="center">
+  <strong>Browser-backed Gemini Web router with OpenAI, DeepSeek, and Ollama compatible API surfaces.</strong>
+</p>
 
-## Public endpoints
+<p align="center">
+  <img src="https://img.shields.io/badge/Node.js-24-43853D?logo=node.js" alt="Node.js"/>
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript" alt="TypeScript"/>
+  <img src="https://img.shields.io/badge/Fastify-4-000000?logo=fastify" alt="Fastify"/>
+  <img src="https://img.shields.io/badge/Playwright-Browser%20Runtime-2EAD33?logo=playwright" alt="Playwright"/>
+  <img src="https://img.shields.io/badge/Gemini-Web%20Session-0B1220" alt="Gemini Web"/>
+  <img src="https://img.shields.io/badge/OpenAI-Compatible-10A37F" alt="OpenAI surface"/>
+  <img src="https://img.shields.io/badge/DeepSeek-Compatible-2563EB" alt="DeepSeek surface"/>
+  <img src="https://img.shields.io/badge/Ollama-Compatible-111827" alt="Ollama surface"/>
+  <img src="https://img.shields.io/badge/noVNC-Recovery%20Surface-7C3AED" alt="noVNC"/>
+</p>
 
-- UI and admin deck: `
-- API alias: ``
-- noVNC login surface: ``
+## Overview
 
-The UI is served by the same Fastify process as the API. Browser requests to `/` return the admin/test interface, while API clients can keep using `/v1/*` and the additional compatibility aliases.
+`GemRouterFE` exposes one Playwright-managed Gemini Web session through provider-style HTTP APIs that existing clients already know how to call.
 
-## Features
+This repository is the product workspace for:
 
-- OpenAI-style `GET /v1/models`
-- OpenAI-style `POST /v1/chat/completions`
-- OpenAI-style `POST /v1/responses`
-- DeepSeek-style `GET /models`
-- DeepSeek-style `POST /chat/completions`
-- Ollama-style `GET /api/version`, `GET /api/tags`, `POST /api/show`
-- Ollama-style `POST /api/chat`
-- Ollama-style `POST /api/generate`
-- SSE streaming for `chat/completions` and `responses`
-- NDJSON streaming for Ollama `chat` and `generate`
-- per-app API keys with model/origin/rate/concurrency controls
-- admin login with dashboard
-- dashboard control for enabled compatibility surfaces and primary surface
-- prompt lab routed through the live Playwright Gemini session
-- interaction log with token counts and good/bad feedback labels
-- headed Playwright mode on `DISPLAY=:99`
-- noVNC surface for manual Gemini re-login
+- the compatibility router
+- the browser-backed Gemini runtime
+- app and API-key policy management
+- the operator dashboard
+- recovery access through noVNC
 
-## Stack
+It is not a native SDK wrapper and it is not pretending to be a different backend. The runtime is Gemini Web. The router shape is what changes.
 
-- Node.js + TypeScript
-- Fastify
-- Playwright
-- `pnpm`
-- `turbo`
-- `systemd --user`
-- Cloudflare Tunnel
+## Core Product Capabilities
 
-## Local commands
+- OpenAI-compatible `models`, `chat/completions`, and `responses`
+- DeepSeek-compatible `models` and `chat/completions`
+- Ollama-compatible `version`, `tags`, `show`, `chat`, and `generate`
+- Playwright-managed Gemini Web session reuse
+- app-scoped API keys with model, origin, rate, and concurrency controls
+- guest telemetry and admin controls in one dashboard
+- prompt lab routed through the live browser session
+- interaction logging with token estimates, latency, and feedback labels
+- browser recovery path through noVNC
+
+## Repository Layout
+
+| Path | Role |
+| --- | --- |
+| [`src/`](./src) | router, dashboard, compatibility layers, runtime wiring |
+| [`docs/`](./docs) | operator and product documentation |
+| [`docs/assets/`](./docs/assets) | product branding and documentation images |
+| [`ops/systemd/`](./ops/systemd) | user-systemd unit files |
+| [`scripts/`](./scripts) | helper and smoke scripts |
+| [`data/`](./data) | local runtime state, stores, and interaction logs |
+
+## Quick Start
 
 ```bash
-source ~/.nvm/nvm.sh
 pnpm install
 pnpm check
 pnpm build
 pnpm dev
+```
+
+Useful validation command:
+
+```bash
 pnpm smoke
 ```
 
-`pnpm smoke` now auto-detects the active local API base, validates `/health`, the OpenAI surface, the DeepSeek aliases, the Ollama aliases, and also exercises `/admin/login` plus `/admin/summary` when `GEMROUTER_ADMIN_TOKEN` is available.
+The smoke flow validates health plus the OpenAI, DeepSeek, and Ollama surfaces, and exercises admin login when admin credentials are available.
 
-Headed runtime commands:
+## Dashboard Model
 
-```bash
-pnpm start:vnc
-pnpm start:xvfb
-```
+The dashboard has two clearly separated views.
 
-`copilotrm` alignment that is actually verified:
+### Guest View
 
-- `start:vnc` uses `DISPLAY=:99` and `PLAYWRIGHT_HEADLESS=false`
-- `start:xvfb` uses a private Xvfb display and `PLAYWRIGHT_HEADLESS=false`
-- the runtime wiring is correct in both modes
-- actual Gemini generation still depends on the copied Chrome profile being logged in
+Guest mode shows only aggregate telemetry:
 
-## Hosted runtime
+- request volume
+- success rate
+- latency
+- token volume
+- compatibility-surface mix
+- generic runtime health
 
-Persistent services are managed with user systemd units:
+Guest mode hides prompts, app names, API keys, and operator-only controls.
 
-- `gemrouterfe.service`
-- `tunnel.service`
+### Admin View
 
-Unit files are versioned in [ops/systemd](ops/systemd).
+Admin mode exposes the operator console:
 
-Useful commands:
+- apps and API keys
+- compatibility surfaces
+- prompt lab
+- recent interactions
+- runtime diagnostics
+- browser session access
+- recovery controls
 
-```bash
-systemctl --user status gemrouterfe.service
-systemctl --user status tunnel.service
-journalctl --user -u gemrouterfe.service -n 100 --no-pager
-journalctl --user -u tunnel.service -n 100 --no-pager
-```
+noVNC stays separately protected.
 
-The hosted service runs on local port `4000`, in headed mode, and is exposed through the Cloudflare tunnel.
+## Documentation
 
-The checked-in `.env` still uses `PORT=4024` for ad-hoc local runs. The systemd unit overrides that to `PORT=4000`, so smoke and operational checks should target the live port rather than assuming the `.env` value.
+The documentation set is split into topical pages under [`docs/`](./docs).
 
-## Admin UI
+### Docs Index
 
-Open `https://example.com` and log in with `GEMROUTER_ADMIN_TOKEN`.
+- [Documentation Index](./docs/README.md)
 
-The dashboard provides:
+### Getting Started
 
-- app creation and update without `curl`
-- key rotation and revocation
-- compatibility surface toggles for `openai`, `deepseek`, and `ollama`
-- runtime status for Playwright/profile/display
-- live LLM diagnostics including prompt packing style, context/session state, and last launch timestamps
-- prompt testing through `/admin/test-chat`
-- recent interactions, token usage, latency, and manual good/bad labels
-- embedded link/iframe to `vnc.example.com`
+- [Product Overview](./docs/getting-started/overview.md)
+- [Quickstart](./docs/getting-started/quickstart.md)
+- [Configuration](./docs/getting-started/configuration.md)
 
-If Gemini is signed out, log in through the VNC page first, then return to the prompt lab.
+### Architecture
 
-## Environment
+- [System Overview](./docs/architecture/overview.md)
+- [Browser Runtime](./docs/architecture/browser-runtime.md)
+- [Dashboard Model](./docs/architecture/dashboard.md)
 
-Use `.env.example` as reference.
+### Operations
 
-Important variables:
+- [Deployment](./docs/operations/deployment.md)
+- [Security](./docs/operations/security.md)
+- [Troubleshooting](./docs/operations/troubleshooting.md)
 
-- `GEMROUTER_ADMIN_TOKEN`
-- `GEMROUTER_BOOTSTRAP_API_KEY`
-- `GEMROUTER_ADMIN_SESSION_TTL_MS`
-- `GEMROUTER_PUBLIC_BASE_URL`
-- `GEMROUTER_VNC_PUBLIC_URL`
-- `GEMROUTER_COMPAT_DEFAULT_SURFACE`
-- `GEMROUTER_COMPAT_ENABLED_SURFACES`
-- `TEGEM_PROMPT_PACKING_STYLE`
-- `PLAYWRIGHT_BASE_PROFILE_DIR`
-- `PLAYWRIGHT_PROFILE_NAMESPACE`
-- `PLAYWRIGHT_EXECUTABLE_PATH`
-- `TEGEM_IMPORT_PROFILE_FROM`
+### Reference
 
-Legacy `BARIBI_*` and `BAIRBI_*` names are still accepted as fallbacks.
-
-`TEGEM_PROMPT_PACKING_STYLE=minimal` is the repo default. The currently deployed local service is configured with `TEGEM_PROMPT_PACKING_STYLE=copilotrm`, which is also reflected in `/health` and `/admin/summary`.
-
-## API examples
-
-Hosted health:
-
-```bash
-curl https://example.com/health
-curl https://api.example.com/health
-```
-
-Hosted models:
-
-```bash
-curl https://api.example.com/v1/models \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY"
-```
-
-Hosted chat:
-
-```bash
-curl https://api.example.com/v1/chat/completions \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-web",
-    "messages": [
-      { "role": "user", "content": "Reply only with OK." }
-    ]
-  }'
-```
-
-Hosted streaming:
-
-```bash
-curl -N https://api.example.com/v1/chat/completions \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-web",
-    "stream": true,
-    "stream_options": { "include_usage": true },
-    "messages": [
-      { "role": "user", "content": "Write only ABC." }
-    ]
-  }'
-```
-
-Hosted DeepSeek-compatible chat:
-
-```bash
-curl https://api.solclawn.com/chat/completions \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-web",
-    "messages": [
-      { "role": "user", "content": "Reply only with DEEPSEEK-OK." }
-    ]
-  }'
-```
-
-Responses API:
-
-```bash
-curl https://api.example.com/v1/responses \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-web",
-    "input": [
-      {
-        "role": "user",
-        "content": [
-          { "type": "input_text", "text": "Reply only with PONG." }
-        ]
-      }
-    ]
-  }'
-```
-
-Hosted Ollama-compatible tags:
-
-```bash
-curl https://api.solclawn.com/api/tags \
-  -u "$GEMROUTER_BOOTSTRAP_API_KEY:"
-```
-
-Hosted Ollama-compatible generate:
-
-```bash
-curl https://api.solclawn.com/api/generate \
-  -u "$GEMROUTER_BOOTSTRAP_API_KEY:" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-web",
-    "stream": false,
-    "prompt": "Reply only with OLLAMA-GENERATE-OK."
-  }'
-```
-
-## Session control
-
-By default, the router resets the Gemini conversation on every request. For sticky browser sessions, send:
-
-- `x-gemrouter-session`
-- `x-gemrouter-user`
-- `x-gemrouter-stateful: true`
-
-Legacy `x-baribi-*` headers are still supported.
+- [API Surfaces](./docs/reference/api-surfaces.md)
+- [Environment Map](./docs/reference/environment.md)
+- [Repository Map](./docs/reference/repository-map.md)
 
 ## Notes
 
 - `gemini-web` and `google/gemini-web` are aliases for the same backend
-- `openai`, `deepseek`, and `ollama` surfaces are enabled by env defaults and can be changed from the admin dashboard
-- for Eliza `modelProvider=ollama`, set `OLLAMA_SERVER_URL` to the server root, not `/api`, because the provider appends `/api` itself
-- if an Ollama client cannot send bearer headers, Basic auth works with URLs like `https://<API_KEY>@api.solclawn.com`
-- tool calling is not implemented
-- JSON mode is best-effort, not strict schema execution
-- runtime data is stored under `data/`
-- the Playwright profile directory is intentionally gitignored
-
-## Key files
-
-- server: [src/index.ts](src/index.ts)
-- UI shell: [src/ui.ts](src/ui.ts)
-- OpenAI compatibility: [src/lib/openai.ts](src/lib/openai.ts)
-- app store: [src/store/appStore.ts](src/store/appStore.ts)
-- interaction store: [src/store/interactions.ts](src/store/interactions.ts)
-- systemd units: [ops/systemd](ops/systemd)
+- the router exposes multiple API shapes over one Gemini Web browser runtime
+- Ollama compatibility is route and envelope compatibility over Gemini Web, not a local Ollama engine
+- dashboard and API access are intentionally separate from noVNC access
