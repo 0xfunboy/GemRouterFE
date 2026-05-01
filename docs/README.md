@@ -26,8 +26,13 @@ The root [README](../README.md) is the product landing page. This file is the do
 - [Security](./operations/security.md)
 - [Troubleshooting](./operations/troubleshooting.md)
 
+## Implementation Notes
+
+- [Gemini CLI Fallback Integration](./implementation/gemini-cli-fallback.md)
+
 ## Reference
 
 - [API Surfaces](./reference/api-surfaces.md)
 - [Environment Map](./reference/environment.md)
+- [ElizaOS Client Configuration](./reference/elizaos-client.md)
 - [Repository Map](./reference/repository-map.md)

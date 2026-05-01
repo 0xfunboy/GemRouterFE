@@ -2,6 +2,8 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { coerceCompatibilityState, type ApiSurface } from './lib/compatibility.js';
+import type { LLMBackendId } from './llm/types.js';
+import type { GeminiCliProviderConfig } from './llm/providers/gemini-cli/types.js';
 import type { TeGemProviderConfig } from './llm/providers/tegem/client.js';
 
 export interface BootstrapAppConfig {
@@ -34,6 +36,12 @@ export interface RuntimeConfig {
     settingsStorePath: string;
     defaultSurface: ApiSurface;
     enabledSurfaces: ApiSurface[];
+  };
+  geminiCli: GeminiCliProviderConfig;
+  llmRouting: {
+    backendOrder: LLMBackendId[];
+    allowPlaywrightFallback: boolean;
+    retryOnCliAuthFailure: boolean;
   };
   llm: TeGemProviderConfig;
   modelIds: string[];
@@ -102,6 +110,43 @@ function readPromptPackingStyle(
   return value === 'copilotrm' ? 'copilotrm' : 'minimal';
 }
 
+function readGeminiCliOutputFormat(
+  env: Record<string, string | undefined>,
+  ...keys: string[]
+): 'json' | 'text' {
+  const value = pick(env, ...keys)?.trim().toLowerCase();
+  return value === 'text' ? 'text' : 'json';
+}
+
+function readGeminiCliBootstrapMode(
+  env: Record<string, string | undefined>,
+  ...keys: string[]
+): 'operator' | 'playwright' {
+  const value = pick(env, ...keys)?.trim().toLowerCase();
+  return value === 'operator' ? 'operator' : 'playwright';
+}
+
+function normalizeBackendId(value: string): LLMBackendId | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'gemini-cli') return 'gemini-cli';
+  if (normalized === 'playwright' || normalized === 'tegem' || normalized === 'playwright-tegem') {
+    return 'playwright';
+  }
+  return null;
+}
+
+function readBackendOrder(
+  env: Record<string, string | undefined>,
+  fallback: LLMBackendId[],
+  ...keys: string[]
+): LLMBackendId[] {
+  const parsed = readList(env, fallback, ...keys)
+    .map((value) => normalizeBackendId(value))
+    .filter((value): value is LLMBackendId => value !== null);
+  if (parsed.length === 0) return fallback;
+  return [...new Set(parsed)];
+}
+
 function resolveDefaultChromePath(rootDir: string): string | undefined {
   const homeDir = pick(process.env, 'HOME') ?? path.dirname(rootDir);
   const candidates = [
@@ -159,6 +204,11 @@ export function loadConfig(
       'BARIBI_COMPAT_ENABLED_SURFACES',
     ),
   });
+  const geminiCliUserHome = pick(env, 'GEMINI_CLI_USER_HOME')?.trim() || undefined;
+  const geminiCliDotDir = pick(env, 'GEMINI_CLI_DOT_GEMINI_DIR')?.trim() || undefined;
+  const geminiCliWorkdir = pick(env, 'GEMINI_CLI_WORKDIR')?.trim() || undefined;
+  const geminiCliEnabled = readBoolean(env, true, 'GEMINI_CLI_ENABLED');
+  const backendOrder = readBackendOrder(env, ['gemini-cli', 'playwright'], 'GEMROUTER_BACKEND_ORDER');
 
   return {
     host: pick(env, 'HOST', 'GEMROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',
@@ -235,6 +285,26 @@ export function loadConfig(
       settingsStorePath: path.join(dataDir, 'compatibility.json'),
       defaultSurface: compatibilityState.defaultSurface,
       enabledSurfaces: compatibilityState.enabledSurfaces,
+    },
+    geminiCli: {
+      enabled: geminiCliEnabled,
+      bin: pick(env, 'GEMINI_CLI_BIN') ?? 'gemini',
+      model: pick(env, 'GEMINI_CLI_MODEL') ?? 'gemini-2.5-flash',
+      timeoutMs: readNumber(env, 120_000, 'GEMINI_CLI_TIMEOUT_MS'),
+      workdir: geminiCliWorkdir ? path.resolve(rootDir, geminiCliWorkdir) : undefined,
+      outputFormat: readGeminiCliOutputFormat(env, 'GEMINI_CLI_OUTPUT_FORMAT'),
+      useStdin: readBoolean(env, false, 'GEMINI_CLI_USE_STDIN'),
+      expectAuthCache: readBoolean(env, true, 'GEMINI_CLI_EXPECT_AUTH_CACHE'),
+      authBootstrapEnabled: readBoolean(env, true, 'GEMINI_CLI_AUTH_BOOTSTRAP_ENABLED'),
+      authBootstrapMode: readGeminiCliBootstrapMode(env, 'GEMINI_CLI_AUTH_BOOTSTRAP_MODE'),
+      userHome: geminiCliUserHome ? path.resolve(geminiCliUserHome) : undefined,
+      dotGeminiDir: geminiCliDotDir ? path.resolve(geminiCliDotDir) : undefined,
+      rootDir,
+    },
+    llmRouting: {
+      backendOrder,
+      allowPlaywrightFallback: readBoolean(env, true, 'GEMROUTER_ALLOW_PLAYWRIGHT_FALLBACK'),
+      retryOnCliAuthFailure: readBoolean(env, true, 'GEMROUTER_BACKEND_RETRY_ON_CLI_AUTH_FAILURE'),
     },
     llm: {
       baseUrl: pick(env, 'TEGEM_BASE_URL') ?? 'https://gemini.google.com/app',
