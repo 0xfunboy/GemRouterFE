@@ -13,11 +13,15 @@
     "dev:app": "tsx watch src/index.ts",
     "dev:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run dev:app",
     "dev:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run dev:app",
+    "setup:gemini-cli": "bash ./scripts/setup-gemini-cli.sh",
+    "login:gemini-cli": "bash ./scripts/login-gemini-cli.sh",
     "start": "pnpm run start:app",
     "start:app": "node dist/index.js",
     "start:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run start:app",
     "start:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run start:app",
-    "smoke": "pnpm build && bash ./scripts/smoke.sh"
+    "smoke": "pnpm build && bash ./scripts/smoke.sh",
+    "smoke:gemini-cli": "SMOKE_BACKEND=gemini-cli pnpm build && bash ./scripts/smoke.sh",
+    "smoke:playwright": "SMOKE_BACKEND=playwright pnpm build && bash ./scripts/smoke.sh"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
