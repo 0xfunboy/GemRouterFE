@@ -12,6 +12,7 @@ fi
 
 API_KEY="${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
 ADMIN_TOKEN="${GEMROUTER_ADMIN_TOKEN:-}"
+SMOKE_BACKEND="${SMOKE_BACKEND:-auto}"
 
 resolve_api_base() {
   if [[ -n "${API_BASE:-}" ]]; then
@@ -20,11 +21,11 @@ resolve_api_base() {
   fi
 
   local candidates=()
-  candidates+=("http://127.0.0.1:4000")
   if [[ -n "${PORT:-}" ]]; then
     candidates+=("http://127.0.0.1:${PORT}")
   fi
   candidates+=("http://127.0.0.1:4024")
+  candidates+=("http://127.0.0.1:4000")
 
   local seen=""
   local candidate
@@ -55,34 +56,39 @@ request_json() {
   local url="$3"
   local body="${4:-}"
   local body_file
+  local header_file
   body_file="$(mktemp)"
+  header_file="$(mktemp)"
 
   local status
   if [[ -n "${body}" ]]; then
     status="$(
-      curl -sS --max-time 120 -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
+      curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -H "Authorization: Bearer ${API_KEY}" \
+        -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
         -H 'Content-Type: application/json' \
         -d "${body}"
     )"
   else
     status="$(
-      curl -sS --max-time 120 -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
-        -H "Authorization: Bearer ${API_KEY}"
+      curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
+        -H "Authorization: Bearer ${API_KEY}" \
+        -H "x-gemrouter-backend: ${SMOKE_BACKEND}"
     )"
   fi
 
   echo "[smoke] ${label}"
+  print_backend_meta "${header_file}"
   cat "${body_file}"
   printf '\n\n'
 
   if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
     echo "[smoke] ${label} failed with HTTP ${status}" >&2
-    rm -f "${body_file}"
+    rm -f "${body_file}" "${header_file}"
     exit 1
   fi
 
-  rm -f "${body_file}"
+  rm -f "${body_file}" "${header_file}"
 }
 
 request_json_basic() {
@@ -91,34 +97,63 @@ request_json_basic() {
   local url="$3"
   local body="${4:-}"
   local body_file
+  local header_file
   body_file="$(mktemp)"
+  header_file="$(mktemp)"
 
   local status
   if [[ -n "${body}" ]]; then
     status="$(
-      curl -sS --max-time 120 -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
+      curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -u "${API_KEY}:" \
+        -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
         -H 'Content-Type: application/json' \
         -d "${body}"
     )"
   else
     status="$(
-      curl -sS --max-time 120 -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
-        -u "${API_KEY}:"
+      curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
+        -u "${API_KEY}:" \
+        -H "x-gemrouter-backend: ${SMOKE_BACKEND}"
     )"
   fi
 
   echo "[smoke] ${label}"
+  print_backend_meta "${header_file}"
   cat "${body_file}"
   printf '\n\n'
 
   if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
     echo "[smoke] ${label} failed with HTTP ${status}" >&2
-    rm -f "${body_file}"
+    rm -f "${body_file}" "${header_file}"
     exit 1
   fi
 
-  rm -f "${body_file}"
+  rm -f "${body_file}" "${header_file}"
+}
+
+print_backend_meta() {
+  local header_file="$1"
+  local backend
+  local provider
+  local fallback_from
+  local fallback_reason
+  backend="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-backend:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  provider="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-provider:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  fallback_from="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-fallback-from:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  fallback_reason="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-fallback-reason:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  if [[ -n "${backend}" ]]; then
+    echo "[smoke] backend used: ${backend}"
+  fi
+  if [[ -n "${provider}" ]]; then
+    echo "[smoke] provider label: ${provider}"
+  fi
+  if [[ -n "${fallback_from}" ]]; then
+    echo "[smoke] fallback from: ${fallback_from}"
+  fi
+  if [[ -n "${fallback_reason}" ]]; then
+    echo "[smoke] fallback reason: ${fallback_reason}"
+  fi
 }
 
 request_admin() {
@@ -174,6 +209,7 @@ request_admin() {
 }
 
 echo "[smoke] API base: ${API_BASE}"
+echo "[smoke] backend preference: ${SMOKE_BACKEND}"
 printf '\n'
 
 echo "[smoke] health"

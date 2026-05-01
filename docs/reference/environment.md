@@ -24,8 +24,21 @@ This page groups the environment surface by role.
 
 - default surface
 - enabled surfaces
+- backend order
+- fallback enablement
 
-## Browser Runtime
+## Gemini CLI Runtime
+
+- CLI enablement
+- CLI binary path
+- CLI model
+- CLI timeout
+- CLI workdir
+- cached auth expectations
+- user home and `.gemini` auth directory
+- bootstrap visibility flags
+
+## Playwright Runtime
 
 - browser executable path
 - base profile directory

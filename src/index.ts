@@ -38,8 +38,11 @@ import {
   type OllamaChatRequest,
   type OllamaGenerateRequest,
 } from './lib/ollama.js';
+import { createGeminiCliClient } from './llm/providers/gemini-cli/client.js';
 import { createTeGemClient } from './llm/providers/tegem/client.js';
-import type { LLMMessage, LLMOptions } from './llm/types.js';
+import { LLMProviderError } from './llm/errors.js';
+import { createLlmRouter } from './llm/router.js';
+import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
 import type {
   SemanticActionPolicy,
   SemanticChannel,
@@ -74,7 +77,12 @@ const SOCIAL_PREVIEW_IMAGE = (() => {
 })();
 
 const config = loadConfig();
-const llm = createTeGemClient(config.llm);
+const playwrightLlm = createTeGemClient(config.llm);
+const geminiCliLlm = createGeminiCliClient(config.geminiCli);
+const llm = createLlmRouter(config.llmRouting, {
+  geminiCli: geminiCliLlm,
+  playwright: playwrightLlm,
+});
 const appStore = new AppStore(config.appsStorePath);
 const audit = new AuditLogger(config.auditLogPath);
 const adminSessions = new AdminSessionStore(config.adminSessionTtlMs);
@@ -329,9 +337,11 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
       'x-gemrouter-session',
       'x-gemrouter-user',
       'x-gemrouter-stateful',
+      'x-gemrouter-backend',
       'x-baribi-session',
       'x-baribi-user',
       'x-baribi-stateful',
+      'x-baribi-backend',
       'OpenAI-Organization',
       'OpenAI-Project',
     ].join(', '),
@@ -448,6 +458,7 @@ function buildSessionOptions(input: {
   stateful?: boolean;
   fingerprintFallback: string;
   semanticSurface?: ApiSurface;
+  backendPreference?: LLMBackendPreference;
 }): LLMOptions {
   const rawSessionHint = input.sessionHint || input.user;
   const sessionHint = sanitizeSessionHint(rawSessionHint, input.fingerprintFallback);
@@ -460,7 +471,18 @@ function buildSessionOptions(input: {
     sessionKey,
     sessionLabel: sessionKey,
     resetSession: input.stateful !== true,
+    backendPreference: input.backendPreference,
   };
+}
+
+function parseBackendPreference(request: FastifyRequest): LLMBackendPreference {
+  const raw = readHeaderValue(request, 'x-gemrouter-backend', 'x-baribi-backend');
+  if (!raw) return 'auto';
+  const value = raw.trim().toLowerCase();
+  if (value === 'auto') return 'auto';
+  if (value === 'gemini-cli') return 'gemini-cli';
+  if (value === 'playwright' || value === 'tegem' || value === 'playwright-tegem') return 'playwright';
+  throw new Error(`Unsupported backend override: ${raw}`);
 }
 
 function buildRequestLlmOptions(input: {
@@ -484,6 +506,7 @@ function buildRequestLlmOptions(input: {
     .toLowerCase();
   const stateful = ['1', 'true', 'yes', 'on'].includes(statefulHeader);
   return buildSessionOptions({
+    backendPreference: parseBackendPreference(input.request),
     model: input.model,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
@@ -558,6 +581,15 @@ function sanitizeLlmDiagnostics(
   const base = {
     provider: input.provider ?? null,
     model: input.model ?? null,
+    backendOrder: input.backendOrder ?? [],
+    fallbackEnabled: input.fallbackEnabled ?? null,
+    retryOnCliAuthFailure: input.retryOnCliAuthFailure ?? null,
+    configuredDefaultBackend: input.configuredDefaultBackend ?? null,
+    lastBackendUsed: input.lastBackendUsed ?? null,
+    lastFallbackFrom: input.lastFallbackFrom ?? null,
+    lastFallbackReason: input.lastFallbackReason ?? null,
+    lastResolutionAt: input.lastResolutionAt ?? null,
+    lastError: input.lastError ?? null,
     promptPackingStyle: input.promptPackingStyle ?? null,
     contextAlive: input.contextAlive ?? null,
     openPages: input.openPages ?? null,
@@ -568,6 +600,42 @@ function sanitizeLlmDiagnostics(
     lastLaunchAt: input.lastLaunchAt ?? null,
     lastLaunchOkAt: input.lastLaunchOkAt ?? null,
     lastLaunchError: input.lastLaunchError ?? null,
+    geminiCli:
+      input.geminiCli && typeof input.geminiCli === 'object'
+        ? {
+          enabled: (input.geminiCli as Record<string, unknown>).enabled ?? null,
+          bin: (input.geminiCli as Record<string, unknown>).bin ?? null,
+          resolvedBin: (input.geminiCli as Record<string, unknown>).resolvedBin ?? null,
+          installed: (input.geminiCli as Record<string, unknown>).installed ?? null,
+          version: (input.geminiCli as Record<string, unknown>).version ?? null,
+          authReady: (input.geminiCli as Record<string, unknown>).authReady ?? null,
+          authCacheDetected: (input.geminiCli as Record<string, unknown>).authCacheDetected ?? null,
+          model: (input.geminiCli as Record<string, unknown>).model ?? null,
+          timeoutMs: (input.geminiCli as Record<string, unknown>).timeoutMs ?? null,
+          loginHint: (input.geminiCli as Record<string, unknown>).loginHint ?? null,
+          bootstrapEnabled: (input.geminiCli as Record<string, unknown>).bootstrapEnabled ?? null,
+          bootstrapMode: (input.geminiCli as Record<string, unknown>).bootstrapMode ?? null,
+          lastError: (input.geminiCli as Record<string, unknown>).lastError ?? null,
+          lastSuccessAt: (input.geminiCli as Record<string, unknown>).lastSuccessAt ?? null,
+          lastLatencyMs: (input.geminiCli as Record<string, unknown>).lastLatencyMs ?? null,
+        }
+        : null,
+    playwright:
+      input.playwright && typeof input.playwright === 'object'
+        ? {
+          provider: (input.playwright as Record<string, unknown>).provider ?? null,
+          model: (input.playwright as Record<string, unknown>).model ?? null,
+          contextAlive: (input.playwright as Record<string, unknown>).contextAlive ?? null,
+          openPages: (input.playwright as Record<string, unknown>).openPages ?? null,
+          storedSessions: (input.playwright as Record<string, unknown>).storedSessions ?? null,
+          respondedOpenTabs: (input.playwright as Record<string, unknown>).respondedOpenTabs ?? null,
+          unresolvedOpenTabs: (input.playwright as Record<string, unknown>).unresolvedOpenTabs ?? null,
+          busyOpenTabs: (input.playwright as Record<string, unknown>).busyOpenTabs ?? null,
+          lastLaunchAt: (input.playwright as Record<string, unknown>).lastLaunchAt ?? null,
+          lastLaunchOkAt: (input.playwright as Record<string, unknown>).lastLaunchOkAt ?? null,
+          lastLaunchError: (input.playwright as Record<string, unknown>).lastLaunchError ?? null,
+        }
+        : null,
   };
 
   if (!includeSensitive) return base;
@@ -582,6 +650,126 @@ function sanitizeLlmDiagnostics(
     respondedSessionTtlMs: input.respondedSessionTtlMs ?? null,
     orphanSessionTtlMs: input.orphanSessionTtlMs ?? null,
     lifecycle: input.lifecycle ?? [],
+    geminiCli: base.geminiCli
+      ? {
+        ...base.geminiCli,
+        workdir: (input.geminiCli as Record<string, unknown>).workdir ?? null,
+        userHome: (input.geminiCli as Record<string, unknown>).userHome ?? null,
+        dotGeminiDir: (input.geminiCli as Record<string, unknown>).dotGeminiDir ?? null,
+        settingsExists: (input.geminiCli as Record<string, unknown>).settingsExists ?? null,
+        authCacheFiles: (input.geminiCli as Record<string, unknown>).authCacheFiles ?? [],
+      }
+      : null,
+    playwright: base.playwright
+      ? {
+        ...base.playwright,
+        promptPackingStyle: (input.playwright as Record<string, unknown>).promptPackingStyle ?? null,
+        activeSessionKeys: (input.playwright as Record<string, unknown>).activeSessionKeys ?? [],
+        profilePath: (input.playwright as Record<string, unknown>).profilePath ?? null,
+        idleTimeoutMs: (input.playwright as Record<string, unknown>).idleTimeoutMs ?? null,
+        conversationTtlMs: (input.playwright as Record<string, unknown>).conversationTtlMs ?? null,
+        maxTabs: (input.playwright as Record<string, unknown>).maxTabs ?? null,
+        respondedSessionTtlMs: (input.playwright as Record<string, unknown>).respondedSessionTtlMs ?? null,
+        orphanSessionTtlMs: (input.playwright as Record<string, unknown>).orphanSessionTtlMs ?? null,
+        lifecycle: (input.playwright as Record<string, unknown>).lifecycle ?? [],
+      }
+      : null,
+  };
+}
+
+function resolveProviderLabel(response: LLMResponse): string {
+  return response.provider || response.backend || 'unknown';
+}
+
+function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
+  if (response.backend) reply.header('x-gemrouter-backend', response.backend);
+  reply.header('x-gemrouter-provider', resolveProviderLabel(response));
+  if (response.fallbackFrom) reply.header('x-gemrouter-fallback-from', response.fallbackFrom);
+  if (response.fallbackReason) reply.header('x-gemrouter-fallback-reason', response.fallbackReason);
+  if (response.backendModel) reply.header('x-gemrouter-backend-model', response.backendModel);
+}
+
+function applyErrorHeaders(reply: FastifyReply, error: unknown): void {
+  if (!(error instanceof LLMProviderError)) return;
+  reply.header('x-gemrouter-backend', error.backend);
+  reply.header('x-gemrouter-provider', error.backend);
+  if (error.options.fallbackFrom) reply.header('x-gemrouter-fallback-from', error.options.fallbackFrom);
+  if (error.options.fallbackReason) reply.header('x-gemrouter-fallback-reason', error.options.fallbackReason);
+}
+
+function buildAuditDetailsFromResponse(response: LLMResponse): Record<string, unknown> {
+  return {
+    provider: resolveProviderLabel(response),
+    backend: response.backend ?? null,
+    backendModel: response.backendModel ?? null,
+    fallbackFrom: response.fallbackFrom ?? null,
+    fallbackReason: response.fallbackReason ?? null,
+  };
+}
+
+function buildStreamResponseHeaders(request: FastifyRequest, response?: LLMResponse): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'x-request-id': request.id,
+  };
+  if (response?.backend) headers['x-gemrouter-backend'] = response.backend;
+  if (response?.provider) headers['x-gemrouter-provider'] = response.provider;
+  if (response?.fallbackFrom) headers['x-gemrouter-fallback-from'] = response.fallbackFrom;
+  if (response?.fallbackReason) headers['x-gemrouter-fallback-reason'] = response.fallbackReason;
+  if (response?.backendModel) headers['x-gemrouter-backend-model'] = response.backendModel;
+  return headers;
+}
+
+function buildNdjsonResponseHeaders(request: FastifyRequest, response?: LLMResponse): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+    'x-request-id': request.id,
+  };
+  if (response?.backend) headers['x-gemrouter-backend'] = response.backend;
+  if (response?.provider) headers['x-gemrouter-provider'] = response.provider;
+  if (response?.fallbackFrom) headers['x-gemrouter-fallback-from'] = response.fallbackFrom;
+  if (response?.fallbackReason) headers['x-gemrouter-fallback-reason'] = response.fallbackReason;
+  if (response?.backendModel) headers['x-gemrouter-backend-model'] = response.backendModel;
+  return headers;
+}
+
+function mapLlmErrorToHttp(error: unknown): {
+  statusCode: number;
+  type: string;
+  code: string;
+  message: string;
+} {
+  if (error instanceof LLMProviderError) {
+    const statusCode = error.options.statusCode ?? 502;
+    const type = error.code === 'playwright_quota' ? 'rate_limit_error' : 'server_error';
+    return {
+      statusCode,
+      type,
+      code: error.code,
+      message: error.message,
+    };
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (/unsupported backend override/i.test(message)) {
+    return {
+      statusCode: 400,
+      type: 'invalid_request_error',
+      code: 'invalid_backend_override',
+      message,
+    };
+  }
+  return {
+    statusCode: 500,
+    type: 'server_error',
+    code: 'llm_request_failed',
+    message,
   };
 }
 
@@ -600,6 +788,9 @@ function formatHourLabel(timestamp: number): string {
 
 function buildGuestSummary() {
   const runtime = getRuntimeSnapshot();
+  const routing = (runtime.routing as Record<string, unknown> | undefined) ?? {};
+  const backends = (runtime.backends as Record<string, unknown> | undefined) ?? {};
+  const geminiCli = (backends.geminiCli as Record<string, unknown> | undefined) ?? {};
   const stats = interactions.summary(24);
   const recent = interactions.list(240);
   const now = Date.now();
@@ -645,6 +836,10 @@ function buildGuestSummary() {
     runtime: {
       headed: !config.llm.headless,
       profileReady: Boolean((runtime.runtime as Record<string, unknown>)?.profileReady),
+      activeDefaultBackend: routing.activeDefaultBackend ?? null,
+      lastBackendUsed: routing.lastBackendUsed ?? null,
+      geminiCliReady: geminiCli.authReady ?? null,
+      geminiCliInstalled: geminiCli.installed ?? null,
       openPages: (runtime.llm as Record<string, unknown> | null)?.openPages ?? 0,
       busyOpenTabs: (runtime.llm as Record<string, unknown> | null)?.busyOpenTabs ?? 0,
       respondedOpenTabs: (runtime.llm as Record<string, unknown> | null)?.respondedOpenTabs ?? 0,
@@ -684,16 +879,50 @@ function getRuntimeSnapshot(
   const profileExists = existsSync(profileDir);
   const cookiesExists = existsSync(cookiesFile);
   const rawLlmDiagnostics = typeof llm.getDiagnostics === 'function' ? llm.getDiagnostics() : null;
+  const sanitizedLlmDiagnostics = sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm });
+  const geminiCliDiagnostics = ((sanitizedLlmDiagnostics?.geminiCli as Record<string, unknown> | undefined) ?? {});
+  const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? config.llmRouting.backendOrder[0] ?? 'gemini-cli');
+  const geminiCliAvailable = Boolean(geminiCliDiagnostics.enabled) && Boolean(geminiCliDiagnostics.installed) && Boolean(geminiCliDiagnostics.authReady);
+  const playwrightReady = executableExists && profileExists && cookiesExists;
+  const activeDefaultBackend: LLMBackendId =
+    configuredDefaultBackend === 'gemini-cli'
+      ? (geminiCliAvailable ? 'gemini-cli' : playwrightReady ? 'playwright' : 'gemini-cli')
+      : (playwrightReady ? 'playwright' : geminiCliAvailable ? 'gemini-cli' : 'playwright');
+  const backendOrder = (sanitizedLlmDiagnostics?.backendOrder as LLMBackendId[] | undefined) ?? config.llmRouting.backendOrder;
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
     ts: new Date().toISOString(),
     models: config.modelIds,
+    backendOrder,
+    fallbackEnabled: config.llmRouting.allowPlaywrightFallback,
+    routing: {
+      configuredDefaultBackend,
+      activeDefaultBackend,
+      lastBackendUsed: sanitizedLlmDiagnostics?.lastBackendUsed ?? null,
+      lastFallbackFrom: sanitizedLlmDiagnostics?.lastFallbackFrom ?? null,
+      lastFallbackReason: sanitizedLlmDiagnostics?.lastFallbackReason ?? null,
+      lastResolutionAt: sanitizedLlmDiagnostics?.lastResolutionAt ?? null,
+    },
     runtime: {
       display: process.env.DISPLAY ? 'attached' : null,
       headed: !config.llm.headless,
-      profileReady: executableExists && profileExists && cookiesExists,
+      profileReady: playwrightReady,
+    },
+    backends: {
+      geminiCli: geminiCliDiagnostics,
+      playwright: {
+        enabled: true,
+        executablePath: config.llm.browserExecutablePath ?? null,
+        executableExists,
+        profileDir,
+        profileExists,
+        cookiesExists,
+        profileNamespace: config.llm.profileNamespace,
+        headless: config.llm.headless,
+        profileReady: playwrightReady,
+      },
     },
     playwright: {
       executablePath: config.llm.browserExecutablePath ?? null,
@@ -702,9 +931,11 @@ function getRuntimeSnapshot(
       profileExists,
       cookiesExists,
       profileNamespace: config.llm.profileNamespace,
+      headless: config.llm.headless,
+      profileReady: playwrightReady,
     },
     compatibility: request ? getCompatibilitySnapshot(request) : compatibility.get(),
-    llm: sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm }),
+    llm: sanitizedLlmDiagnostics,
   };
 }
 
@@ -761,8 +992,28 @@ async function handleChatCompletionsRequest(
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
+  let parsed: ReturnType<typeof parseChatCompletionsRequest>;
   try {
-    const parsed = parseChatCompletionsRequest(request.body ?? {});
+    parsed = parseChatCompletionsRequest(request.body ?? {});
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'chat.completion.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  }
+
+  try {
     if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
     const sessionOptions = buildRequestLlmOptions({
       request,
@@ -785,6 +1036,7 @@ async function handleChatCompletionsRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
+      applyBackendHeaders(reply, response);
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
@@ -806,17 +1058,12 @@ async function handleChatCompletionsRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: buildAuditDetailsFromResponse(response),
       });
       return buildChatCompletionResponse({ model: parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'x-request-id': request.id,
-    });
+    reply.raw.writeHead(200, buildStreamResponseHeaders(request));
 
     const completionId = `chatcmpl_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
     const created = Math.floor(Date.now() / 1000);
@@ -902,11 +1149,14 @@ async function handleChatCompletionsRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: {
+          provider: finalProvider ?? null,
+        },
       });
       reply.raw.end();
       return reply;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const http = mapLlmErrorToHttp(error);
       recordInteraction({
         request,
         route: request.url,
@@ -915,14 +1165,14 @@ async function handleChatCompletionsRequest(
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
-        statusCode: 500,
-        error: message,
+        statusCode: http.statusCode,
+        error: http.message,
       });
       sendChunk(
         buildOpenAIError({
-          message,
-          type: 'server_error',
-          code: 'stream_failed',
+          message: http.message,
+          type: http.type,
+          code: http.code,
         }),
       );
       reply.raw.end();
@@ -932,27 +1182,39 @@ async function handleChatCompletionsRequest(
         appId: access.app.id,
         route: request.url,
         model: parsed.model,
-        statusCode: 500,
+        statusCode: http.statusCode,
         latencyMs: Date.now() - getStartedAt(request),
-        details: { error: message },
+        details: { error: http.message, code: http.code },
       });
       return reply;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
     audit.write({
       type: 'chat.completion.error',
       requestId: request.id,
       appId: access.app.id,
       route: request.url,
-      statusCode: 400,
+      model: parsed.model,
+      statusCode: http.statusCode,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
+      details: { error: http.message, code: http.code },
     });
-    return sendError(reply, 400, {
-      message,
-      type: 'invalid_request_error',
-      code: 'invalid_request',
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages: parsed.messages,
+      status: 'failed',
+      statusCode: http.statusCode,
+      error: http.message,
+    });
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code,
     });
   } finally {
     access.release();
@@ -967,8 +1229,28 @@ async function handleResponsesRequest(
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
+  let parsed: ReturnType<typeof parseResponsesRequest>;
   try {
-    const parsed = parseResponsesRequest(request.body ?? {});
+    parsed = parseResponsesRequest(request.body ?? {});
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'responses.create.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  }
+
+  try {
     if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
     const sessionOptions = buildRequestLlmOptions({
       request,
@@ -991,6 +1273,7 @@ async function handleResponsesRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
+      applyBackendHeaders(reply, response);
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
@@ -1012,17 +1295,12 @@ async function handleResponsesRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: buildAuditDetailsFromResponse(response),
       });
       return buildResponsesApiResponse({ model: parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'x-request-id': request.id,
-    });
+    reply.raw.writeHead(200, buildStreamResponseHeaders(request));
 
     const responseId = `resp_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
     const messageId = `msg_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -1157,11 +1435,14 @@ async function handleResponsesRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: {
+          provider: finalProvider ?? null,
+        },
       });
       reply.raw.end();
       return reply;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const http = mapLlmErrorToHttp(error);
       recordInteraction({
         request,
         route: request.url,
@@ -1170,15 +1451,15 @@ async function handleResponsesRequest(
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
-        statusCode: 500,
-        error: message,
+        statusCode: http.statusCode,
+        error: http.message,
       });
       sendEvent({
         type: 'error',
         error: buildOpenAIError({
-          message,
-          type: 'server_error',
-          code: 'stream_failed',
+          message: http.message,
+          type: http.type,
+          code: http.code,
         }).error,
       });
       reply.raw.end();
@@ -1188,27 +1469,39 @@ async function handleResponsesRequest(
         appId: access.app.id,
         route: request.url,
         model: parsed.model,
-        statusCode: 500,
+        statusCode: http.statusCode,
         latencyMs: Date.now() - getStartedAt(request),
-        details: { error: message },
+        details: { error: http.message, code: http.code },
       });
       return reply;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
     audit.write({
       type: 'responses.create.error',
       requestId: request.id,
       appId: access.app.id,
       route: request.url,
-      statusCode: 400,
+      model: parsed.model,
+      statusCode: http.statusCode,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
+      details: { error: http.message, code: http.code },
     });
-    return sendError(reply, 400, {
-      message,
-      type: 'invalid_request_error',
-      code: 'invalid_request',
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages: parsed.messages,
+      status: 'failed',
+      statusCode: http.statusCode,
+      error: http.message,
+    });
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code,
     });
   } finally {
     access.release();
@@ -1223,8 +1516,28 @@ async function handleOllamaChatRequest(
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
+  let parsed: ReturnType<typeof parseOllamaChatRequest>;
   try {
-    const parsed = parseOllamaChatRequest(request.body ?? {});
+    parsed = parseOllamaChatRequest(request.body ?? {});
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'ollama.chat.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  }
+
+  try {
     if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
     const sessionOptions = buildRequestLlmOptions({
       request,
@@ -1245,6 +1558,7 @@ async function handleOllamaChatRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
+      applyBackendHeaders(reply, response);
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
@@ -1266,17 +1580,12 @@ async function handleOllamaChatRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: buildAuditDetailsFromResponse(response),
       });
       return buildOllamaChatResponse({ model: parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'x-request-id': request.id,
-    });
+    reply.raw.writeHead(200, buildNdjsonResponseHeaders(request));
 
     const sendChunk = (payload: unknown): void => {
       if (!reply.raw.writableEnded) {
@@ -1326,11 +1635,14 @@ async function handleOllamaChatRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: {
+          provider: finalProvider ?? null,
+        },
       });
       reply.raw.end();
       return reply;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const http = mapLlmErrorToHttp(error);
       recordInteraction({
         request,
         route: request.url,
@@ -1339,10 +1651,10 @@ async function handleOllamaChatRequest(
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
-        statusCode: 500,
-        error: message,
+        statusCode: http.statusCode,
+        error: http.message,
       });
-      sendChunk(buildOllamaError(message));
+      sendChunk(buildOllamaError(http.message));
       reply.raw.end();
       audit.write({
         type: 'ollama.chat.stream.error',
@@ -1350,27 +1662,39 @@ async function handleOllamaChatRequest(
         appId: access.app.id,
         route: request.url,
         model: parsed.model,
-        statusCode: 500,
+        statusCode: http.statusCode,
         latencyMs: Date.now() - getStartedAt(request),
-        details: { error: message },
+        details: { error: http.message, code: http.code },
       });
       return reply;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
     audit.write({
       type: 'ollama.chat.error',
       requestId: request.id,
       appId: access.app.id,
       route: request.url,
-      statusCode: 400,
+      model: parsed.model,
+      statusCode: http.statusCode,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
+      details: { error: http.message, code: http.code },
     });
-    return sendError(reply, 400, {
-      message,
-      type: 'invalid_request_error',
-      code: 'invalid_request',
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages: parsed.messages,
+      status: 'failed',
+      statusCode: http.statusCode,
+      error: http.message,
+    });
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code,
     });
   } finally {
     access.release();
@@ -1385,8 +1709,28 @@ async function handleOllamaGenerateRequest(
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
+  let parsed: ReturnType<typeof parseOllamaGenerateRequest>;
   try {
-    const parsed = parseOllamaGenerateRequest(request.body ?? {});
+    parsed = parseOllamaGenerateRequest(request.body ?? {});
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'ollama.generate.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  }
+
+  try {
     if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
     const sessionOptions = buildRequestLlmOptions({
       request,
@@ -1407,6 +1751,7 @@ async function handleOllamaGenerateRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
+      applyBackendHeaders(reply, response);
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
@@ -1428,17 +1773,12 @@ async function handleOllamaGenerateRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: buildAuditDetailsFromResponse(response),
       });
       return buildOllamaGenerateResponse({ model: parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'application/x-ndjson; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-      'x-request-id': request.id,
-    });
+    reply.raw.writeHead(200, buildNdjsonResponseHeaders(request));
 
     const sendChunk = (payload: unknown): void => {
       if (!reply.raw.writableEnded) {
@@ -1488,11 +1828,14 @@ async function handleOllamaGenerateRequest(
         model: parsed.model,
         statusCode: 200,
         latencyMs: Date.now() - getStartedAt(request),
+        details: {
+          provider: finalProvider ?? null,
+        },
       });
       reply.raw.end();
       return reply;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const http = mapLlmErrorToHttp(error);
       recordInteraction({
         request,
         route: request.url,
@@ -1501,10 +1844,10 @@ async function handleOllamaGenerateRequest(
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
-        statusCode: 500,
-        error: message,
+        statusCode: http.statusCode,
+        error: http.message,
       });
-      sendChunk(buildOllamaError(message));
+      sendChunk(buildOllamaError(http.message));
       reply.raw.end();
       audit.write({
         type: 'ollama.generate.stream.error',
@@ -1512,27 +1855,39 @@ async function handleOllamaGenerateRequest(
         appId: access.app.id,
         route: request.url,
         model: parsed.model,
-        statusCode: 500,
+        statusCode: http.statusCode,
         latencyMs: Date.now() - getStartedAt(request),
-        details: { error: message },
+        details: { error: http.message, code: http.code },
       });
       return reply;
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
     audit.write({
       type: 'ollama.generate.error',
       requestId: request.id,
       appId: access.app.id,
       route: request.url,
-      statusCode: 400,
+      model: parsed.model,
+      statusCode: http.statusCode,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
+      details: { error: http.message, code: http.code },
     });
-    return sendError(reply, 400, {
-      message,
-      type: 'invalid_request_error',
-      code: 'invalid_request',
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages: parsed.messages,
+      status: 'failed',
+      statusCode: http.statusCode,
+      error: http.message,
+    });
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code,
     });
   } finally {
     access.release();
@@ -1696,6 +2051,8 @@ app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const llmSnapshot = (runtime.llm as Record<string, unknown> | null) ?? null;
+  const routingSnapshot = (runtime.routing as Record<string, unknown> | null) ?? null;
+  const backendSnapshot = (runtime.backends as Record<string, unknown> | null) ?? null;
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -1714,6 +2071,8 @@ app.get('/admin/summary', async (request, reply) => {
         Boolean((runtime.playwright as Record<string, unknown>).cookiesExists),
       apps: appStore.list().length,
     },
+    routing: routingSnapshot,
+    backends: backendSnapshot,
     llm: llmSnapshot,
     models: config.modelIds,
     apps: appStore.list().map(sanitizeAdminApp),
@@ -1848,6 +2207,7 @@ app.post<{
       fingerprintFallback: createRequestFingerprint(messages),
     });
     const response = await llm.chat(messages, options);
+    applyBackendHeaders(reply, response);
     const usage = estimateUsage(messages, response.content);
     recordInteraction({
       request,
@@ -1868,10 +2228,13 @@ app.post<{
       text: response.content,
       usage,
       provider: response.provider,
+      backend: response.backend ?? null,
+      fallbackReason: response.fallbackReason ?? null,
       latencyMs: Date.now() - getStartedAt(request),
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
     recordInteraction({
       request,
       route: request.url,
@@ -1879,8 +2242,8 @@ app.post<{
       model,
       messages,
       status: 'failed',
-      statusCode: 500,
-      error: message,
+      statusCode: http.statusCode,
+      error: http.message,
     });
     audit.write({
       type: 'admin.test-chat.error',
@@ -1888,14 +2251,14 @@ app.post<{
       appId: selectedApp.id,
       route: request.url,
       model,
-      statusCode: 500,
+      statusCode: http.statusCode,
       latencyMs: Date.now() - getStartedAt(request),
-      details: { error: message },
+      details: { error: http.message, code: http.code },
     });
-    return sendError(reply, 500, {
-      message,
-      type: 'server_error',
-      code: 'test_chat_failed',
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code === 'llm_request_failed' ? 'test_chat_failed' : http.code,
     });
   }
 });

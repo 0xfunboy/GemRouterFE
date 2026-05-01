@@ -32,8 +32,8 @@ export function renderAppShell(input: {
   socialPreviewUrl?: string;
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
-  const pageTitle = `${input.projectName} — Gemini Web API Compatibility Router`;
-  const pageDescription = 'Gemini Web routed through OpenAI, DeepSeek and Ollama compatible APIs.';
+  const pageTitle = `${input.projectName} — Gemini CLI + Playwright Compatibility Router`;
+  const pageDescription = 'Gemini CLI first, Playwright Gemini Web fallback, exposed through OpenAI, DeepSeek and Ollama compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
     : '';
@@ -548,7 +548,7 @@ export function renderAppShell(input: {
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
             ${brandTitle}
-            <span>Router console for Gemini Web API compatibility</span>
+            <span>Router console for Gemini CLI and Gemini Web compatibility</span>
           </div>
         </div>
         <div class="nav-actions">
@@ -559,16 +559,16 @@ export function renderAppShell(input: {
 
       <section class="panel hero">
         <div class="hero-copy">
-          <span class="eyebrow">Gemini Web Router</span>
-          <h1>Gemini Web routed through OpenAI, DeepSeek and Ollama compatible APIs.</h1>
+          <span class="eyebrow">Gemini Local Router</span>
+          <h1>Gemini CLI first, Playwright fallback, familiar API surfaces.</h1>
           <p>
-            One Playwright-managed Gemini session behind multiple API surfaces. Public view shows health and usage
-            only. Admin mode exposes apps, keys, routes, prompt testing, interaction logs and recovery tools.
+            One local router behind multiple compatible API surfaces. Public view shows health and usage only.
+            Admin mode exposes apps, keys, backend diagnostics, prompt testing, interaction logs and recovery tools.
           </p>
           <div class="chip-row" style="margin-top:18px">
             ${input.modelIds.map((modelId) => `<span class="chip">${escapeHtml(modelId)}</span>`).join('')}
             <span class="chip">OpenAI / DeepSeek / Ollama</span>
-            <span class="chip">Playwright session</span>
+            <span class="chip">Gemini CLI + Playwright</span>
           </div>
         </div>
         <div class="hero-card">
@@ -649,11 +649,23 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h2 class="section-title">Runtime Diagnostics</h2>
-              <p class="section-copy">Router counters, browser runtime, token volume and operator feedback.</p>
+              <p class="section-copy">Router counters, backend routing state, browser runtime, token volume and operator feedback.</p>
             </div>
             <div id="runtime-pills" class="meta-row"></div>
           </div>
           <div id="stats-grid" class="stats-grid"></div>
+        </section>
+
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Backend Routing</h3>
+              <p class="section-copy">Gemini CLI is preferred when cached Google auth is available. Playwright remains the authenticated fallback path.</p>
+            </div>
+            <div id="backend-pills" class="meta-row"></div>
+          </div>
+          <div id="backend-output" class="mono-box">Loading backend routing snapshot…</div>
+          <div id="backend-hint" class="footer-note" style="margin-top:10px"></div>
         </section>
 
         <section class="panel section">
@@ -700,7 +712,7 @@ export function renderAppShell(input: {
             <div class="section-head">
               <div>
                 <h3 class="section-title">Prompt Lab</h3>
-                <p class="section-copy">Test prompts against the live Playwright-managed Gemini session with the selected app policy.</p>
+                <p class="section-copy">Test prompts against the live router with the selected app policy and current backend selection rules.</p>
               </div>
             </div>
             <form id="prompt-form">
@@ -722,12 +734,12 @@ export function renderAppShell(input: {
               </label>
               <label>
                 Session hint
-                <input type="text" name="sessionHint" placeholder="Optional browser session id" />
+                <input type="text" name="sessionHint" placeholder="Optional session hint" />
               </label>
               <div class="button-row">
                 <label class="chip">
                   <input type="checkbox" name="stateful" style="margin-right:8px" />
-                  Reuse browser session
+                  Reuse stateful session
                 </label>
               </div>
               <div class="button-row">
@@ -866,6 +878,9 @@ export function renderAppShell(input: {
       const refreshButton = document.getElementById('refresh-button');
       const logoutButton = document.getElementById('logout-button');
       const runtimePills = document.getElementById('runtime-pills');
+      const backendPills = document.getElementById('backend-pills');
+      const backendOutput = document.getElementById('backend-output');
+      const backendHint = document.getElementById('backend-hint');
       const statsGrid = document.getElementById('stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
@@ -935,6 +950,18 @@ export function renderAppShell(input: {
         const compatibility = summary.compatibility || {};
         pills.push('<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'openai') + '</span>');
         pills.push('<span class="chip">API surfaces ' + escapeHtml((compatibility.enabledSurfaces || []).join(', ') || 'n/a') + '</span>');
+        if (runtime.activeDefaultBackend) {
+          pills.push('<span class="chip">Default backend ' + escapeHtml(runtime.activeDefaultBackend) + '</span>');
+        }
+        if (runtime.lastBackendUsed) {
+          pills.push('<span class="chip">Last backend ' + escapeHtml(runtime.lastBackendUsed) + '</span>');
+        }
+        if (runtime.geminiCliInstalled !== undefined) {
+          pills.push('<span class="chip ' + (runtime.geminiCliInstalled ? 'good' : 'warn') + '">' + (runtime.geminiCliInstalled ? 'CLI installed' : 'CLI missing') + '</span>');
+        }
+        if (runtime.geminiCliReady !== undefined) {
+          pills.push('<span class="chip ' + (runtime.geminiCliReady ? 'good' : 'warn') + '">' + (runtime.geminiCliReady ? 'CLI auth ready' : 'CLI auth attention') + '</span>');
+        }
         pills.push('<span class="chip ' + (runtime.profileReady ? 'good' : 'warn') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile attention') + '</span>');
         pills.push('<span class="chip">Open tabs ' + escapeHtml(String(runtime.openPages || 0)) + '</span>');
         pills.push('<span class="chip">Busy ' + escapeHtml(String(runtime.busyOpenTabs || 0)) + '</span>');
@@ -1001,14 +1028,64 @@ export function renderAppShell(input: {
         const runtime = data.runtime || {};
         const llm = data.llm || {};
         const compatibility = data.compatibility || {};
+        const routing = data.routing || {};
+        const backends = data.backends || {};
+        const geminiCli = backends.geminiCli || {};
         runtimePills.innerHTML = [
           '<span class="chip good">Admin session</span>',
           '<span class="chip ' + (runtime.profileReady ? 'good' : 'bad') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile missing') + '</span>',
+          '<span class="chip ' + (geminiCli.installed ? 'good' : 'warn') + '">' + (geminiCli.installed ? 'CLI installed' : 'CLI missing') + '</span>',
+          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'CLI auth ready' : 'CLI auth missing') + '</span>',
+          '<span class="chip">Default backend ' + escapeHtml(routing.activeDefaultBackend || routing.configuredDefaultBackend || 'auto') + '</span>',
+          '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
           '<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'openai') + '</span>',
           '<span class="chip">Open tabs ' + escapeHtml(String(llm.openPages || 0)) + '</span>',
           '<span class="chip">Busy ' + escapeHtml(String(llm.busyOpenTabs || 0)) + '</span>',
           '<span class="chip">Apps ' + escapeHtml(String(runtime.apps || 0)) + '</span>',
         ].join('');
+      }
+
+      function renderBackendDiagnostics(data) {
+        const routing = data.routing || {};
+        const backends = data.backends || {};
+        const geminiCli = backends.geminiCli || {};
+        const playwright = backends.playwright || {};
+        backendPills.innerHTML = [
+          '<span class="chip ' + (geminiCli.installed ? 'good' : 'warn') + '">' + (geminiCli.installed ? 'CLI installed' : 'CLI unavailable') + '</span>',
+          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'CLI auth ready' : 'CLI auth missing') + '</span>',
+          '<span class="chip ' + (playwright.profileReady ? 'good' : 'warn') + '">' + (playwright.profileReady ? 'Playwright ready' : 'Playwright attention') + '</span>',
+          '<span class="chip">Order ' + escapeHtml((data.backendOrder || []).join(' -> ') || 'n/a') + '</span>',
+          '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
+        ].join('');
+        backendOutput.textContent = [
+          'backend_order=' + (data.backendOrder || []).join(','),
+          'configured_default_backend=' + String(routing.configuredDefaultBackend || ''),
+          'active_default_backend=' + String(routing.activeDefaultBackend || ''),
+          'last_backend_used=' + String(routing.lastBackendUsed || ''),
+          'last_fallback_from=' + String(routing.lastFallbackFrom || ''),
+          'last_fallback_reason=' + String(routing.lastFallbackReason || ''),
+          'last_resolution_at=' + String(routing.lastResolutionAt || ''),
+          '',
+          '[gemini_cli]',
+          'enabled=' + String(Boolean(geminiCli.enabled)),
+          'installed=' + String(Boolean(geminiCli.installed)),
+          'auth_cache_detected=' + String(Boolean(geminiCli.authCacheDetected)),
+          'auth_ready=' + String(Boolean(geminiCli.authReady)),
+          'model=' + String(geminiCli.model || ''),
+          'bin=' + String(geminiCli.bin || ''),
+          'resolved_bin=' + String(geminiCli.resolvedBin || ''),
+          'workdir=' + String(geminiCli.workdir || ''),
+          'timeout_ms=' + String(geminiCli.timeoutMs || ''),
+          '',
+          '[playwright]',
+          'profile_ready=' + String(Boolean(playwright.profileReady)),
+          'profile_namespace=' + String(playwright.profileNamespace || ''),
+          'headless=' + String(Boolean(playwright.headless)),
+          'profile_dir=' + String(playwright.profileDir || ''),
+        ].join('\\n');
+        backendHint.textContent = geminiCli.loginHint
+          ? 'Bootstrap Gemini CLI auth with: ' + geminiCli.loginHint
+          : 'Gemini CLI login helper unavailable.';
       }
 
       function renderStats(summary) {
@@ -1144,6 +1221,7 @@ export function renderAppShell(input: {
         fillModelOptions(data.models);
         fillAppOptions(data.apps);
         renderRuntimePills(data);
+        renderBackendDiagnostics(data);
         renderStats(data.stats);
         renderCompatibility(data.compatibility);
         renderApps(data.apps);
@@ -1234,7 +1312,7 @@ export function renderAppShell(input: {
 
       promptForm.addEventListener('submit', async function(event) {
         event.preventDefault();
-        promptStatus.textContent = 'Sending prompt through the active Gemini browser session…';
+        promptStatus.textContent = 'Sending prompt through the active router backend…';
         promptResponse.textContent = '';
         const form = new FormData(promptForm);
         try {

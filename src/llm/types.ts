@@ -5,6 +5,9 @@ export interface LLMMessage {
   content: string;
 }
 
+export type LLMBackendId = 'gemini-cli' | 'playwright';
+export type LLMBackendPreference = 'auto' | LLMBackendId;
+
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */
 export type ModelTier = 'small' | 'medium' | 'large';
 
@@ -17,6 +20,7 @@ export interface LLMOptions {
   sessionLabel?: string;
   resetSession?: boolean;
   semanticProfile?: SemanticProfile;
+  backendPreference?: LLMBackendPreference;
 }
 
 export interface LLMResponse {
@@ -24,6 +28,11 @@ export interface LLMResponse {
   provider: string;
   model: string;
   tokensUsed?: number;
+  backend?: LLMBackendId;
+  backendModel?: string;
+  fallbackFrom?: LLMBackendId;
+  fallbackReason?: string;
+  latencyMs?: number;
 }
 
 export interface LLMStreamChunk {
