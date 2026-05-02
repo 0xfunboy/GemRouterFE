@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { coerceCompatibilityState, type ApiSurface } from './lib/compatibility.js';
+import { buildPublicModelIds, DEFAULT_DIRECT_MODEL_IDS } from './lib/models.js';
 import type { LLMBackendId } from './llm/types.js';
 import type { GeminiCliProviderConfig } from './llm/providers/gemini-cli/types.js';
 import type { TeGemProviderConfig } from './llm/providers/tegem/client.js';
@@ -110,14 +111,6 @@ function readPromptPackingStyle(
   return value === 'copilotrm' ? 'copilotrm' : 'minimal';
 }
 
-function readGeminiCliOutputFormat(
-  env: Record<string, string | undefined>,
-  ...keys: string[]
-): 'json' | 'text' {
-  const value = pick(env, ...keys)?.trim().toLowerCase();
-  return value === 'text' ? 'text' : 'json';
-}
-
 function readGeminiCliBootstrapMode(
   env: Record<string, string | undefined>,
   ...keys: string[]
@@ -188,7 +181,19 @@ export function loadConfig(
     pick(env, 'PLAYWRIGHT_PROFILE_NAMESPACE'),
   );
 
-  const modelIds = ['gemini-web', 'google/gemini-web'];
+  const configuredDirectModels = readList(
+    env,
+    [...DEFAULT_DIRECT_MODEL_IDS],
+    'GEMINI_DIRECT_MODELS',
+    'GEMINI_CLI_MODELS',
+    'GEMROUTER_DIRECT_MODELS',
+  );
+  const configuredDirectDefaultModel =
+    pick(env, 'GEMINI_DIRECT_MODEL', 'GEMINI_CLI_MODEL')?.trim().toLowerCase() ||
+    configuredDirectModels[0] ||
+    DEFAULT_DIRECT_MODEL_IDS[0];
+  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels])];
+  const modelIds = buildPublicModelIds(directModels);
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
       env,
@@ -206,7 +211,6 @@ export function loadConfig(
   });
   const geminiCliUserHome = pick(env, 'GEMINI_CLI_USER_HOME')?.trim() || undefined;
   const geminiCliDotDir = pick(env, 'GEMINI_CLI_DOT_GEMINI_DIR')?.trim() || undefined;
-  const geminiCliWorkdir = pick(env, 'GEMINI_CLI_WORKDIR')?.trim() || undefined;
   const geminiCliEnabled = readBoolean(env, true, 'GEMINI_CLI_ENABLED');
   const backendOrder = readBackendOrder(env, ['gemini-cli', 'playwright'], 'GEMROUTER_BACKEND_ORDER');
 
@@ -288,17 +292,23 @@ export function loadConfig(
     },
     geminiCli: {
       enabled: geminiCliEnabled,
-      bin: pick(env, 'GEMINI_CLI_BIN') ?? 'gemini',
-      model: pick(env, 'GEMINI_CLI_MODEL') ?? 'gemini-2.5-flash',
+      model: configuredDirectDefaultModel,
+      models: directModels,
       timeoutMs: readNumber(env, 120_000, 'GEMINI_CLI_TIMEOUT_MS'),
-      workdir: geminiCliWorkdir ? path.resolve(rootDir, geminiCliWorkdir) : undefined,
-      outputFormat: readGeminiCliOutputFormat(env, 'GEMINI_CLI_OUTPUT_FORMAT'),
-      useStdin: readBoolean(env, false, 'GEMINI_CLI_USE_STDIN'),
+      quotaRefreshMs: readNumber(env, 60_000, 'GEMINI_CLI_QUOTA_REFRESH_MS', 'GEMINI_DIRECT_QUOTA_REFRESH_MS'),
       expectAuthCache: readBoolean(env, true, 'GEMINI_CLI_EXPECT_AUTH_CACHE'),
       authBootstrapEnabled: readBoolean(env, true, 'GEMINI_CLI_AUTH_BOOTSTRAP_ENABLED'),
       authBootstrapMode: readGeminiCliBootstrapMode(env, 'GEMINI_CLI_AUTH_BOOTSTRAP_MODE'),
       userHome: geminiCliUserHome ? path.resolve(geminiCliUserHome) : undefined,
       dotGeminiDir: geminiCliDotDir ? path.resolve(geminiCliDotDir) : undefined,
+      authClientId: pick(env, 'GEMINI_AUTH_CLIENT_ID') ?? undefined,
+      authClientSecret: pick(env, 'GEMINI_AUTH_CLIENT_SECRET') ?? undefined,
+      callbackHost: pick(env, 'GEMINI_AUTH_CALLBACK_HOST', 'OAUTH_CALLBACK_HOST') ?? '127.0.0.1',
+      callbackPort: (() => {
+        const value = Number(pick(env, 'GEMINI_AUTH_CALLBACK_PORT', 'OAUTH_CALLBACK_PORT'));
+        return Number.isFinite(value) && value > 0 ? value : undefined;
+      })(),
+      autoOpenBrowser: readBoolean(env, true, 'GEMINI_AUTH_AUTO_OPEN_BROWSER'),
       rootDir,
     },
     llmRouting: {

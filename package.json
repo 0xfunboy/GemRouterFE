@@ -14,7 +14,7 @@
     "dev:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run dev:app",
     "dev:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run dev:app",
     "setup:gemini-cli": "bash ./scripts/setup-gemini-cli.sh",
-    "login:gemini-cli": "bash ./scripts/login-gemini-cli.sh",
+    "login:gemini-cli": "pnpm exec tsx ./src/bin/gemini-login.ts",
     "start": "pnpm run start:app",
     "start:app": "node dist/index.js",
     "start:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run start:app",
@@ -24,9 +24,9 @@
     "smoke:playwright": "SMOKE_BACKEND=playwright pnpm build && bash ./scripts/smoke.sh"
   },
   "dependencies": {
-    "@google/gemini-cli": "^0.40.1",
     "dotenv": "^16.6.1",
     "fastify": "^4.29.1",
+    "google-auth-library": "^10.3.0",
     "playwright": "^1.59.1"
   },
   "devDependencies": {

@@ -5,6 +5,9 @@ GemRouterFE exposes three compatibility families.
 ## OpenAI-Compatible
 
 - `GET /v1/models`
+- `GET /v1/provider/runtime`
+- `GET /v1/provider/models`
+- `GET /v1/provider/quota`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
 
@@ -30,7 +33,11 @@ GemRouterFE exposes three compatibility families.
 
 Common exposed aliases:
 
+- `gemini-2.5-pro`
+- `gemini-2.5-flash`
+- `gemini-2.5-flash-lite`
 - `gemini-web`
 - `google/gemini-web`
 
-These map to the same Gemini Web backend runtime.
+The `gemini-web` aliases map to the Playwright Gemini Web runtime.
+The `gemini-2.5-*` IDs map to the embedded direct backend that reuses Gemini CLI auth cache files.

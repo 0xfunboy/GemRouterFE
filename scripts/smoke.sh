@@ -13,23 +13,30 @@ fi
 API_KEY="${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
 ADMIN_TOKEN="${GEMROUTER_ADMIN_TOKEN:-}"
 SMOKE_BACKEND="${SMOKE_BACKEND:-auto}"
+SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_CLI_MODEL:-gemini-2.5-pro}}"
+SMOKE_PLAYWRIGHT_MODEL="${SMOKE_PLAYWRIGHT_MODEL:-gemini-web}"
+SMOKE_WAIT_SECONDS="${SMOKE_WAIT_SECONDS:-60}"
 
-resolve_api_base() {
+declare -a API_CANDIDATES=()
+
+build_api_candidates() {
   if [[ -n "${API_BASE:-}" ]]; then
-    printf '%s\n' "${API_BASE}"
+    API_CANDIDATES=("${API_BASE}")
     return 0
   fi
 
-  local candidates=()
+  API_CANDIDATES=()
   if [[ -n "${PORT:-}" ]]; then
-    candidates+=("http://127.0.0.1:${PORT}")
+    API_CANDIDATES+=("http://127.0.0.1:${PORT}")
   fi
-  candidates+=("http://127.0.0.1:4024")
-  candidates+=("http://127.0.0.1:4000")
+  API_CANDIDATES+=("http://127.0.0.1:4024")
+  API_CANDIDATES+=("http://127.0.0.1:4000")
+}
 
+resolve_api_base() {
   local seen=""
   local candidate
-  for candidate in "${candidates[@]}"; do
+  for candidate in "${API_CANDIDATES[@]}"; do
     if [[ "${seen}" == *"|${candidate}|"* ]]; then
       continue
     fi
@@ -40,10 +47,45 @@ resolve_api_base() {
     fi
   done
 
-  printf '%s\n' "${candidates[0]}"
+  printf '%s\n' "${API_CANDIDATES[0]}"
 }
 
+wait_for_api_base() {
+  local deadline=$((SECONDS + SMOKE_WAIT_SECONDS))
+  local seen=""
+  local candidate
+
+  while (( SECONDS < deadline )); do
+    seen=""
+    for candidate in "${API_CANDIDATES[@]}"; do
+      if [[ "${seen}" == *"|${candidate}|"* ]]; then
+        continue
+      fi
+      seen="${seen}|${candidate}|"
+      if curl -fsS --max-time 5 "${candidate}/health" >/dev/null 2>&1; then
+        API_BASE="${candidate}"
+        return 0
+      fi
+    done
+    sleep 1
+  done
+
+  echo "[smoke] API did not become ready within ${SMOKE_WAIT_SECONDS}s" >&2
+  return 1
+}
+
+resolve_primary_model() {
+  if [[ "${SMOKE_BACKEND}" == "playwright" ]]; then
+    printf '%s\n' "${SMOKE_PLAYWRIGHT_MODEL}"
+    return 0
+  fi
+
+  printf '%s\n' "${SMOKE_MODEL}"
+}
+
+build_api_candidates
 API_BASE="$(resolve_api_base)"
+SMOKE_PRIMARY_MODEL="$(resolve_primary_model)"
 
 if [[ -z "${API_KEY}" ]]; then
   echo "[smoke] Missing bootstrap API key in .env" >&2
@@ -204,12 +246,38 @@ request_admin() {
     exit 1
   fi
 
+  local test_body
+  local test_status
+  test_body="$(mktemp)"
+  test_status="$(
+    curl -sS --max-time 120 -o "${test_body}" -w '%{http_code}' \
+      -b "${cookie_file}" \
+      -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"prompt\":\"Reply only with ADMIN-SMOKE-OK.\",\"model\":\"${SMOKE_PRIMARY_MODEL}\"}" \
+      "${API_BASE}/admin/test-chat"
+  )"
+
+  echo "[smoke] admin/test-chat"
+  cat "${test_body}"
+  printf '\n\n'
+
+  if [[ "${test_status}" -lt 200 || "${test_status}" -ge 300 ]]; then
+    echo "[smoke] admin/test-chat failed with HTTP ${test_status}" >&2
+    rm -f "${cookie_file}" "${login_body}" "${summary_body}" "${test_body}"
+    exit 1
+  fi
+
   curl -sS --max-time 15 -o /dev/null -X POST -b "${cookie_file}" "${API_BASE}/admin/logout" || true
-  rm -f "${cookie_file}" "${login_body}" "${summary_body}"
+  rm -f "${cookie_file}" "${login_body}" "${summary_body}" "${test_body}"
 }
+
+wait_for_api_base
 
 echo "[smoke] API base: ${API_BASE}"
 echo "[smoke] backend preference: ${SMOKE_BACKEND}"
+echo "[smoke] primary model: ${SMOKE_PRIMARY_MODEL}"
+echo "[smoke] playwright model: ${SMOKE_PLAYWRIGHT_MODEL}"
 printf '\n'
 
 echo "[smoke] health"
@@ -222,16 +290,37 @@ request_json \
   "${API_BASE}/v1/models"
 
 request_json \
-  "chat" \
-  "POST" \
-  "${API_BASE}/v1/chat/completions" \
-  '{"model":"gemini-web","messages":[{"role":"user","content":"Reply only with OK."}]}'
+  "provider-runtime" \
+  "GET" \
+  "${API_BASE}/v1/provider/runtime"
 
 request_json \
-  "responses" \
+  "provider-models" \
+  "GET" \
+  "${API_BASE}/v1/provider/models"
+
+request_json \
+  "provider-quota" \
+  "GET" \
+  "${API_BASE}/v1/provider/quota"
+
+request_json \
+  "chat-primary" \
+  "POST" \
+  "${API_BASE}/v1/chat/completions" \
+  "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with OK.\"}]}"
+
+request_json \
+  "responses-primary" \
   "POST" \
   "${API_BASE}/v1/responses" \
-  '{"model":"gemini-web","input":[{"role":"user","content":[{"type":"input_text","text":"Reply only with PONG."}]}]}'
+  "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Reply only with PONG.\"}]}]}"
+
+request_json \
+  "chat-playwright" \
+  "POST" \
+  "${API_BASE}/v1/chat/completions" \
+  "{\"model\":\"${SMOKE_PLAYWRIGHT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with WEB-OK.\"}]}"
 
 request_json \
   "deepseek-models" \
@@ -239,10 +328,10 @@ request_json \
   "${API_BASE}/models"
 
 request_json \
-  "deepseek-chat" \
+  "deepseek-chat-primary" \
   "POST" \
   "${API_BASE}/chat/completions" \
-  '{"model":"gemini-web","messages":[{"role":"user","content":"Reply only with DEEPSEEK-OK."}]}'
+  "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with DEEPSEEK-OK.\"}]}"
 
 request_json_basic \
   "ollama-version" \
@@ -258,18 +347,18 @@ request_json_basic \
   "ollama-show" \
   "POST" \
   "${API_BASE}/api/show" \
-  '{"name":"gemini-web"}'
+  "{\"name\":\"${SMOKE_PRIMARY_MODEL}\"}"
 
 request_json_basic \
-  "ollama-chat" \
+  "ollama-chat-primary" \
   "POST" \
   "${API_BASE}/api/chat" \
-  '{"model":"gemini-web","stream":false,"messages":[{"role":"user","content":"Reply only with OLLAMA-CHAT-OK."}]}'
+  "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with OLLAMA-CHAT-OK.\"}]}"
 
 request_json_basic \
-  "ollama-generate" \
+  "ollama-generate-primary" \
   "POST" \
   "${API_BASE}/api/generate" \
-  '{"model":"gemini-web","stream":false,"prompt":"Reply only with OLLAMA-GENERATE-OK."}'
+  "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"stream\":false,\"prompt\":\"Reply only with OLLAMA-GENERATE-OK.\"}"
 
 request_admin

@@ -1,21 +1,97 @@
-import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
-import { buildGeminiCliEnv, buildGeminiCliHealthSnapshot, checkGeminiCliInstall, resolveGeminiCliWorkdir } from '../../../lib/geminiCli.js';
-import { normalizeSemanticOutput } from '../../../lib/semantics.js';
-import { LLMProviderError } from '../../errors.js';
-import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../../types.js';
-import type { GeminiCliHealthSnapshot, GeminiCliProviderConfig } from './types.js';
+import type { OAuth2Client } from 'google-auth-library';
 
-interface GeminiCliProcessResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-  timedOut: boolean;
-  durationMs: number;
+import { isDirectGeminiModelId, isPlaywrightModelId } from '../../../lib/models.js';
+import {
+  buildGeminiCliHealthSnapshot,
+  loadGeminiCachedOAuthClient,
+  type GeminiCliRuntimeState,
+} from '../../../lib/geminiCli.js';
+import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
+import { LLMProviderError, type LLMProviderErrorCode } from '../../errors.js';
+import type { LLMClient, LLMMessage, LLMOptions, LLMResponse } from '../../types.js';
+import type { GeminiCliHealthSnapshot, GeminiCliProviderConfig, GeminiQuotaBucket } from './types.js';
+
+interface CodeAssistCandidatePart {
+  text?: string;
 }
 
-type PromptMode = 'flag' | 'positional' | 'stdin';
+interface CodeAssistCandidate {
+  content?: {
+    parts?: CodeAssistCandidatePart[];
+  };
+  finishReason?: string;
+}
+
+interface CodeAssistUsageMetadata {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  totalTokenCount?: number;
+}
+
+interface CodeAssistGenerateContentResponse {
+  response?: {
+    candidates?: CodeAssistCandidate[];
+    promptFeedback?: {
+      blockReason?: string;
+      blockReasonMessage?: string;
+    };
+    usageMetadata?: CodeAssistUsageMetadata;
+    modelVersion?: string;
+  };
+  traceId?: string;
+  remainingCredits?: Array<{
+    creditType?: string;
+    creditAmount?: string;
+  }>;
+}
+
+interface CodeAssistLoadResponse {
+  currentTier?: {
+    id?: string;
+    name?: string;
+    hasOnboardedPreviously?: boolean;
+  } | null;
+  cloudaicompanionProject?: string | null;
+  paidTier?: {
+    id?: string;
+    name?: string;
+    availableCredits?: Array<{
+      creditType?: string;
+      creditAmount?: string;
+    }>;
+  } | null;
+}
+
+interface CodeAssistQuotaResponse {
+  buckets?: Array<{
+    modelId?: string;
+    remainingAmount?: string;
+    remainingFraction?: number;
+    resetTime?: string;
+    tokenType?: string;
+  }>;
+}
+
+interface CodeAssistRuntime {
+  client: OAuth2Client;
+  activeAccount: string | null;
+  projectId: string | null;
+  userTier: string | null;
+  userTierName: string | null;
+  loadedAt: number;
+}
+
+interface GoogleApiErrorShape {
+  code?: number;
+  message?: string;
+  status?: string;
+  details?: unknown[];
+}
+
+const CODE_ASSIST_BASE_URL = 'https://cloudcode-pa.googleapis.com/v1internal';
+const RUNTIME_TTL_MS = 30_000;
 
 function flattenMessages(messages: LLMMessage[]): string {
   const meaningful = messages
@@ -71,345 +147,577 @@ function repairJsonContent(text: string): string {
   }
 }
 
-function parseJsonCandidate(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
+function toContents(messages: LLMMessage[]): Array<{ role: 'user'; parts: Array<{ text: string }> }> {
+  return [{ role: 'user', parts: [{ text: flattenMessages(messages) }] }];
+}
 
-  try {
-    const parsed = JSON.parse(trimmed);
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    // continue
+function mapQuotaBuckets(input: CodeAssistQuotaResponse | null | undefined): GeminiQuotaBucket[] {
+  return Array.isArray(input?.buckets)
+    ? input.buckets.map((bucket) => ({
+      modelId: typeof bucket.modelId === 'string' && bucket.modelId.trim() ? bucket.modelId.trim() : null,
+      remainingAmount:
+        typeof bucket.remainingAmount === 'string' && bucket.remainingAmount.trim()
+          ? bucket.remainingAmount.trim()
+          : null,
+      remainingFraction: typeof bucket.remainingFraction === 'number' ? bucket.remainingFraction : null,
+      resetTime: typeof bucket.resetTime === 'string' && bucket.resetTime.trim() ? bucket.resetTime.trim() : null,
+      tokenType: typeof bucket.tokenType === 'string' && bucket.tokenType.trim() ? bucket.tokenType.trim() : null,
+    }))
+    : [];
+}
+
+function isBucketExhausted(bucket: GeminiQuotaBucket | undefined): boolean {
+  if (!bucket) return false;
+  if (bucket.remainingAmount && Number.isFinite(Number(bucket.remainingAmount))) {
+    return Number(bucket.remainingAmount) <= 0;
+  }
+  if (typeof bucket.remainingFraction === 'number') {
+    return bucket.remainingFraction <= 0;
+  }
+  return false;
+}
+
+function upsertQuotaBucket(buckets: GeminiQuotaBucket[], next: GeminiQuotaBucket): GeminiQuotaBucket[] {
+  const existing = buckets.findIndex((bucket) => bucket.modelId === next.modelId);
+  if (existing < 0) return [...buckets, next];
+  const copy = [...buckets];
+  copy[existing] = next;
+  return copy;
+}
+
+function extractResponseText(payload: CodeAssistGenerateContentResponse): string {
+  const parts = payload.response?.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .map((part) => (typeof part.text === 'string' ? part.text : ''))
+    .join('')
+    .trim();
+}
+
+function getEnvProjectId(): string | null {
+  const value = process.env.GOOGLE_CLOUD_PROJECT?.trim() || process.env.GOOGLE_CLOUD_PROJECT_ID?.trim() || '';
+  return value || null;
+}
+
+function summarizeGoogleError(error: unknown): GoogleApiErrorShape | null {
+  const parseMessage = (value: string): GoogleApiErrorShape | null => {
+    try {
+      const parsed = JSON.parse(value.replace(/\u00A0/g, '').replace(/\n/g, ' ')) as { error?: unknown };
+      if (parsed?.error && typeof parsed.error === 'object') {
+        return parsed.error as GoogleApiErrorShape;
+      }
+      if (parsed && typeof parsed === 'object') {
+        return parsed as unknown as GoogleApiErrorShape;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  if (!error || typeof error !== 'object') {
+    return typeof error === 'string' ? parseMessage(error) : null;
   }
 
-  const firstBrace = trimmed.indexOf('{');
-  if (firstBrace < 0) return null;
-  let depth = 0;
-  let inString = false;
-  let escaping = false;
-  let start = -1;
-
-  for (let index = firstBrace; index < trimmed.length; index++) {
-    const char = trimmed[index];
-    if (escaping) {
-      escaping = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaping = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (char === '{') {
-      if (depth === 0) start = index;
-      depth += 1;
-      continue;
-    }
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0 && start >= 0) {
-        const candidate = trimmed.slice(start, index + 1);
-        try {
-          const parsed = JSON.parse(candidate);
-          return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-        } catch {
-          return null;
-        }
+  const record = error as Record<string, unknown>;
+  if (record.response && typeof record.response === 'object') {
+    const response = record.response as Record<string, unknown>;
+    const data = response.data;
+    if (data && typeof data === 'object') {
+      const object = data as Record<string, unknown>;
+      if (object.error && typeof object.error === 'object') {
+        return object.error as GoogleApiErrorShape;
       }
+      return object as GoogleApiErrorShape;
     }
+  }
+
+  if (record.error && typeof record.error === 'object') {
+    return record.error as GoogleApiErrorShape;
+  }
+
+  if (typeof record.message === 'string') {
+    return parseMessage(record.message);
   }
 
   return null;
 }
 
-function isCliAuthExpired(message: string): boolean {
-  return /(expired|revoked|refresh token|session expired)/i.test(message);
-}
-
-function isCliAuthMissing(message: string): boolean {
-  return /(sign in|login|required authentication|oauth|browser authentication|waiting for auth|cached credential|run gemini)/i.test(message);
-}
-
-function isCliUnsupportedModel(message: string): boolean {
-  return /(unsupported model|unknown model|invalid model|model .* not found)/i.test(message);
-}
-
-function buildArgs(config: GeminiCliProviderConfig, prompt: string, promptMode: PromptMode, includeOutputFormat: boolean): string[] {
-  const args = ['--model', config.model];
-  if (includeOutputFormat && config.outputFormat === 'json') {
-    args.push('--output-format', 'json');
-  }
-
-  if (promptMode === 'flag') {
-    args.push('-p', prompt);
-  } else if (promptMode === 'positional') {
-    args.push(prompt);
-  }
-
-  return args;
-}
-
-async function runGeminiProcess(
-  executable: string,
-  args: string[],
-  prompt: string,
-  config: GeminiCliProviderConfig,
-  promptMode: PromptMode,
-): Promise<GeminiCliProcessResult> {
-  const startedAt = Date.now();
-  return await new Promise<GeminiCliProcessResult>((resolve, reject) => {
-    const child = spawn(executable, args, {
-      cwd: resolveGeminiCliWorkdir(config),
-      env: buildGeminiCliEnv(config),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-    let killTimer: NodeJS.Timeout | null = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 1_000).unref();
-    }, config.timeoutMs);
-    killTimer.unref();
-
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      if (killTimer) clearTimeout(killTimer);
-      reject(error);
-    });
-
-    child.on('close', (exitCode, signal) => {
-      if (settled) return;
-      settled = true;
-      if (killTimer) clearTimeout(killTimer);
-      resolve({
-        stdout,
-        stderr,
-        exitCode,
-        signal,
-        timedOut,
-        durationMs: Date.now() - startedAt,
-      });
-    });
-
-    if (promptMode === 'stdin') {
-      child.stdin.write(prompt);
+function hasDetailReason(error: GoogleApiErrorShape | null, reason: string): boolean {
+  if (!Array.isArray(error?.details)) return false;
+  return error.details.some((detail) => {
+    if (!detail || typeof detail !== 'object') return false;
+    const typed = detail as Record<string, unknown>;
+    if (typed.reason === reason) return true;
+    const metadata = typed.metadata;
+    if (metadata && typeof metadata === 'object') {
+      return Object.values(metadata as Record<string, unknown>).includes(reason);
     }
-    child.stdin.end();
+    const violations = typed.violations;
+    if (!Array.isArray(violations)) return false;
+    return violations.some((violation) => {
+      if (!violation || typeof violation !== 'object') return false;
+      const v = violation as Record<string, unknown>;
+      return v.reason === reason || String(v.description ?? '').includes(reason);
+    });
   });
 }
 
-function extractResponseText(parsed: Record<string, unknown>): string {
-  const direct = typeof parsed.response === 'string' ? parsed.response : null;
-  if (direct?.trim()) return direct.trim();
-
-  const nestedResult = parsed.result;
-  if (nestedResult && typeof nestedResult === 'object') {
-    const nested = nestedResult as Record<string, unknown>;
-    if (typeof nested.response === 'string' && nested.response.trim()) return nested.response.trim();
-  }
-
-  return '';
+function isTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /abort|timed out|timeout/i.test(message);
 }
 
-function extractTokenUsage(parsed: Record<string, unknown>): number | undefined {
-  const stats = parsed.stats;
-  if (!stats || typeof stats !== 'object') return undefined;
-  const typedStats = stats as Record<string, unknown>;
-  const candidates = [
-    typedStats.totalTokens,
-    typedStats.total_tokens,
-    typedStats.tokenCount,
-    typedStats.totalTokenCount,
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
-  }
-  return undefined;
+function isAuthExpiredError(error: unknown): boolean {
+  const googleError = summarizeGoogleError(error);
+  const message = String(googleError?.message ?? (error instanceof Error ? error.message : String(error ?? '')));
+  return (
+    googleError?.code === 401 ||
+    /invalid[_ ]grant|refresh token|expired|revoked|unauthorized/i.test(message)
+  );
 }
 
-async function executeGeminiCli(
-  config: GeminiCliProviderConfig,
-  prompt: string,
-): Promise<GeminiCliProcessResult & { parsed: Record<string, unknown> | null }> {
-  const install = checkGeminiCliInstall(config);
-  if (!install.installed || !install.resolvedBin) {
-    throw new LLMProviderError('cli_not_installed', 'gemini-cli', 'Gemini CLI is not installed or not reachable.', {
-      statusCode: 503,
-      fallbackEligible: true,
+function isQuotaError(error: unknown): boolean {
+  const googleError = summarizeGoogleError(error);
+  const message = String(googleError?.message ?? (error instanceof Error ? error.message : String(error ?? '')));
+  return (
+    googleError?.code === 429 ||
+    googleError?.status === 'RESOURCE_EXHAUSTED' ||
+    /resource has been exhausted|quota|credits/i.test(message) ||
+    hasDetailReason(googleError, 'RATE_LIMIT_EXCEEDED') ||
+    hasDetailReason(googleError, 'QUOTA_EXHAUSTED') ||
+    hasDetailReason(googleError, 'INSUFFICIENT_G1_CREDITS_BALANCE')
+  );
+}
+
+function isModelUnsupportedError(error: unknown): boolean {
+  const googleError = summarizeGoogleError(error);
+  const message = String(googleError?.message ?? (error instanceof Error ? error.message : String(error ?? '')));
+  return googleError?.code === 404 || /unknown model|invalid model|unsupported model|model .* not found/i.test(message);
+}
+
+function isPolicyBlockedError(error: unknown, payload?: CodeAssistGenerateContentResponse | null): boolean {
+  const blockReason = payload?.response?.promptFeedback?.blockReason;
+  if (typeof blockReason === 'string' && blockReason.trim()) return true;
+  const googleError = summarizeGoogleError(error);
+  const message = String(googleError?.message ?? (error instanceof Error ? error.message : String(error ?? '')));
+  return /policy|safety|blocked|disallowed/i.test(message);
+}
+
+function buildProviderError(code: LLMProviderErrorCode, message: string, options?: {
+  statusCode?: number;
+  fallbackEligible?: boolean;
+  cause?: unknown;
+}): LLMProviderError {
+  return new LLMProviderError(code, 'gemini-cli', message, {
+    statusCode: options?.statusCode,
+    fallbackEligible: options?.fallbackEligible,
+    cause: options?.cause,
+  });
+}
+
+async function requestJson<T>(
+  client: OAuth2Client,
+  method: string,
+  payload: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`Gemini request timed out after ${timeoutMs}ms.`)), timeoutMs);
+  timer.unref();
+
+  try {
+    const response = await client.request<T>({
+      url: `${CODE_ASSIST_BASE_URL}:${method}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      data: payload,
+      responseType: 'json',
+      signal: controller.signal,
     });
-  }
-
-  const promptModes: PromptMode[] = config.useStdin ? ['stdin'] : ['flag', 'positional'];
-  let lastResult: GeminiCliProcessResult | null = null;
-
-  for (const promptMode of promptModes) {
-    let includeOutputFormat = config.outputFormat === 'json';
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await runGeminiProcess(
-        install.resolvedBin,
-        buildArgs(config, prompt, promptMode, includeOutputFormat),
-        prompt,
-        config,
-        promptMode,
-      );
-      lastResult = result;
-      const combined = `${result.stdout}\n${result.stderr}`.trim();
-
-      if (
-        includeOutputFormat &&
-        result.exitCode !== 0 &&
-        /unknown arguments?:.*output-format/i.test(combined)
-      ) {
-        includeOutputFormat = false;
-        continue;
-      }
-
-      const parsed = includeOutputFormat ? parseJsonCandidate(result.stdout) ?? parseJsonCandidate(combined) : null;
-      return { ...result, parsed };
+    return response.data;
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw buildProviderError('cli_timeout', 'Gemini Code Assist request timed out.', {
+        statusCode: 504,
+        fallbackEligible: true,
+        cause: error,
+      });
     }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
+}
 
-  return { ...(lastResult ?? {
-    stdout: '',
-    stderr: 'Gemini CLI did not produce output.',
-    exitCode: null,
-    signal: null,
-    timedOut: false,
-    durationMs: 0,
-  }), parsed: null };
+function resolveModelAttemptSequence(config: GeminiCliProviderConfig, requestedModel: string | undefined, runtimeState: GeminiCliRuntimeState): string[] {
+  const primary = requestedModel && isDirectGeminiModelId(requestedModel) ? requestedModel : config.model;
+  const ordered = [primary, ...config.models];
+  const unique = [...new Set(ordered.map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  const buckets = runtimeState.quotaBuckets ?? [];
+  const available = unique.filter((modelId) => {
+    const bucket = buckets.find((entry) => entry.modelId === modelId);
+    return !isBucketExhausted(bucket);
+  });
+  const exhausted = unique.filter((modelId) => !available.includes(modelId));
+  return [...available, ...exhausted];
 }
 
 export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClient & {
   health(): GeminiCliHealthSnapshot;
+  refreshHealth(): Promise<GeminiCliHealthSnapshot>;
 } {
-  const runtimeState: {
-    lastError: string | null;
-    lastSuccessAt: string | null;
-    lastLatencyMs: number | null;
-  } = {
+  const runtimeState: GeminiCliRuntimeState = {
+    authReady: null,
+    authVerifiedAt: null,
     lastError: null,
     lastSuccessAt: null,
     lastLatencyMs: null,
+    lastResolvedModel: null,
+    projectId: null,
+    userTier: null,
+    userTierName: null,
+    availableCredits: [],
+    quotaBuckets: [],
+    quotaUpdatedAt: null,
+    quotaLastError: null,
   };
 
-  async function complete(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
-    if (!config.enabled) {
-      throw new LLMProviderError('backend_disabled', 'gemini-cli', 'Gemini CLI backend is disabled.', {
-        statusCode: 503,
-        fallbackEligible: true,
-      });
-    }
+  let runtimeCache: CodeAssistRuntime | null = null;
+  let runtimePromise: Promise<CodeAssistRuntime> | null = null;
 
-    const prompt = flattenMessages(messages);
-    const result = await executeGeminiCli(config, prompt);
-    runtimeState.lastLatencyMs = result.durationMs;
+  async function loadRuntime(): Promise<CodeAssistRuntime> {
+    const cached = await loadGeminiCachedOAuthClient(config).catch((error) => {
+      runtimeState.authReady = false;
+      runtimeState.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
+    });
 
-    if (result.timedOut) {
-      runtimeState.lastError = 'Gemini CLI request timed out.';
-      throw new LLMProviderError('cli_timeout', 'gemini-cli', 'Gemini CLI request timed out.', {
-        statusCode: 504,
-        fallbackEligible: true,
-      });
-    }
-
-    const combined = `${result.stdout}\n${result.stderr}`.trim();
-    const parsed = result.parsed;
-    const parsedError = parsed?.error && typeof parsed.error === 'object'
-      ? JSON.stringify(parsed.error)
-      : typeof parsed?.error === 'string'
-        ? parsed.error
-        : null;
-
-    if (result.exitCode !== 0 || parsedError) {
-      const errorText = [parsedError, combined].filter(Boolean).join('\n').trim() || 'Gemini CLI failed.';
-      runtimeState.lastError = errorText;
-
-      if (isCliUnsupportedModel(errorText)) {
-        throw new LLMProviderError('cli_model_unsupported', 'gemini-cli', errorText, {
-          statusCode: 502,
-          fallbackEligible: false,
-        });
-      }
-      if (isCliAuthExpired(errorText)) {
-        throw new LLMProviderError('cli_auth_expired', 'gemini-cli', errorText, {
+    if (!cached) {
+      runtimeState.authReady = false;
+      throw buildProviderError(
+        'cli_auth_missing',
+        'Gemini cached Google auth is missing. Run pnpm login:gemini-cli.',
+        {
           statusCode: 503,
           fallbackEligible: true,
-        });
-      }
-      if (isCliAuthMissing(errorText)) {
-        throw new LLMProviderError('cli_auth_missing', 'gemini-cli', errorText, {
+        },
+      );
+    }
+
+    const loadedAt = new Date().toISOString();
+    runtimeState.authReady = true;
+    runtimeState.authVerifiedAt = loadedAt;
+
+    const loadResponse = await requestJson<CodeAssistLoadResponse>(
+      cached.client,
+      'loadCodeAssist',
+      {
+        cloudaicompanionProject: getEnvProjectId(),
+        metadata: {
+          ideType: 'IDE_UNSPECIFIED',
+          platform: 'PLATFORM_UNSPECIFIED',
+          pluginType: 'GEMINI',
+          duetProject: getEnvProjectId(),
+        },
+        mode: 'HEALTH_CHECK',
+      },
+      Math.min(config.timeoutMs, 45_000),
+    ).catch((error) => {
+      if (error instanceof LLMProviderError) throw error;
+      if (isAuthExpiredError(error)) {
+        runtimeState.authReady = false;
+        throw buildProviderError('cli_auth_expired', 'Gemini cached Google auth expired or was revoked.', {
           statusCode: 503,
           fallbackEligible: true,
+          cause: error,
         });
       }
-
-      throw new LLMProviderError('cli_process_error', 'gemini-cli', errorText, {
+      if (isQuotaError(error)) {
+        throw buildProviderError('cli_quota_exhausted', 'Gemini direct quota is exhausted right now.', {
+          statusCode: 429,
+          fallbackEligible: true,
+          cause: error,
+        });
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw buildProviderError('cli_process_error', message, {
         statusCode: 502,
         fallbackEligible: true,
+        cause: error,
       });
-    }
+    });
 
-    const text = extractResponseText(parsed ?? {}) || result.stdout.trim();
-    if (!text) {
-      runtimeState.lastError = combined || 'Gemini CLI returned an empty response.';
-      throw new LLMProviderError('cli_bad_output', 'gemini-cli', 'Gemini CLI returned an empty or unparsable response.', {
-        statusCode: 502,
-        fallbackEligible: true,
-      });
-    }
-
+    runtimeState.projectId =
+      (typeof loadResponse.cloudaicompanionProject === 'string' && loadResponse.cloudaicompanionProject.trim()
+        ? loadResponse.cloudaicompanionProject.trim()
+        : getEnvProjectId()) ?? null;
+    runtimeState.userTier =
+      loadResponse.paidTier?.id?.trim() ||
+      loadResponse.currentTier?.id?.trim() ||
+      null;
+    runtimeState.userTierName =
+      loadResponse.paidTier?.name?.trim() ||
+      loadResponse.currentTier?.name?.trim() ||
+      null;
+    runtimeState.availableCredits = Array.isArray(loadResponse.paidTier?.availableCredits)
+      ? loadResponse.paidTier.availableCredits
+        .filter((credit): credit is { creditType: string; creditAmount: string } => (
+          typeof credit?.creditType === 'string' &&
+          credit.creditType.trim().length > 0 &&
+          typeof credit.creditAmount === 'string' &&
+          credit.creditAmount.trim().length > 0
+        ))
+        .map((credit) => ({
+          creditType: credit.creditType.trim(),
+          creditAmount: credit.creditAmount.trim(),
+        }))
+      : [];
     runtimeState.lastError = null;
-    runtimeState.lastSuccessAt = new Date().toISOString();
 
     return {
-      content: normalizeSemanticOutput(repairJsonContent(text), opts?.semanticProfile),
-      provider: 'gemini-cli',
-      model: opts?.model ?? 'gemini-web',
-      backend: 'gemini-cli',
-      backendModel: config.model,
-      latencyMs: result.durationMs,
-      tokensUsed: extractTokenUsage(parsed ?? {}),
+      client: cached.client,
+      activeAccount: cached.activeAccount ?? null,
+      projectId: runtimeState.projectId,
+      userTier: runtimeState.userTier,
+      userTierName: runtimeState.userTierName,
+      loadedAt: Date.parse(loadedAt),
     };
   }
+
+  async function ensureRuntime(force = false): Promise<CodeAssistRuntime> {
+    if (!config.enabled) {
+      throw buildProviderError('backend_disabled', 'Gemini direct backend is disabled.', {
+        statusCode: 503,
+        fallbackEligible: false,
+      });
+    }
+
+    if (!force && runtimeCache && (Date.now() - runtimeCache.loadedAt) < RUNTIME_TTL_MS) {
+      return runtimeCache;
+    }
+
+    if (!force && runtimePromise) {
+      return await runtimePromise;
+    }
+
+    runtimePromise = (async () => {
+      try {
+        const runtime = await loadRuntime();
+        runtimeCache = runtime;
+        return runtime;
+      } finally {
+        runtimePromise = null;
+      }
+    })();
+
+    return await runtimePromise;
+  }
+
+  async function refreshQuota(runtime: CodeAssistRuntime, force = false): Promise<void> {
+    if (!runtime.projectId) return;
+    if (!force && runtimeState.quotaUpdatedAt) {
+      const age = Date.now() - Date.parse(runtimeState.quotaUpdatedAt);
+      if (Number.isFinite(age) && age < config.quotaRefreshMs) return;
+    }
+
+    try {
+      const quota = await requestJson<CodeAssistQuotaResponse>(
+        runtime.client,
+        'retrieveUserQuota',
+        {
+          project: runtime.projectId,
+        },
+        Math.min(config.timeoutMs, 30_000),
+      );
+      runtimeState.quotaBuckets = mapQuotaBuckets(quota);
+      runtimeState.quotaUpdatedAt = new Date().toISOString();
+      runtimeState.quotaLastError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      runtimeState.quotaLastError = message;
+      if (error instanceof LLMProviderError && error.code === 'cli_quota_exhausted') {
+        runtimeState.quotaUpdatedAt = new Date().toISOString();
+      }
+    }
+  }
+
+  async function executeModel(runtime: CodeAssistRuntime, model: string, messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
+    const startedAt = Date.now();
+    const semanticMessages = applySemanticPrompt(messages, opts?.semanticProfile);
+    const payload = await requestJson<CodeAssistGenerateContentResponse>(
+      runtime.client,
+      'generateContent',
+      {
+        model,
+        project: runtime.projectId ?? undefined,
+        user_prompt_id: randomUUID(),
+        request: {
+          contents: toContents(semanticMessages),
+          generationConfig: {
+            temperature: opts?.temperature,
+            maxOutputTokens: opts?.maxTokens,
+            responseMimeType: opts?.semanticProfile?.outputMode === 'json' ? 'application/json' : undefined,
+            responseSchema: opts?.semanticProfile?.jsonSchema,
+          },
+        },
+      },
+      config.timeoutMs,
+    ).catch((error) => {
+      if (error instanceof LLMProviderError) throw error;
+      if (isModelUnsupportedError(error)) {
+        throw buildProviderError('cli_model_unsupported', `Gemini direct model ${model} is not available for this account.`, {
+          statusCode: 400,
+          fallbackEligible: false,
+          cause: error,
+        });
+      }
+      if (isAuthExpiredError(error)) {
+        runtimeState.authReady = false;
+        throw buildProviderError('cli_auth_expired', 'Gemini cached Google auth expired or was revoked.', {
+          statusCode: 503,
+          fallbackEligible: true,
+          cause: error,
+        });
+      }
+      if (isQuotaError(error)) {
+        runtimeState.quotaBuckets = upsertQuotaBucket(runtimeState.quotaBuckets ?? [], {
+          modelId: model,
+          remainingAmount: '0',
+          remainingFraction: 0,
+          resetTime: null,
+          tokenType: null,
+        });
+        runtimeState.quotaUpdatedAt = new Date().toISOString();
+        runtimeState.quotaLastError = error instanceof Error ? error.message : String(error);
+        throw buildProviderError('cli_quota_exhausted', `Gemini direct quota is exhausted for ${model}.`, {
+          statusCode: 429,
+          fallbackEligible: true,
+          cause: error,
+        });
+      }
+      if (isPolicyBlockedError(error)) {
+        throw buildProviderError('cli_policy_blocked', 'Gemini direct request was blocked by policy or safety controls.', {
+          statusCode: 400,
+          fallbackEligible: false,
+          cause: error,
+        });
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw buildProviderError('cli_process_error', message, {
+        statusCode: 502,
+        fallbackEligible: true,
+        cause: error,
+      });
+    });
+
+    if (isPolicyBlockedError(null, payload)) {
+      throw buildProviderError('cli_policy_blocked', 'Gemini direct request was blocked by policy or safety controls.', {
+        statusCode: 400,
+        fallbackEligible: false,
+      });
+    }
+
+    const rawText = extractResponseText(payload);
+    if (!rawText) {
+      throw buildProviderError('cli_bad_output', 'Gemini direct backend returned an empty or unparsable response.', {
+        statusCode: 502,
+        fallbackEligible: true,
+      });
+    }
+
+    if (Array.isArray(payload.remainingCredits)) {
+      runtimeState.availableCredits = payload.remainingCredits
+        .filter((credit): credit is { creditType: string; creditAmount: string } => (
+          typeof credit?.creditType === 'string' &&
+          credit.creditType.trim().length > 0 &&
+          typeof credit.creditAmount === 'string' &&
+          credit.creditAmount.trim().length > 0
+        ))
+        .map((credit) => ({
+          creditType: credit.creditType.trim(),
+          creditAmount: credit.creditAmount.trim(),
+        }));
+    }
+
+    runtimeState.lastResolvedModel = model;
+    runtimeState.lastSuccessAt = new Date().toISOString();
+    runtimeState.lastLatencyMs = Date.now() - startedAt;
+    runtimeState.lastError = null;
+    void refreshQuota(runtime).catch(() => undefined);
+
+    return {
+      content: normalizeSemanticOutput(repairJsonContent(rawText), opts?.semanticProfile),
+      provider: 'gemini-cli',
+      model: opts?.model ?? model,
+      tokensUsed: payload.response?.usageMetadata?.totalTokenCount,
+      backend: 'gemini-cli',
+      backendModel: payload.response?.modelVersion ?? model,
+      latencyMs: runtimeState.lastLatencyMs ?? undefined,
+    };
+  }
+
+  void ensureRuntime().then((runtime) => refreshQuota(runtime, true)).catch(() => undefined);
 
   return {
     provider: 'gemini-cli',
     model: config.model,
 
-    health(): GeminiCliHealthSnapshot {
-      return buildGeminiCliHealthSnapshot(config, runtimeState);
-    },
-
     async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
-      return await complete(messages, opts);
-    },
-
-    async *streamChat(messages: LLMMessage[], opts?: LLMOptions): AsyncGenerator<LLMStreamChunk, LLMResponse, void> {
-      const response = await complete(messages, opts);
-      if (response.content) {
-        yield { content: response.content };
+      if (opts?.model && isPlaywrightModelId(opts.model)) {
+        throw buildProviderError('cli_model_unsupported', `Model ${opts.model} is reserved for the Playwright Gemini Web backend.`, {
+          statusCode: 400,
+          fallbackEligible: false,
+        });
       }
-      return response;
+
+      const runtime = await ensureRuntime();
+      await refreshQuota(runtime).catch(() => undefined);
+
+      const attempts = resolveModelAttemptSequence(config, opts?.model, runtimeState);
+      let lastError: LLMProviderError | null = null;
+
+      for (const model of attempts) {
+        try {
+          return await executeModel(runtime, model, messages, opts);
+        } catch (error) {
+          const normalized = error instanceof LLMProviderError
+            ? error
+            : buildProviderError('cli_process_error', error instanceof Error ? error.message : String(error), {
+              statusCode: 502,
+              fallbackEligible: true,
+              cause: error,
+            });
+          runtimeState.lastError = normalized.message;
+          lastError = normalized;
+          const canTryNextModel =
+            attempts.length > 1 &&
+            (normalized.code === 'cli_quota_exhausted' || normalized.code === 'cli_model_unsupported') &&
+            model !== attempts[attempts.length - 1];
+          if (canTryNextModel) continue;
+          throw normalized;
+        }
+      }
+
+      throw lastError ?? buildProviderError('cli_process_error', 'Gemini direct backend did not return a response.', {
+        statusCode: 502,
+        fallbackEligible: true,
+      });
     },
 
     getDiagnostics(): Record<string, unknown> {
       return this.health() as unknown as Record<string, unknown>;
+    },
+
+    health(): GeminiCliHealthSnapshot {
+      return buildGeminiCliHealthSnapshot(config, runtimeState);
+    },
+
+    async refreshHealth(): Promise<GeminiCliHealthSnapshot> {
+      const runtime = await ensureRuntime(true);
+      await refreshQuota(runtime, true);
+      return buildGeminiCliHealthSnapshot(config, runtimeState);
     },
   };
 }
