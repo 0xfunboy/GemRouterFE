@@ -24,6 +24,7 @@
     "smoke:playwright": "SMOKE_BACKEND=playwright pnpm build && bash ./scripts/smoke.sh"
   },
   "dependencies": {
+    "@google/gemini-cli": "^0.40.1",
     "dotenv": "^16.6.1",
     "fastify": "^4.29.1",
     "playwright": "^1.59.1"
