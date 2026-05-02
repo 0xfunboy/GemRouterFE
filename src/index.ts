@@ -9,6 +9,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
+import { describePublicModel, isPlaywrightModelId } from './lib/models.js';
 import {
   buildChatCompletionResponse,
   buildOpenAIError,
@@ -604,14 +605,26 @@ function sanitizeLlmDiagnostics(
       input.geminiCli && typeof input.geminiCli === 'object'
         ? {
           enabled: (input.geminiCli as Record<string, unknown>).enabled ?? null,
-          bin: (input.geminiCli as Record<string, unknown>).bin ?? null,
-          resolvedBin: (input.geminiCli as Record<string, unknown>).resolvedBin ?? null,
-          installed: (input.geminiCli as Record<string, unknown>).installed ?? null,
-          version: (input.geminiCli as Record<string, unknown>).version ?? null,
+          available: (input.geminiCli as Record<string, unknown>).available ?? null,
+          runtime: (input.geminiCli as Record<string, unknown>).runtime ?? null,
+          externalDependency: (input.geminiCli as Record<string, unknown>).externalDependency ?? null,
           authReady: (input.geminiCli as Record<string, unknown>).authReady ?? null,
+          authVerifiedAt: (input.geminiCli as Record<string, unknown>).authVerifiedAt ?? null,
           authCacheDetected: (input.geminiCli as Record<string, unknown>).authCacheDetected ?? null,
+          selectedAuthType: (input.geminiCli as Record<string, unknown>).selectedAuthType ?? null,
+          activeAccount: (input.geminiCli as Record<string, unknown>).activeAccount ?? null,
           model: (input.geminiCli as Record<string, unknown>).model ?? null,
+          models: (input.geminiCli as Record<string, unknown>).models ?? [],
           timeoutMs: (input.geminiCli as Record<string, unknown>).timeoutMs ?? null,
+          quotaRefreshMs: (input.geminiCli as Record<string, unknown>).quotaRefreshMs ?? null,
+          projectId: (input.geminiCli as Record<string, unknown>).projectId ?? null,
+          userTier: (input.geminiCli as Record<string, unknown>).userTier ?? null,
+          userTierName: (input.geminiCli as Record<string, unknown>).userTierName ?? null,
+          availableCredits: (input.geminiCli as Record<string, unknown>).availableCredits ?? [],
+          quotaBuckets: (input.geminiCli as Record<string, unknown>).quotaBuckets ?? [],
+          quotaUpdatedAt: (input.geminiCli as Record<string, unknown>).quotaUpdatedAt ?? null,
+          quotaLastError: (input.geminiCli as Record<string, unknown>).quotaLastError ?? null,
+          lastResolvedModel: (input.geminiCli as Record<string, unknown>).lastResolvedModel ?? null,
           loginHint: (input.geminiCli as Record<string, unknown>).loginHint ?? null,
           bootstrapEnabled: (input.geminiCli as Record<string, unknown>).bootstrapEnabled ?? null,
           bootstrapMode: (input.geminiCli as Record<string, unknown>).bootstrapMode ?? null,
@@ -653,11 +666,12 @@ function sanitizeLlmDiagnostics(
     geminiCli: base.geminiCli
       ? {
         ...base.geminiCli,
-        workdir: (input.geminiCli as Record<string, unknown>).workdir ?? null,
         userHome: (input.geminiCli as Record<string, unknown>).userHome ?? null,
         dotGeminiDir: (input.geminiCli as Record<string, unknown>).dotGeminiDir ?? null,
         settingsExists: (input.geminiCli as Record<string, unknown>).settingsExists ?? null,
         authCacheFiles: (input.geminiCli as Record<string, unknown>).authCacheFiles ?? [],
+        callbackHost: (input.geminiCli as Record<string, unknown>).callbackHost ?? null,
+        callbackPort: (input.geminiCli as Record<string, unknown>).callbackPort ?? null,
       }
       : null,
     playwright: base.playwright
@@ -747,7 +761,12 @@ function mapLlmErrorToHttp(error: unknown): {
 } {
   if (error instanceof LLMProviderError) {
     const statusCode = error.options.statusCode ?? 502;
-    const type = error.code === 'playwright_quota' ? 'rate_limit_error' : 'server_error';
+    const type =
+      error.code === 'playwright_quota' || error.code === 'cli_quota_exhausted'
+        ? 'rate_limit_error'
+        : error.code === 'cli_model_unsupported'
+          ? 'invalid_request_error'
+          : 'server_error';
     return {
       statusCode,
       type,
@@ -784,6 +803,79 @@ function classifyInteractionRoute(route: string): string {
 
 function formatHourLabel(timestamp: number): string {
   return new Date(timestamp).toISOString().slice(11, 16);
+}
+
+function isQuotaBucketExhausted(bucket: Record<string, unknown> | null | undefined): boolean {
+  if (!bucket) return false;
+  const remainingAmount = bucket.remainingAmount;
+  if (typeof remainingAmount === 'string' && remainingAmount.trim()) {
+    const amount = Number(remainingAmount);
+    if (Number.isFinite(amount)) return amount <= 0;
+  }
+  const remainingFraction = bucket.remainingFraction;
+  if (typeof remainingFraction === 'number') {
+    return remainingFraction <= 0;
+  }
+  return false;
+}
+
+function isDirectQuotaBlocked(geminiCli: Record<string, unknown>): boolean {
+  const message = String(geminiCli.quotaLastError ?? '').trim();
+  return /resource has been exhausted|quota|credits/i.test(message);
+}
+
+function buildProviderModelState(
+  geminiCli: Record<string, unknown>,
+  playwrightReady: boolean,
+): Array<Record<string, unknown>> {
+  const buckets = Array.isArray(geminiCli.quotaBuckets) ? geminiCli.quotaBuckets as Record<string, unknown>[] : [];
+  const authReady = geminiCli.authReady === true;
+  const quotaBlocked = isDirectQuotaBlocked(geminiCli);
+  return config.modelIds.map((modelId) => {
+    const descriptor = describePublicModel(modelId);
+    const quota = descriptor.kind === 'direct'
+      ? (buckets.find((bucket) => bucket.modelId === modelId) ?? null)
+      : null;
+    return {
+      ...descriptor,
+      backend: descriptor.kind === 'playwright' ? 'playwright' : 'gemini-cli',
+      selected: descriptor.kind === 'direct' ? geminiCli.model === modelId : false,
+      available:
+        descriptor.kind === 'playwright'
+          ? playwrightReady
+          : (authReady && !quotaBlocked && !isQuotaBucketExhausted(quota)),
+      authReady: descriptor.kind === 'direct' ? authReady : null,
+      profileReady: descriptor.kind === 'playwright' ? playwrightReady : null,
+      quota,
+    };
+  });
+}
+
+function buildProviderSnapshot(
+  geminiCli: Record<string, unknown>,
+  playwrightReady: boolean,
+): Record<string, unknown> {
+  return {
+    backend: 'gemini-cli',
+    runtime: geminiCli.runtime ?? 'embedded-codeassist',
+    authReady: geminiCli.authReady ?? null,
+    authCacheDetected: geminiCli.authCacheDetected ?? null,
+    authVerifiedAt: geminiCli.authVerifiedAt ?? null,
+    selectedAuthType: geminiCli.selectedAuthType ?? null,
+    activeAccount: geminiCli.activeAccount ?? null,
+    projectId: geminiCli.projectId ?? null,
+    userTier: geminiCli.userTier ?? null,
+    userTierName: geminiCli.userTierName ?? null,
+    configuredModel: geminiCli.model ?? null,
+    configuredModels: geminiCli.models ?? [],
+    lastResolvedModel: geminiCli.lastResolvedModel ?? null,
+    availableCredits: geminiCli.availableCredits ?? [],
+    quotaBuckets: geminiCli.quotaBuckets ?? [],
+    quotaUpdatedAt: geminiCli.quotaUpdatedAt ?? null,
+    quotaLastError: geminiCli.quotaLastError ?? null,
+    loginHint: geminiCli.loginHint ?? null,
+    models: buildProviderModelState(geminiCli, playwrightReady),
+  };
 }
 
 function buildGuestSummary() {
@@ -839,7 +931,7 @@ function buildGuestSummary() {
       activeDefaultBackend: routing.activeDefaultBackend ?? null,
       lastBackendUsed: routing.lastBackendUsed ?? null,
       geminiCliReady: geminiCli.authReady ?? null,
-      geminiCliInstalled: geminiCli.installed ?? null,
+      geminiCliAvailable: geminiCli.available ?? null,
       openPages: (runtime.llm as Record<string, unknown> | null)?.openPages ?? 0,
       busyOpenTabs: (runtime.llm as Record<string, unknown> | null)?.busyOpenTabs ?? 0,
       respondedOpenTabs: (runtime.llm as Record<string, unknown> | null)?.respondedOpenTabs ?? 0,
@@ -882,13 +974,17 @@ function getRuntimeSnapshot(
   const sanitizedLlmDiagnostics = sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm });
   const geminiCliDiagnostics = ((sanitizedLlmDiagnostics?.geminiCli as Record<string, unknown> | undefined) ?? {});
   const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? config.llmRouting.backendOrder[0] ?? 'gemini-cli');
-  const geminiCliAvailable = Boolean(geminiCliDiagnostics.enabled) && Boolean(geminiCliDiagnostics.installed) && Boolean(geminiCliDiagnostics.authReady);
+  const geminiCliAvailable =
+    Boolean(geminiCliDiagnostics.enabled) &&
+    Boolean(geminiCliDiagnostics.authReady) &&
+    !isDirectQuotaBlocked(geminiCliDiagnostics);
   const playwrightReady = executableExists && profileExists && cookiesExists;
   const activeDefaultBackend: LLMBackendId =
     configuredDefaultBackend === 'gemini-cli'
       ? (geminiCliAvailable ? 'gemini-cli' : playwrightReady ? 'playwright' : 'gemini-cli')
       : (playwrightReady ? 'playwright' : geminiCliAvailable ? 'gemini-cli' : 'playwright');
   const backendOrder = (sanitizedLlmDiagnostics?.backendOrder as LLMBackendId[] | undefined) ?? config.llmRouting.backendOrder;
+  const provider = buildProviderSnapshot(geminiCliDiagnostics, playwrightReady);
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -910,6 +1006,7 @@ function getRuntimeSnapshot(
       headed: !config.llm.headless,
       profileReady: playwrightReady,
     },
+    provider,
     backends: {
       geminiCli: geminiCliDiagnostics,
       playwright: {
@@ -947,7 +1044,7 @@ function normalizeAllowedModels(values: unknown): string[] {
 function listPublicEndpoints(): string[] {
   const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
   if (isSurfaceEnabled('openai')) {
-    endpoints.push('/v1/models', '/v1/chat/completions', '/v1/responses');
+    endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses');
   }
   if (isSurfaceEnabled('deepseek')) {
     endpoints.push('/models', '/chat/completions');
@@ -981,6 +1078,30 @@ async function handleModelsRequest(
   } finally {
     access.release();
   }
+}
+
+function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: AuthenticatedClientApp | ApiAppRecord): Record<string, unknown> {
+  const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+  const provider = (runtime.provider as Record<string, unknown> | null) ?? {};
+  const providerModels = Array.isArray(provider.models) ? provider.models as Record<string, unknown>[] : [];
+  const filteredModels = clientApp
+    ? providerModels.filter((model) => appStore.isModelAllowed(clientApp, String(model.id ?? '')))
+    : providerModels;
+  return {
+    ok: true,
+    project: PROJECT_NAME,
+    service: SERVICE_NAME,
+    ts: runtime.ts,
+    backendOrder: runtime.backendOrder,
+    fallbackEnabled: runtime.fallbackEnabled,
+    routing: runtime.routing,
+    provider: {
+      ...provider,
+      models: filteredModels,
+    },
+    backends: runtime.backends,
+    compatibility: getCompatibilitySnapshot(request),
+  };
 }
 
 async function handleChatCompletionsRequest(
@@ -2053,6 +2174,7 @@ app.get('/admin/summary', async (request, reply) => {
   const llmSnapshot = (runtime.llm as Record<string, unknown> | null) ?? null;
   const routingSnapshot = (runtime.routing as Record<string, unknown> | null) ?? null;
   const backendSnapshot = (runtime.backends as Record<string, unknown> | null) ?? null;
+  const providerSnapshot = (runtime.provider as Record<string, unknown> | null) ?? null;
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -2072,6 +2194,7 @@ app.get('/admin/summary', async (request, reply) => {
       apps: appStore.list().length,
     },
     routing: routingSnapshot,
+    provider: providerSnapshot,
     backends: backendSnapshot,
     llm: llmSnapshot,
     models: config.modelIds,
@@ -2265,6 +2388,47 @@ app.post<{
 
 app.get('/v1/models', async (request, reply) => handleModelsRequest(request, reply, 'openai'));
 app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'deepseek'));
+app.get('/v1/provider/runtime', async (request, reply) => {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    return buildProviderRuntimeResponse(request, access.app);
+  } finally {
+    access.release();
+  }
+});
+app.get('/v1/provider/models', async (request, reply) => {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    const runtime = buildProviderRuntimeResponse(request, access.app);
+    return {
+      object: 'list',
+      data: ((runtime.provider as Record<string, unknown>).models as unknown[]) ?? [],
+    };
+  } finally {
+    access.release();
+  }
+});
+app.get('/v1/provider/quota', async (request, reply) => {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    const runtime = buildProviderRuntimeResponse(request, access.app);
+    const provider = (runtime.provider as Record<string, unknown> | null) ?? {};
+    return {
+      ok: true,
+      model: provider.configuredModel ?? null,
+      lastResolvedModel: provider.lastResolvedModel ?? null,
+      availableCredits: provider.availableCredits ?? [],
+      quotaBuckets: provider.quotaBuckets ?? [],
+      quotaUpdatedAt: provider.quotaUpdatedAt ?? null,
+      quotaLastError: provider.quotaLastError ?? null,
+    };
+  } finally {
+    access.release();
+  }
+});
 
 app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) =>
   handleChatCompletionsRequest(request, reply, 'openai'),

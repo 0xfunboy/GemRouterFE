@@ -1,4 +1,5 @@
 import { GeminiNotReadyError, GeminiQuotaError, GeminiTimeoutError } from './providers/tegem/errors.js';
+import { isPlaywrightModelId } from '../lib/models.js';
 import { LLMProviderError } from './errors.js';
 import type { LLMBackendId, LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from './types.js';
 
@@ -71,7 +72,7 @@ function annotateResponse(
 ): LLMResponse {
   const provider = fallbackFrom === 'gemini-cli' && backend === 'playwright'
     ? 'playwright-after-cli-failure'
-    : backend;
+    : (response.provider || backend);
   return {
     ...response,
     provider,
@@ -100,6 +101,7 @@ function shouldFallback(
 }
 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
+  if (opts?.model && isPlaywrightModelId(opts.model)) return ['playwright'];
   const preference = opts?.backendPreference ?? 'auto';
   if (preference === 'gemini-cli' || preference === 'playwright') return [preference];
   return [...new Set(config.backendOrder)];

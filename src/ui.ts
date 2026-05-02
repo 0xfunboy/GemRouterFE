@@ -32,8 +32,8 @@ export function renderAppShell(input: {
   socialPreviewUrl?: string;
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
-  const pageTitle = `${input.projectName} — Gemini CLI + Playwright Compatibility Router`;
-  const pageDescription = 'Gemini CLI first, Playwright Gemini Web fallback, exposed through OpenAI, DeepSeek and Ollama compatible APIs.';
+  const pageTitle = `${input.projectName} — Gemini Direct + Playwright Compatibility Router`;
+  const pageDescription = 'Embedded Gemini direct auth first, Playwright Gemini Web fallback, exposed through OpenAI, DeepSeek and Ollama compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
     : '';
@@ -548,7 +548,7 @@ export function renderAppShell(input: {
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
             ${brandTitle}
-            <span>Router console for Gemini CLI and Gemini Web compatibility</span>
+            <span>Router console for Gemini direct auth and Gemini Web compatibility</span>
           </div>
         </div>
         <div class="nav-actions">
@@ -560,7 +560,7 @@ export function renderAppShell(input: {
       <section class="panel hero">
         <div class="hero-copy">
           <span class="eyebrow">Gemini Local Router</span>
-          <h1>Gemini CLI first, Playwright fallback, familiar API surfaces.</h1>
+          <h1>Gemini direct first, Playwright fallback, familiar API surfaces.</h1>
           <p>
             One local router behind multiple compatible API surfaces. Public view shows health and usage only.
             Admin mode exposes apps, keys, backend diagnostics, prompt testing, interaction logs and recovery tools.
@@ -568,7 +568,7 @@ export function renderAppShell(input: {
           <div class="chip-row" style="margin-top:18px">
             ${input.modelIds.map((modelId) => `<span class="chip">${escapeHtml(modelId)}</span>`).join('')}
             <span class="chip">OpenAI / DeepSeek / Ollama</span>
-            <span class="chip">Gemini CLI + Playwright</span>
+            <span class="chip">Gemini Direct + Playwright</span>
           </div>
         </div>
         <div class="hero-card">
@@ -660,12 +660,23 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">Backend Routing</h3>
-              <p class="section-copy">Gemini CLI is preferred when cached Google auth is available. Playwright remains the authenticated fallback path.</p>
+              <p class="section-copy">Embedded Gemini direct auth is preferred when cached Google auth is available. Playwright remains the authenticated fallback path.</p>
             </div>
             <div id="backend-pills" class="meta-row"></div>
           </div>
           <div id="backend-output" class="mono-box">Loading backend routing snapshot…</div>
           <div id="backend-hint" class="footer-note" style="margin-top:10px"></div>
+        </section>
+
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">Direct Models and Quota</h3>
+              <p class="section-copy">Real Gemini model IDs, active Google account state, and the latest per-model quota snapshot the router can observe.</p>
+            </div>
+            <div id="provider-pills" class="meta-row"></div>
+          </div>
+          <div id="provider-output" class="mono-box">Loading direct model and quota snapshot…</div>
         </section>
 
         <section class="panel section">
@@ -881,6 +892,8 @@ export function renderAppShell(input: {
       const backendPills = document.getElementById('backend-pills');
       const backendOutput = document.getElementById('backend-output');
       const backendHint = document.getElementById('backend-hint');
+      const providerPills = document.getElementById('provider-pills');
+      const providerOutput = document.getElementById('provider-output');
       const statsGrid = document.getElementById('stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
@@ -956,11 +969,11 @@ export function renderAppShell(input: {
         if (runtime.lastBackendUsed) {
           pills.push('<span class="chip">Last backend ' + escapeHtml(runtime.lastBackendUsed) + '</span>');
         }
-        if (runtime.geminiCliInstalled !== undefined) {
-          pills.push('<span class="chip ' + (runtime.geminiCliInstalled ? 'good' : 'warn') + '">' + (runtime.geminiCliInstalled ? 'CLI installed' : 'CLI missing') + '</span>');
+        if (runtime.geminiCliAvailable !== undefined) {
+          pills.push('<span class="chip ' + (runtime.geminiCliAvailable ? 'good' : 'warn') + '">' + (runtime.geminiCliAvailable ? 'Direct backend available' : 'Direct backend attention') + '</span>');
         }
         if (runtime.geminiCliReady !== undefined) {
-          pills.push('<span class="chip ' + (runtime.geminiCliReady ? 'good' : 'warn') + '">' + (runtime.geminiCliReady ? 'CLI auth ready' : 'CLI auth attention') + '</span>');
+          pills.push('<span class="chip ' + (runtime.geminiCliReady ? 'good' : 'warn') + '">' + (runtime.geminiCliReady ? 'Google auth ready' : 'Google auth attention') + '</span>');
         }
         pills.push('<span class="chip ' + (runtime.profileReady ? 'good' : 'warn') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile attention') + '</span>');
         pills.push('<span class="chip">Open tabs ' + escapeHtml(String(runtime.openPages || 0)) + '</span>');
@@ -1034,8 +1047,8 @@ export function renderAppShell(input: {
         runtimePills.innerHTML = [
           '<span class="chip good">Admin session</span>',
           '<span class="chip ' + (runtime.profileReady ? 'good' : 'bad') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile missing') + '</span>',
-          '<span class="chip ' + (geminiCli.installed ? 'good' : 'warn') + '">' + (geminiCli.installed ? 'CLI installed' : 'CLI missing') + '</span>',
-          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'CLI auth ready' : 'CLI auth missing') + '</span>',
+          '<span class="chip ' + (geminiCli.available ? 'good' : 'warn') + '">' + (geminiCli.available ? 'Direct backend available' : 'Direct backend attention') + '</span>',
+          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'Google auth ready' : 'Google auth missing') + '</span>',
           '<span class="chip">Default backend ' + escapeHtml(routing.activeDefaultBackend || routing.configuredDefaultBackend || 'auto') + '</span>',
           '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
           '<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'openai') + '</span>',
@@ -1051,8 +1064,8 @@ export function renderAppShell(input: {
         const geminiCli = backends.geminiCli || {};
         const playwright = backends.playwright || {};
         backendPills.innerHTML = [
-          '<span class="chip ' + (geminiCli.installed ? 'good' : 'warn') + '">' + (geminiCli.installed ? 'CLI installed' : 'CLI unavailable') + '</span>',
-          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'CLI auth ready' : 'CLI auth missing') + '</span>',
+          '<span class="chip ' + (geminiCli.available ? 'good' : 'warn') + '">' + (geminiCli.available ? 'Direct backend available' : 'Direct backend attention') + '</span>',
+          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'Google auth ready' : 'Google auth missing') + '</span>',
           '<span class="chip ' + (playwright.profileReady ? 'good' : 'warn') + '">' + (playwright.profileReady ? 'Playwright ready' : 'Playwright attention') + '</span>',
           '<span class="chip">Order ' + escapeHtml((data.backendOrder || []).join(' -> ') || 'n/a') + '</span>',
           '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
@@ -1066,16 +1079,24 @@ export function renderAppShell(input: {
           'last_fallback_reason=' + String(routing.lastFallbackReason || ''),
           'last_resolution_at=' + String(routing.lastResolutionAt || ''),
           '',
-          '[gemini_cli]',
+          '[gemini_direct]',
           'enabled=' + String(Boolean(geminiCli.enabled)),
-          'installed=' + String(Boolean(geminiCli.installed)),
+          'available=' + String(Boolean(geminiCli.available)),
+          'runtime=' + String(geminiCli.runtime || ''),
           'auth_cache_detected=' + String(Boolean(geminiCli.authCacheDetected)),
           'auth_ready=' + String(Boolean(geminiCli.authReady)),
+          'auth_verified_at=' + String(geminiCli.authVerifiedAt || ''),
+          'active_account=' + String(geminiCli.activeAccount || ''),
           'model=' + String(geminiCli.model || ''),
-          'bin=' + String(geminiCli.bin || ''),
-          'resolved_bin=' + String(geminiCli.resolvedBin || ''),
-          'workdir=' + String(geminiCli.workdir || ''),
+          'models=' + String((geminiCli.models || []).join(',')),
+          'project_id=' + String(geminiCli.projectId || ''),
+          'user_tier=' + String(geminiCli.userTier || ''),
+          'user_tier_name=' + String(geminiCli.userTierName || ''),
           'timeout_ms=' + String(geminiCli.timeoutMs || ''),
+          'quota_refresh_ms=' + String(geminiCli.quotaRefreshMs || ''),
+          'quota_updated_at=' + String(geminiCli.quotaUpdatedAt || ''),
+          'quota_last_error=' + String(geminiCli.quotaLastError || ''),
+          'last_resolved_model=' + String(geminiCli.lastResolvedModel || ''),
           '',
           '[playwright]',
           'profile_ready=' + String(Boolean(playwright.profileReady)),
@@ -1084,8 +1105,62 @@ export function renderAppShell(input: {
           'profile_dir=' + String(playwright.profileDir || ''),
         ].join('\\n');
         backendHint.textContent = geminiCli.loginHint
-          ? 'Bootstrap Gemini CLI auth with: ' + geminiCli.loginHint
-          : 'Gemini CLI login helper unavailable.';
+          ? 'Bootstrap Google auth with: ' + geminiCli.loginHint
+          : 'Google login helper unavailable.';
+      }
+
+      function renderProviderState(data) {
+        const provider = data.provider || {};
+        const models = Array.isArray(provider.models) ? provider.models : [];
+        const directModels = models.filter(function(model) { return model && model.kind === 'direct'; });
+        providerPills.innerHTML = [
+          '<span class="chip ' + (provider.authReady ? 'good' : 'warn') + '">' + (provider.authReady ? 'Direct auth ready' : 'Direct auth attention') + '</span>',
+          '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
+          '<span class="chip">Last resolved ' + escapeHtml(String(provider.lastResolvedModel || 'n/a')) + '</span>',
+          '<span class="chip">Tier ' + escapeHtml(String(provider.userTierName || provider.userTier || 'n/a')) + '</span>',
+          '<span class="chip">Direct models ' + escapeHtml(String(directModels.length || 0)) + '</span>',
+        ].join('');
+
+        providerOutput.textContent = [
+          'runtime=' + String(provider.runtime || ''),
+          'auth_ready=' + String(Boolean(provider.authReady)),
+          'auth_cache_detected=' + String(Boolean(provider.authCacheDetected)),
+          'active_account=' + String(provider.activeAccount || ''),
+          'selected_auth_type=' + String(provider.selectedAuthType || ''),
+          'project_id=' + String(provider.projectId || ''),
+          'configured_model=' + String(provider.configuredModel || ''),
+          'last_resolved_model=' + String(provider.lastResolvedModel || ''),
+          'user_tier=' + String(provider.userTier || ''),
+          'user_tier_name=' + String(provider.userTierName || ''),
+          'quota_updated_at=' + String(provider.quotaUpdatedAt || ''),
+          'quota_last_error=' + String(provider.quotaLastError || ''),
+          '',
+          '[credits]',
+          ...(Array.isArray(provider.availableCredits) && provider.availableCredits.length > 0
+            ? provider.availableCredits.map(function(credit) {
+              return String(credit.creditType || 'unknown') + '=' + String(credit.creditAmount || '');
+            })
+            : ['none']),
+          '',
+          '[models]',
+          ...(models.length > 0
+            ? models.map(function(model) {
+              const quota = model.quota || {};
+              return [
+                String(model.id || ''),
+                'backend=' + String(model.backend || ''),
+                'kind=' + String(model.kind || ''),
+                'selected=' + String(Boolean(model.selected)),
+                'available=' + String(Boolean(model.available)),
+                'remaining_amount=' + String(quota.remainingAmount || ''),
+                'remaining_fraction=' + String(
+                  typeof quota.remainingFraction === 'number' ? quota.remainingFraction : ''
+                ),
+                'reset_time=' + String(quota.resetTime || ''),
+              ].join(' ');
+            })
+            : ['none']),
+        ].join('\\n');
       }
 
       function renderStats(summary) {
@@ -1222,6 +1297,7 @@ export function renderAppShell(input: {
         fillAppOptions(data.apps);
         renderRuntimePills(data);
         renderBackendDiagnostics(data);
+        renderProviderState(data);
         renderStats(data.stats);
         renderCompatibility(data.compatibility);
         renderApps(data.apps);

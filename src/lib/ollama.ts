@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { LLMMessage } from '../llm/types.js';
 import { normalizeModelId, type UsageSummary } from './openai.js';
+import { describePublicModel, isPlaywrightModelId } from './models.js';
 
 export interface OllamaChatRequest {
   model?: string;
@@ -118,7 +119,7 @@ function parseMessageArray(messages: unknown): LLMMessage[] {
 
 export function parseOllamaChatRequest(body: OllamaChatRequest): ParsedOllamaRequest {
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    throw new Error('Tool calling is not supported on gemini-web');
+    throw new Error('Tool calling is not supported on this router surface');
   }
 
   const options = body.options ?? {};
@@ -197,6 +198,7 @@ export function buildOllamaTagsResponse(models: string[]): {
   const uniqueModels = [...new Set(models)];
   return {
     models: uniqueModels.map((model) => ({
+      ...describePublicModel(model),
       name: model,
       model,
       modified_at: nowIso(),
@@ -204,8 +206,8 @@ export function buildOllamaTagsResponse(models: string[]): {
       digest: buildDigest(model),
       details: {
         format: 'gemrouter',
-        family: 'gemini-web',
-        families: ['gemini-web'],
+        family: isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct',
+        families: [isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct'],
         parameter_size: 'remote',
         quantization_level: 'remote',
       },
@@ -214,15 +216,17 @@ export function buildOllamaTagsResponse(models: string[]): {
 }
 
 export function buildOllamaShowResponse(model: string): Record<string, unknown> {
+  const descriptor = describePublicModel(model);
   return {
     license: 'GemRouterFE remote surface',
     modelfile: `FROM ${model}`,
     parameters: 'temperature 0.7',
     template: '{{ .Prompt }}',
+    model_descriptor: descriptor,
     details: {
       format: 'gemrouter',
-      family: 'gemini-web',
-      families: ['gemini-web'],
+      family: isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct',
+      families: [isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct'],
       parameter_size: 'remote',
       quantization_level: 'remote',
     },
