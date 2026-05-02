@@ -40,6 +40,9 @@ Smoke validation exercises:
 - OpenAI-compatible routes
 - DeepSeek-compatible routes
 - Ollama-compatible routes
+- `admin/test-chat` when admin credentials are present
+
+Use `pnpm smoke:playwright` when you want to prove the Playwright/Gemini Web path specifically; it uses `gemini-web` for the primary inference checks.
 - admin login and summary when admin credentials are configured
 
 ## Open the Dashboard

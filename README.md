@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>OpenAI-compatible local Gemini router with Gemini CLI primary execution and Playwright Gemini Web fallback.</strong>
+  <strong>OpenAI-compatible local Gemini router with embedded Gemini Code Assist auth/runtime and Playwright Gemini Web fallback.</strong>
 </p>
 
 <p align="center">
@@ -24,13 +24,13 @@
 
 `GemRouterFE` exposes provider-style HTTP APIs that existing clients already know how to call, while routing inference through:
 
-1. Gemini CLI with cached Google login auth
+1. Embedded Gemini Code Assist calls authenticated with the same cached Google login files used by Gemini CLI
 2. Playwright-managed Gemini Web fallback with the existing authenticated browser profile
 
 This repository is the product workspace for:
 
 - the compatibility router
-- the Gemini CLI primary runtime
+- the embedded Gemini direct runtime
 - the browser-backed Gemini fallback runtime
 - app and API-key policy management
 - the operator dashboard
@@ -43,9 +43,9 @@ It is not the paid Gemini API path and it does not require `GEMINI_API_KEY` for 
 - OpenAI-compatible `models`, `chat/completions`, and `responses`
 - DeepSeek-compatible `models` and `chat/completions`
 - Ollama-compatible `version`, `tags`, `show`, `chat`, and `generate`
-- Gemini CLI as the preferred backend when cached Google auth is available
+- embedded Gemini direct auth as the preferred backend when cached Google auth is available
 - Playwright-managed Gemini Web session reuse
-- automatic fallback from Gemini CLI to Playwright for install/auth/runtime failures
+- automatic fallback from the direct backend to Playwright for auth/runtime/quota failures
 - app-scoped API keys with model, origin, rate, and concurrency controls
 - guest telemetry and admin controls in one dashboard
 - prompt lab routed through the live browser session
@@ -80,32 +80,61 @@ Useful validation command:
 pnpm smoke
 ```
 
-The smoke flow validates health plus the OpenAI, DeepSeek, and Ollama surfaces, prints the backend used for inference, and exercises admin login when admin credentials are available.
+The smoke flow waits for the router to answer `/health`, validates the OpenAI, DeepSeek, and Ollama surfaces, prints the backend used for inference, and exercises admin login plus `admin/test-chat` when admin credentials are available.
+
+Use the backend-specific variants when you want to validate one path intentionally:
+
+```bash
+pnpm smoke:gemini-cli
+pnpm smoke:playwright
+```
+
+`smoke:playwright` drives the user-facing inference surfaces with `model=gemini-web`, so it verifies the real Playwright/Gemini Web path instead of failing on direct-model quota exhaustion.
 
 ## Auth Model
 
 - Client apps must still send the local router bearer API key.
-- Gemini CLI auth is Google-login based and reuses cached local credentials.
+- Gemini direct auth is Google-login based and reuses cached local credentials.
 - Playwright fallback reuses the already authenticated browser profile under `.playwright/`.
 - This repo does not require a paid Gemini API key for the intended path.
 
-## First-Time Gemini CLI Setup
+## First-Time Google Login Setup
 
 ```bash
 pnpm setup:gemini-cli
 pnpm login:gemini-cli
 ```
 
-`setup:gemini-cli` fills safe missing `.env` defaults without overwriting existing values. `login:gemini-cli` starts Gemini CLI under the same home/workdir conventions the router expects, so cached auth lands where `/health` and the backend checker look for it.
+`setup:gemini-cli` fills safe missing `.env` defaults without overwriting existing values. Before `login:gemini-cli`, set `GEMINI_AUTH_CLIENT_ID` and `GEMINI_AUTH_CLIENT_SECRET` in `.env` with your Google installed-app OAuth client values. `login:gemini-cli` then runs the repo-local browser OAuth helper and stores credentials in the same `.gemini` cache layout that Gemini CLI uses.
 
-If Gemini CLI auth is missing or expires, the router keeps serving through Playwright when possible and exposes the status in `/health` and the admin dashboard.
+If cached Google auth is missing, expires, or the direct quota is exhausted, the router keeps serving through Playwright when possible and exposes the status in `/health`, `/v1/provider/runtime`, and the admin dashboard.
 
 ## Backend Selection
 
 - Default backend order is `gemini-cli,playwright`.
-- Health output reports CLI install state, cached auth visibility, Playwright profile readiness, and the active default backend.
+- Direct model IDs such as `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` are exposed directly through `/v1/models`.
+- `gemini-web` and `google/gemini-web` remain the explicit Playwright-backed model aliases.
+- Health output reports cached auth visibility, quota state, Playwright profile readiness, and the active default backend.
 - Requests can be forced to `gemini-cli`, `playwright`, or `auto` with `x-gemrouter-backend` for smoke and operator testing.
 - Playwright remains the real fallback backend and is not removed from the stack.
+
+## Provider Runtime API
+
+Authenticated clients can inspect the live backend state without using the admin dashboard:
+
+- `GET /v1/provider/runtime`
+- `GET /v1/provider/models`
+- `GET /v1/provider/quota`
+
+These endpoints expose:
+
+- direct auth readiness
+- selected Google account
+- current tier and project
+- configured direct models
+- the last resolved direct model
+- quota buckets when the upstream service returns them
+- quota errors when the upstream service refuses to disclose or serve quota
 
 ## Dashboard Model
 
@@ -174,7 +203,8 @@ The documentation set is split into topical pages under [`docs/`](./docs).
 
 ## Notes
 
-- `gemini-web` and `google/gemini-web` remain the public model aliases exposed to clients
-- Gemini CLI uses the configured Gemini CLI model internally; Playwright continues to provide the browser-backed continuity path
+- `gemini-web` and `google/gemini-web` remain the explicit Playwright aliases exposed to clients
+- the direct backend no longer shells out to the `gemini` executable for inference; it reuses the same `.gemini` auth cache directly from Node
+- if the upstream direct service reports quota exhaustion, the router falls back to Playwright when that browser path is ready
 - Ollama compatibility is route and envelope compatibility over the router, not a local Ollama engine
 - dashboard and API access are intentionally separate from noVNC access

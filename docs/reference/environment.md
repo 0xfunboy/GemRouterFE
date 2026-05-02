@@ -27,16 +27,16 @@ This page groups the environment surface by role.
 - backend order
 - fallback enablement
 
-## Gemini CLI Runtime
+## Gemini Direct Runtime
 
-- CLI enablement
-- CLI binary path
-- CLI model
-- CLI timeout
-- CLI workdir
+- direct backend enablement
+- default direct model and direct model list
+- request timeout
+- quota refresh cadence
 - cached auth expectations
 - user home and `.gemini` auth directory
-- bootstrap visibility flags
+- login bootstrap visibility flags
+- optional OAuth callback and client overrides
 
 ## Playwright Runtime
 

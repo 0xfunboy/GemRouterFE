@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { LLMMessage } from '../llm/types.js';
 import type { SemanticActionPolicy } from './semantics.js';
+import { normalizePublicModelId } from './models.js';
 
 export interface ChatCompletionsRequest {
   model?: string;
@@ -144,9 +145,7 @@ function prependSystemInstruction(messages: LLMMessage[], instruction: string | 
 }
 
 export function normalizeModelId(input: string | undefined): string {
-  const value = (input ?? 'gemini-web').trim().toLowerCase();
-  if (value === 'gemini-web' || value === 'google/gemini-web') return value;
-  throw new Error(`Unsupported model: ${value}`);
+  return normalizePublicModelId(input ?? 'gemini-web');
 }
 
 export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
@@ -169,7 +168,7 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
     throw new Error('Only n=1 is supported');
   }
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    throw new Error('Tool calling is not supported on gemini-web');
+    throw new Error('Tool calling is not supported on this router surface');
   }
 
   const messages = body.messages.map((message) => {
@@ -220,7 +219,7 @@ export function parseResponsesRequest(body: ResponsesRequest): {
   actionPolicy: SemanticActionPolicy;
 } {
   if (Array.isArray(body.tools) && body.tools.length > 0) {
-    throw new Error('Tool calling is not supported on gemini-web');
+    throw new Error('Tool calling is not supported on this router surface');
   }
 
   const messages: LLMMessage[] = [];
