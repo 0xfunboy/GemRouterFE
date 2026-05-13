@@ -43,6 +43,7 @@ This page groups the environment surface by role.
 - browser executable path
 - base profile directory
 - profile namespace
+- viewport width and height
 - profile import path
 - headed or headless mode
 
@@ -60,3 +61,4 @@ This page groups the environment surface by role.
 - noVNC public URL
 
 Keep environment values deployment-specific. Avoid baking real deployment addresses into reusable documentation.
+Keep the non-secret browser runtime settings versioned with the repo so reinstalling the stack does not silently change display size, profile location, or the noVNC surface.

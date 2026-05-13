@@ -11,6 +11,7 @@ The root [README](../README.md) is the product landing page. This file is the do
 ## Getting Started
 
 - [Product Overview](./getting-started/overview.md)
+- [First Install](./getting-started/first-install.md)
 - [Quickstart](./getting-started/quickstart.md)
 - [Configuration](./getting-started/configuration.md)
 
