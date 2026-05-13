@@ -326,6 +326,8 @@ export function loadConfig(
         pick(env, 'PLAYWRIGHT_BASE_PROFILE_DIR', 'TEGEM_BASE_PROFILE_DIR') ?? '.playwright/profiles',
       ),
       profileNamespace,
+      viewportWidth: readNumber(env, 1440, 'PLAYWRIGHT_VIEWPORT_WIDTH', 'TEGEM_VIEWPORT_WIDTH'),
+      viewportHeight: readNumber(env, 960, 'PLAYWRIGHT_VIEWPORT_HEIGHT', 'TEGEM_VIEWPORT_HEIGHT'),
       sessionIdleTimeoutMs: readNumber(env, 30 * 60_000, 'SESSION_IDLE_TIMEOUT_MS', 'TEGEM_SESSION_IDLE_TIMEOUT_MS'),
       conversationTtlMs: readNumber(env, 24 * 60 * 60_000, 'SESSION_CONVERSATION_TTL_MS', 'TEGEM_SESSION_CONVERSATION_TTL_MS'),
       maxSessionTabs: readNumber(env, 20, 'MAX_SESSION_TABS', 'TEGEM_MAX_SESSION_TABS'),

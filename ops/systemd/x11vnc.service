@@ -1,0 +1,15 @@
+[Unit]
+Description=GemRouterFE x11vnc bridge
+Wants=xvfb.service
+After=xvfb.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/GemRouterFE
+EnvironmentFile=-%h/GemRouterFE/.env
+ExecStart=%h/GemRouterFE/scripts/start-x11vnc.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

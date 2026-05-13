@@ -60,7 +60,6 @@ import { renderAppShell } from './ui.js';
 
 const PROJECT_NAME = 'GemRouterFE';
 const SERVICE_NAME = 'gem-router-fe';
-const STUDY_PATH = '/home/funboy/bairbi-stack/PROJECT_STUDY.md';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SOCIAL_PREVIEW_PATH = '/social-preview.png';
@@ -622,15 +621,19 @@ function sanitizeLlmDiagnostics(
           userTierName: (input.geminiCli as Record<string, unknown>).userTierName ?? null,
           availableCredits: (input.geminiCli as Record<string, unknown>).availableCredits ?? [],
           quotaBuckets: (input.geminiCli as Record<string, unknown>).quotaBuckets ?? [],
+          quotaAuthoritative: (input.geminiCli as Record<string, unknown>).quotaAuthoritative ?? false,
           quotaUpdatedAt: (input.geminiCli as Record<string, unknown>).quotaUpdatedAt ?? null,
           quotaLastError: (input.geminiCli as Record<string, unknown>).quotaLastError ?? null,
           lastResolvedModel: (input.geminiCli as Record<string, unknown>).lastResolvedModel ?? null,
           loginHint: (input.geminiCli as Record<string, unknown>).loginHint ?? null,
           bootstrapEnabled: (input.geminiCli as Record<string, unknown>).bootstrapEnabled ?? null,
           bootstrapMode: (input.geminiCli as Record<string, unknown>).bootstrapMode ?? null,
+          lastMappedErrorCode: (input.geminiCli as Record<string, unknown>).lastMappedErrorCode ?? null,
           lastError: (input.geminiCli as Record<string, unknown>).lastError ?? null,
+          lastFailureAt: (input.geminiCli as Record<string, unknown>).lastFailureAt ?? null,
           lastSuccessAt: (input.geminiCli as Record<string, unknown>).lastSuccessAt ?? null,
           lastLatencyMs: (input.geminiCli as Record<string, unknown>).lastLatencyMs ?? null,
+          lastUpstreamError: (input.geminiCli as Record<string, unknown>).lastUpstreamError ?? null,
         }
         : null,
     playwright:
@@ -762,7 +765,7 @@ function mapLlmErrorToHttp(error: unknown): {
   if (error instanceof LLMProviderError) {
     const statusCode = error.options.statusCode ?? 502;
     const type =
-      error.code === 'playwright_quota' || error.code === 'cli_quota_exhausted'
+      error.code === 'playwright_quota' || error.code === 'cli_quota_exhausted' || error.code === 'cli_rate_limited'
         ? 'rate_limit_error'
         : error.code === 'cli_model_unsupported'
           ? 'invalid_request_error'
@@ -819,9 +822,59 @@ function isQuotaBucketExhausted(bucket: Record<string, unknown> | null | undefin
   return false;
 }
 
-function isDirectQuotaBlocked(geminiCli: Record<string, unknown>): boolean {
-  const message = String(geminiCli.quotaLastError ?? '').trim();
-  return /resource has been exhausted|quota|credits/i.test(message);
+function parseOptionalTimestamp(value: unknown): number | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isGeminiCliFailureActive(geminiCli: Record<string, unknown>): boolean {
+  const failureAt = parseOptionalTimestamp(geminiCli.lastFailureAt);
+  if (failureAt == null) return false;
+  const successAt = parseOptionalTimestamp(geminiCli.lastSuccessAt);
+  return successAt == null || failureAt >= successAt;
+}
+
+function getGeminiCliLastErrorCode(geminiCli: Record<string, unknown>): string {
+  return String(geminiCli.lastMappedErrorCode ?? '').trim();
+}
+
+function getGeminiCliLastErrorMethod(geminiCli: Record<string, unknown>): string {
+  const upstream = geminiCli.lastUpstreamError;
+  if (!upstream || typeof upstream !== 'object') return '';
+  return String((upstream as Record<string, unknown>).method ?? '').trim();
+}
+
+function isDirectRoutingBlocked(geminiCli: Record<string, unknown>): boolean {
+  if (geminiCli.authReady !== true) return true;
+  if (!isGeminiCliFailureActive(geminiCli)) return false;
+
+  const code = getGeminiCliLastErrorCode(geminiCli);
+  const method = getGeminiCliLastErrorMethod(geminiCli);
+
+  if (!code) return false;
+  if (method === 'retrieveUserQuota') {
+    return code === 'cli_quota_exhausted';
+  }
+
+  return [
+    'cli_auth_missing',
+    'cli_auth_expired',
+    'cli_validation_required',
+    'cli_permission_denied',
+    'cli_rate_limited',
+    'cli_quota_exhausted',
+    'cli_timeout',
+    'cli_process_error',
+  ].includes(code);
+}
+
+function getDirectRequestState(geminiCli: Record<string, unknown>): string {
+  if (geminiCli.authReady !== true) return 'auth_unready';
+  if (isDirectRoutingBlocked(geminiCli)) return 'failed';
+  return typeof geminiCli.lastSuccessAt === 'string' && geminiCli.lastSuccessAt.trim()
+    ? 'succeeded'
+    : 'unknown';
 }
 
 function buildProviderModelState(
@@ -830,7 +883,8 @@ function buildProviderModelState(
 ): Array<Record<string, unknown>> {
   const buckets = Array.isArray(geminiCli.quotaBuckets) ? geminiCli.quotaBuckets as Record<string, unknown>[] : [];
   const authReady = geminiCli.authReady === true;
-  const quotaBlocked = isDirectQuotaBlocked(geminiCli);
+  const quotaAuthoritative = geminiCli.quotaAuthoritative === true;
+  const routingBlocked = isDirectRoutingBlocked(geminiCli);
   return config.modelIds.map((modelId) => {
     const descriptor = describePublicModel(modelId);
     const quota = descriptor.kind === 'direct'
@@ -843,7 +897,7 @@ function buildProviderModelState(
       available:
         descriptor.kind === 'playwright'
           ? playwrightReady
-          : (authReady && !quotaBlocked && !isQuotaBucketExhausted(quota)),
+          : (authReady && !routingBlocked && (!quotaAuthoritative || !isQuotaBucketExhausted(quota))),
       authReady: descriptor.kind === 'direct' ? authReady : null,
       profileReady: descriptor.kind === 'playwright' ? playwrightReady : null,
       quota,
@@ -869,11 +923,16 @@ function buildProviderSnapshot(
     configuredModel: geminiCli.model ?? null,
     configuredModels: geminiCli.models ?? [],
     lastResolvedModel: geminiCli.lastResolvedModel ?? null,
+    lastDirectRequestState: getDirectRequestState(geminiCli),
     availableCredits: geminiCli.availableCredits ?? [],
     quotaBuckets: geminiCli.quotaBuckets ?? [],
+    quotaAuthoritative: geminiCli.quotaAuthoritative === true,
     quotaUpdatedAt: geminiCli.quotaUpdatedAt ?? null,
     quotaLastError: geminiCli.quotaLastError ?? null,
     loginHint: geminiCli.loginHint ?? null,
+    lastMappedErrorCode: geminiCli.lastMappedErrorCode ?? null,
+    lastFailureAt: geminiCli.lastFailureAt ?? null,
+    lastUpstreamError: geminiCli.lastUpstreamError ?? null,
     models: buildProviderModelState(geminiCli, playwrightReady),
   };
 }
@@ -977,7 +1036,7 @@ function getRuntimeSnapshot(
   const geminiCliAvailable =
     Boolean(geminiCliDiagnostics.enabled) &&
     Boolean(geminiCliDiagnostics.authReady) &&
-    !isDirectQuotaBlocked(geminiCliDiagnostics);
+    !isDirectRoutingBlocked(geminiCliDiagnostics);
   const playwrightReady = executableExists && profileExists && cookiesExists;
   const activeDefaultBackend: LLMBackendId =
     configuredDefaultBackend === 'gemini-cli'
@@ -2422,8 +2481,11 @@ app.get('/v1/provider/quota', async (request, reply) => {
       lastResolvedModel: provider.lastResolvedModel ?? null,
       availableCredits: provider.availableCredits ?? [],
       quotaBuckets: provider.quotaBuckets ?? [],
+      quotaAuthoritative: provider.quotaAuthoritative ?? false,
       quotaUpdatedAt: provider.quotaUpdatedAt ?? null,
       quotaLastError: provider.quotaLastError ?? null,
+      lastMappedErrorCode: provider.lastMappedErrorCode ?? null,
+      lastUpstreamError: provider.lastUpstreamError ?? null,
     };
   } finally {
     access.release();

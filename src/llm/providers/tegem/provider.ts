@@ -45,6 +45,10 @@ export class GeminiProvider {
     private readonly geminiConfig: GeminiConfig,
   ) {}
 
+  private getInputSelectors(): string[] {
+    return [...new Set([this.config.inputSelector, ...this.config.inputSelectors])];
+  }
+
   isQuotaExhausted(text: string): boolean {
     return QUOTA_PATTERNS.some((re) => re.test(text));
   }
@@ -152,22 +156,26 @@ export class GeminiProvider {
       }
     }
 
-    // Strategy 2: Enter on the rich-textarea contenteditable (always fresh locator)
-    const contentEditable = page.locator("rich-textarea div[contenteditable='true']").first();
-    if (await contentEditable.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      try {
-        await contentEditable.press("Enter", { timeout: 5_000 });
-        return;
-      } catch {
-        // fall through
+    // Strategy 2: Enter on the current Gemini input (always re-resolved fresh)
+    for (const selector of this.getInputSelectors()) {
+      const input = page.locator(selector).first();
+      if (await input.isVisible({ timeout: 500 }).catch(() => false)) {
+        try {
+          await input.press("Enter", { timeout: 5_000 });
+          return;
+        } catch {
+          // fall through
+        }
       }
     }
 
-    // Strategy 3: dispatch Enter via JS on the contenteditable element (scoped, not relying on focus)
-    await page.evaluate(() => {
-      // Target the specific input element, not document.activeElement which could be wrong
-      const el = document.querySelector("rich-textarea div[contenteditable='true']")
-        ?? document.querySelector("[contenteditable='true']");
+    // Strategy 3: dispatch Enter via JS on the input element (scoped, not relying on focus)
+    await page.evaluate((selectors: string[]) => {
+      const el = selectors
+        .map((selector) => document.querySelector(selector))
+        .find((candidate) => candidate instanceof HTMLElement || candidate instanceof HTMLTextAreaElement)
+        ?? document.querySelector("[contenteditable='true']")
+        ?? document.querySelector("textarea");
       if (!el) return;
       for (const type of ["keydown", "keypress", "keyup"] as const) {
         el.dispatchEvent(new KeyboardEvent(type, {
@@ -175,7 +183,7 @@ export class GeminiProvider {
           bubbles: true, cancelable: true,
         }));
       }
-    }).catch(() => undefined);
+    }, this.getInputSelectors()).catch(() => undefined);
   }
 
   async *streamResponse(
@@ -508,19 +516,20 @@ export class GeminiProvider {
    * mid-operation (which causes "element was detached" errors).
    */
   private async waitForStableInput(page: Page, timeoutMs: number): Promise<import("playwright").Locator | null> {
-    const selectors = [this.config.inputSelector, ...this.config.readySelectors];
+    const selectors = this.getInputSelectors();
     const deadline = Date.now() + timeoutMs;
     const stabilityDelayMs = 18;
 
-    let prevHandle: import("playwright").JSHandle | null = null;
+    let prevHandle: import("playwright").ElementHandle | null = null;
 
     while (Date.now() < deadline) {
       const selector = await this.findFirstVisible(page, selectors, 1_000);
       if (!selector) { await sleep(stabilityDelayMs); continue; }
 
       const locator = page.locator(selector).first();
-      // Get the underlying JS object handle to compare identity
-      const handle = await locator.evaluateHandle((el: Element) => el).catch(() => null);
+      // Resolve the live element with a short timeout so transient DOM swaps
+      // during Gemini hydration do not block on Playwright's 30s default wait.
+      const handle = await locator.elementHandle({ timeout: 250 }).catch(() => null);
       if (!handle) { await sleep(stabilityDelayMs); continue; }
 
       if (prevHandle !== null) {
@@ -568,6 +577,25 @@ export class GeminiProvider {
     return selector ? page.locator(selector).first() : null;
   }
 
+  private async readVisibleInputText(page: Page, timeoutMs: number): Promise<string | null> {
+    const selector = await this.findFirstVisible(page, this.getInputSelectors(), timeoutMs);
+    if (!selector) return null;
+
+    const handle = await page.locator(selector).first().elementHandle({ timeout: 250 }).catch(() => null);
+    if (!handle) return null;
+
+    try {
+      return await handle.evaluate((el: Element) => {
+        const field = el as { value?: string; textContent?: string | null; innerText?: string };
+        return (field.value || field.innerText || field.textContent || "").trim();
+      });
+    } catch {
+      return "";
+    } finally {
+      await handle.dispose().catch(() => undefined);
+    }
+  }
+
   private async ensurePromptSubmitted(
     page: Page,
     prompt: string,
@@ -580,20 +608,10 @@ export class GeminiProvider {
       const assistantCount = await this.countAssistantNodes(page).catch(() => baselineAssistantCount);
       if (assistantCount > baselineAssistantCount) return true;
 
-      const freshInput = await this.firstVisibleLocator(
-        page,
-        [this.config.inputSelector, "rich-textarea div[contenteditable='true']"],
-        400,
-      );
-      if (!freshInput) {
+      const current = await this.readVisibleInputText(page, 400);
+      if (current === null) {
         return await this.isBusy(page);
       }
-      const current = await freshInput
-        .evaluate((el: Element) => {
-          const f = el as { value?: string; textContent?: string | null; innerText?: string };
-          return (f.value || f.innerText || f.textContent || "").trim();
-        })
-        .catch(() => "");
       return !current || !current.includes(normalizedPrompt);
     };
 
@@ -604,7 +622,7 @@ export class GeminiProvider {
 
       const freshInput = await this.firstVisibleLocator(
         page,
-        [this.config.inputSelector, "rich-textarea div[contenteditable='true']"],
+        this.getInputSelectors(),
         500,
       );
       if (!freshInput) return;
