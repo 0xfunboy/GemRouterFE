@@ -489,16 +489,17 @@ export class GeminiSessionManager {
     await mkdir(profilePath, { recursive: true });
     await sanitizeProfileLocks(profilePath);
     try {
+      const { viewportWidth, viewportHeight } = this.config;
       const context = await chromium.launchPersistentContext(profilePath, {
         channel: this.config.browserExecutablePath ? undefined : this.config.browserChannel,
         executablePath: this.config.browserExecutablePath,
         headless: this.config.headless,
-        viewport: { width: 1440, height: 960 },
+        viewport: { width: viewportWidth, height: viewportHeight },
         locale: "en-US",
         colorScheme: "dark",
         acceptDownloads: true,
         args: [
-          "--window-size=1440,960",
+          `--window-size=${viewportWidth},${viewportHeight}`,
           "--disable-blink-features=AutomationControlled",
           "--no-first-run",
           "--no-default-browser-check",

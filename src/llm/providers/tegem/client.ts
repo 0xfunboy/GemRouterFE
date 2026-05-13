@@ -14,6 +14,8 @@ export interface TeGemProviderConfig {
   browserExecutablePath?: string;
   baseProfileDir: string;
   profileNamespace: string;
+  viewportWidth: number;
+  viewportHeight: number;
   sessionIdleTimeoutMs: number;
   conversationTtlMs: number;
   maxSessionTabs: number;
@@ -42,6 +44,8 @@ function runtimeKey(config: TeGemProviderConfig): string {
     browserExecutablePath: config.browserExecutablePath,
     baseProfileDir: path.resolve(config.baseProfileDir),
     profileNamespace: config.profileNamespace,
+    viewportWidth: config.viewportWidth,
+    viewportHeight: config.viewportHeight,
     respondedSessionTtlMs: config.respondedSessionTtlMs,
     orphanSessionTtlMs: config.orphanSessionTtlMs,
     promptPackingStyle: config.promptPackingStyle,
@@ -205,22 +209,30 @@ function getRuntime(config: TeGemProviderConfig): TeGemRuntime {
     browserExecutablePath: config.browserExecutablePath,
     baseProfileDir: path.resolve(config.baseProfileDir),
     profileNamespace: config.profileNamespace,
+    viewportWidth: config.viewportWidth,
+    viewportHeight: config.viewportHeight,
     streamPollIntervalMs: config.streamPollIntervalMs,
     streamStableTicks: config.streamStableTicks,
     streamFirstChunkTimeoutMs: config.streamFirstChunkTimeoutMs,
     streamMaxDurationMs: config.streamMaxDurationMs,
   };
 
+  const inputSelectors = [
+    "rich-textarea div[contenteditable='true']",
+    "rich-textarea textarea",
+    "rich-textarea [role='textbox']",
+    "rich-textarea [contenteditable='true']",
+    "div[contenteditable='true'][role='textbox']",
+    "div[contenteditable='true'][data-placeholder]",
+  ];
+
   const providerConfig: GeminiProviderConfig = {
     id: 'gemini',
     label: 'Google Gemini',
     baseUrl: config.baseUrl,
-    readySelectors: [
-      "div[contenteditable='true']",
-      'textarea',
-      "rich-textarea div[contenteditable='true']",
-    ],
-    inputSelector: "rich-textarea div[contenteditable='true']",
+    readySelectors: inputSelectors,
+    inputSelectors,
+    inputSelector: inputSelectors[0],
     submitSelector:
       "button[aria-label*='Send'], button[aria-label*='Run'], button[aria-label*='Submit'], button[mattooltip*='Send'], button[type='submit']",
     messageSelectors: ['message-content', '.model-response-text', 'response-container'],

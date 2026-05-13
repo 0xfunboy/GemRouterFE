@@ -10,6 +10,18 @@ GemRouterFE is typically deployed as a long-running Node.js service with a persi
 - headed display path when running with a visible browser
 - protected external access for API, dashboard, and noVNC
 
+## Headed Browser Stack
+
+Version the non-secret headed-browser settings with the repo:
+
+- Xvfb display and screen geometry
+- Playwright viewport size
+- noVNC web root redirect behavior
+- x11vnc and noVNC service units
+
+The only value that should stay out of the repo is the actual VNC password file content.
+Authenticated Gemini browser cookies and OAuth/session artifacts also stay out of git.
+
 ## Service Shape
 
 A typical deployment includes:

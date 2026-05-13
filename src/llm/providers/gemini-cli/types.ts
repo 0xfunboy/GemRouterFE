@@ -13,6 +13,23 @@ export interface GeminiAvailableCredit {
   creditAmount: string;
 }
 
+export interface GeminiCliUpstreamErrorSnapshot {
+  at: string | null;
+  method: string | null;
+  endpoint: string | null;
+  model: string | null;
+  statusCode: number | null;
+  statusText: string | null;
+  googleCode: number | null;
+  googleStatus: string | null;
+  googleReason: string | null;
+  requestId: string | null;
+  message: string | null;
+  body: string | null;
+  retryable: boolean | null;
+  terminal: boolean | null;
+}
+
 export interface GeminiCliProviderConfig {
   enabled: boolean;
   model: string;
@@ -60,11 +77,15 @@ export interface GeminiCliHealthSnapshot {
   userTierName: string | null;
   availableCredits: GeminiAvailableCredit[];
   quotaBuckets: GeminiQuotaBucket[];
+  quotaAuthoritative: boolean;
   quotaUpdatedAt: string | null;
   quotaLastError: string | null;
   lastResolvedModel: string | null;
   loginHint: string;
+  lastMappedErrorCode: string | null;
   lastError: string | null;
+  lastFailureAt: string | null;
   lastSuccessAt: string | null;
   lastLatencyMs: number | null;
+  lastUpstreamError: GeminiCliUpstreamErrorSnapshot | null;
 }

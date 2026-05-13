@@ -11,7 +11,12 @@ import {
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
 import { LLMProviderError, type LLMProviderErrorCode } from '../../errors.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse } from '../../types.js';
-import type { GeminiCliHealthSnapshot, GeminiCliProviderConfig, GeminiQuotaBucket } from './types.js';
+import type {
+  GeminiCliHealthSnapshot,
+  GeminiCliProviderConfig,
+  GeminiCliUpstreamErrorSnapshot,
+  GeminiQuotaBucket,
+} from './types.js';
 
 interface CodeAssistCandidatePart {
   text?: string;
@@ -83,15 +88,24 @@ interface CodeAssistRuntime {
   loadedAt: number;
 }
 
+interface GoogleApiErrorEntry {
+  message?: string;
+  domain?: string;
+  reason?: string;
+}
+
 interface GoogleApiErrorShape {
   code?: number;
   message?: string;
   status?: string;
   details?: unknown[];
+  errors?: GoogleApiErrorEntry[];
 }
 
 const CODE_ASSIST_BASE_URL = 'https://cloudcode-pa.googleapis.com/v1internal';
 const RUNTIME_TTL_MS = 30_000;
+const MAX_UPSTREAM_BODY_LENGTH = 4_000;
+const UPSTREAM_ERROR_FIELD = '__gemrouterUpstreamError';
 
 function flattenMessages(messages: LLMMessage[]): string {
   const meaningful = messages
@@ -177,14 +191,6 @@ function isBucketExhausted(bucket: GeminiQuotaBucket | undefined): boolean {
   return false;
 }
 
-function upsertQuotaBucket(buckets: GeminiQuotaBucket[], next: GeminiQuotaBucket): GeminiQuotaBucket[] {
-  const existing = buckets.findIndex((bucket) => bucket.modelId === next.modelId);
-  if (existing < 0) return [...buckets, next];
-  const copy = [...buckets];
-  copy[existing] = next;
-  return copy;
-}
-
 function extractResponseText(payload: CodeAssistGenerateContentResponse): string {
   const parts = payload.response?.candidates?.[0]?.content?.parts ?? [];
   return parts
@@ -198,45 +204,88 @@ function getEnvProjectId(): string | null {
   return value || null;
 }
 
-function summarizeGoogleError(error: unknown): GoogleApiErrorShape | null {
-  const parseMessage = (value: string): GoogleApiErrorShape | null => {
+function sanitizeJsonString(jsonStr: string): string {
+  let output = jsonStr;
+  let previous = '';
+  while (output !== previous) {
+    previous = output;
+    output = output.replace(/,(\s*),/g, ',$1');
+  }
+  return output;
+}
+
+function parseJsonString(value: string): unknown {
+  return JSON.parse(sanitizeJsonString(value.replace(/\u00A0/g, '').replace(/\n/g, ' ')));
+}
+
+function toGoogleApiErrorShape(value: unknown): GoogleApiErrorShape | null {
+  if (typeof value === 'string') {
     try {
-      const parsed = JSON.parse(value.replace(/\u00A0/g, '').replace(/\n/g, ' ')) as { error?: unknown };
-      if (parsed?.error && typeof parsed.error === 'object') {
-        return parsed.error as GoogleApiErrorShape;
-      }
-      if (parsed && typeof parsed === 'object') {
-        return parsed as unknown as GoogleApiErrorShape;
-      }
-      return null;
+      return toGoogleApiErrorShape(parseJsonString(value));
     } catch {
       return null;
     }
-  };
-
-  if (!error || typeof error !== 'object') {
-    return typeof error === 'string' ? parseMessage(error) : null;
   }
 
-  const record = error as Record<string, unknown>;
-  if (record.response && typeof record.response === 'object') {
-    const response = record.response as Record<string, unknown>;
-    const data = response.data;
-    if (data && typeof data === 'object') {
-      const object = data as Record<string, unknown>;
-      if (object.error && typeof object.error === 'object') {
-        return object.error as GoogleApiErrorShape;
-      }
-      return object as GoogleApiErrorShape;
-    }
+  if (Array.isArray(value)) {
+    return value.length > 0 ? toGoogleApiErrorShape(value[0]) : null;
   }
 
+  if (!value || typeof value !== 'object') return null;
+
+  const record = value as Record<string, unknown>;
   if (record.error && typeof record.error === 'object') {
-    return record.error as GoogleApiErrorShape;
+    return toGoogleApiErrorShape(record.error);
+  }
+
+  const shape: GoogleApiErrorShape = {};
+  if (typeof record.code === 'number') shape.code = record.code;
+  if (typeof record.message === 'string') shape.message = record.message;
+  if (typeof record.status === 'string') shape.status = record.status;
+  if (Array.isArray(record.details)) shape.details = record.details;
+  if (Array.isArray(record.errors)) {
+    shape.errors = record.errors
+      .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+      .map((entry) => ({
+        message: typeof entry.message === 'string' ? entry.message : undefined,
+        domain: typeof entry.domain === 'string' ? entry.domain : undefined,
+        reason: typeof entry.reason === 'string' ? entry.reason : undefined,
+      }));
+  }
+
+  if (shape.code !== undefined || shape.message || shape.status || shape.details || shape.errors) {
+    return shape;
   }
 
   if (typeof record.message === 'string') {
-    return parseMessage(record.message);
+    try {
+      return toGoogleApiErrorShape(parseJsonString(record.message));
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function summarizeGoogleError(error: unknown): GoogleApiErrorShape | null {
+  if (typeof error === 'string') {
+    return toGoogleApiErrorShape(error);
+  }
+
+  if (!error || typeof error !== 'object') return null;
+  const record = error as Record<string, unknown>;
+  if (record.response && typeof record.response === 'object') {
+    const response = record.response as Record<string, unknown>;
+    const fromData = toGoogleApiErrorShape(response.data);
+    if (fromData) return fromData;
+  }
+
+  const direct = toGoogleApiErrorShape(record);
+  if (direct) return direct;
+
+  if (typeof record.message === 'string') {
+    return toGoogleApiErrorShape(record.message);
   }
 
   return null;
@@ -252,12 +301,49 @@ function hasDetailReason(error: GoogleApiErrorShape | null, reason: string): boo
     if (metadata && typeof metadata === 'object') {
       return Object.values(metadata as Record<string, unknown>).includes(reason);
     }
+    return false;
+  });
+}
+
+function getPrimaryGoogleReason(error: GoogleApiErrorShape | null): string | null {
+  if (!error) return null;
+
+  if (Array.isArray(error.details)) {
+    for (const detail of error.details) {
+      if (!detail || typeof detail !== 'object') continue;
+      const typed = detail as Record<string, unknown>;
+      if (typeof typed.reason === 'string' && typed.reason.trim()) {
+        return typed.reason.trim();
+      }
+      const metadata = typed.metadata;
+      if (metadata && typeof metadata === 'object') {
+        const values = Object.values(metadata as Record<string, unknown>).find(
+          (value) => typeof value === 'string' && value.trim().length > 0,
+        );
+        if (typeof values === 'string') return values.trim();
+      }
+    }
+  }
+
+  if (Array.isArray(error.errors)) {
+    const reason = error.errors.find((entry) => typeof entry.reason === 'string' && entry.reason.trim());
+    if (reason?.reason) return reason.reason.trim();
+  }
+
+  return null;
+}
+
+function hasDailyQuotaSignal(error: GoogleApiErrorShape | null): boolean {
+  if (!Array.isArray(error?.details)) return false;
+  return error.details.some((detail) => {
+    if (!detail || typeof detail !== 'object') return false;
+    const typed = detail as Record<string, unknown>;
     const violations = typed.violations;
     if (!Array.isArray(violations)) return false;
     return violations.some((violation) => {
       if (!violation || typeof violation !== 'object') return false;
-      const v = violation as Record<string, unknown>;
-      return v.reason === reason || String(v.description ?? '').includes(reason);
+      const quotaId = String((violation as Record<string, unknown>).quotaId ?? '');
+      return /PerDay|Daily/i.test(quotaId);
     });
   });
 }
@@ -276,19 +362,6 @@ function isAuthExpiredError(error: unknown): boolean {
   );
 }
 
-function isQuotaError(error: unknown): boolean {
-  const googleError = summarizeGoogleError(error);
-  const message = String(googleError?.message ?? (error instanceof Error ? error.message : String(error ?? '')));
-  return (
-    googleError?.code === 429 ||
-    googleError?.status === 'RESOURCE_EXHAUSTED' ||
-    /resource has been exhausted|quota|credits/i.test(message) ||
-    hasDetailReason(googleError, 'RATE_LIMIT_EXCEEDED') ||
-    hasDetailReason(googleError, 'QUOTA_EXHAUSTED') ||
-    hasDetailReason(googleError, 'INSUFFICIENT_G1_CREDITS_BALANCE')
-  );
-}
-
 function isModelUnsupportedError(error: unknown): boolean {
   const googleError = summarizeGoogleError(error);
   const message = String(googleError?.message ?? (error instanceof Error ? error.message : String(error ?? '')));
@@ -303,6 +376,99 @@ function isPolicyBlockedError(error: unknown, payload?: CodeAssistGenerateConten
   return /policy|safety|blocked|disallowed/i.test(message);
 }
 
+function isValidationRequiredError(error: GoogleApiErrorShape | null): boolean {
+  const reason = getPrimaryGoogleReason(error);
+  if (reason !== 'VALIDATION_REQUIRED') return false;
+  if (!Array.isArray(error?.details)) return false;
+  return error.details.some((detail) => {
+    if (!detail || typeof detail !== 'object') return false;
+    const domain = (detail as Record<string, unknown>).domain;
+    return typeof domain === 'string' && /cloudcode-pa\.googleapis\.com/i.test(domain);
+  });
+}
+
+function stringifyUpstreamBody(value: unknown): string | null {
+  if (value == null) return null;
+  const text = typeof value === 'string'
+    ? value
+    : (() => {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return String(value);
+      }
+    })();
+  return text.length > MAX_UPSTREAM_BODY_LENGTH
+    ? `${text.slice(0, MAX_UPSTREAM_BODY_LENGTH)}…`
+    : text;
+}
+
+function readHeaderValue(headers: Record<string, unknown>, key: string): string | null {
+  const direct = headers[key];
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const lower = headers[key.toLowerCase()];
+  if (typeof lower === 'string' && lower.trim()) return lower.trim();
+  return null;
+}
+
+function buildUpstreamErrorSnapshot(
+  error: unknown,
+  context: { method: string; model?: string | null },
+): GeminiCliUpstreamErrorSnapshot {
+  const response = error && typeof error === 'object' && 'response' in error
+    ? (error as { response?: Record<string, unknown> }).response
+    : undefined;
+  const headers = response && typeof response.headers === 'object'
+    ? response.headers as Record<string, unknown>
+    : {};
+  const googleError = summarizeGoogleError(error);
+  const statusCode =
+    typeof response?.status === 'number'
+      ? response.status
+      : (typeof googleError?.code === 'number' ? googleError.code : null);
+  const message =
+    String(
+      googleError?.message ??
+      (error instanceof Error ? error.message : String(error ?? '')),
+    ).trim() || null;
+
+  return {
+    at: new Date().toISOString(),
+    method: context.method,
+    endpoint: `${CODE_ASSIST_BASE_URL}:${context.method}`,
+    model: context.model ?? null,
+    statusCode,
+    statusText: typeof response?.statusText === 'string' ? response.statusText : null,
+    googleCode: typeof googleError?.code === 'number' ? googleError.code : null,
+    googleStatus: typeof googleError?.status === 'string' ? googleError.status : null,
+    googleReason: getPrimaryGoogleReason(googleError),
+    requestId: readHeaderValue(headers, 'x-request-id') ?? readHeaderValue(headers, 'x-guploader-uploadid'),
+    message,
+    body: stringifyUpstreamBody(response?.data ?? (error instanceof Error ? error.message : error)),
+    retryable: null,
+    terminal: null,
+  };
+}
+
+function attachUpstreamError(
+  error: unknown,
+  upstream: GeminiCliUpstreamErrorSnapshot,
+): unknown {
+  if (error && typeof error === 'object') {
+    (error as Record<string, unknown>)[UPSTREAM_ERROR_FIELD] = upstream;
+    return error;
+  }
+  const wrapped = new Error(String(error ?? 'Unknown Gemini upstream error'));
+  (wrapped as unknown as Record<string, unknown>)[UPSTREAM_ERROR_FIELD] = upstream;
+  return wrapped;
+}
+
+function getAttachedUpstreamError(error: unknown): GeminiCliUpstreamErrorSnapshot | null {
+  if (!error || typeof error !== 'object') return null;
+  const value = (error as Record<string, unknown>)[UPSTREAM_ERROR_FIELD];
+  return value && typeof value === 'object' ? value as GeminiCliUpstreamErrorSnapshot : null;
+}
+
 function buildProviderError(code: LLMProviderErrorCode, message: string, options?: {
   statusCode?: number;
   fallbackEligible?: boolean;
@@ -315,11 +481,123 @@ function buildProviderError(code: LLMProviderErrorCode, message: string, options
   });
 }
 
+function classifyUpstreamError(
+  error: unknown,
+  upstream: GeminiCliUpstreamErrorSnapshot,
+): {
+  code: LLMProviderErrorCode;
+  message: string;
+  statusCode: number;
+  fallbackEligible: boolean;
+  retryable: boolean;
+  terminal: boolean;
+} {
+  const googleError = summarizeGoogleError(error);
+  const statusCode = upstream.statusCode ?? googleError?.code ?? 502;
+  const reason = upstream.googleReason;
+  const message = upstream.message ?? 'Gemini direct request failed upstream.';
+
+  if (isModelUnsupportedError(error)) {
+    return {
+      code: 'cli_model_unsupported',
+      message: `Gemini direct model ${upstream.model ?? 'unknown'} is not available for this account.`,
+      statusCode: 400,
+      fallbackEligible: false,
+      retryable: false,
+      terminal: true,
+    };
+  }
+
+  if (isAuthExpiredError(error)) {
+    return {
+      code: 'cli_auth_expired',
+      message: 'Gemini cached Google auth expired or was revoked.',
+      statusCode: 503,
+      fallbackEligible: true,
+      retryable: false,
+      terminal: false,
+    };
+  }
+
+  if (statusCode === 403 && isValidationRequiredError(googleError)) {
+    return {
+      code: 'cli_validation_required',
+      message: 'Gemini direct account validation is required upstream.',
+      statusCode: 403,
+      fallbackEligible: true,
+      retryable: false,
+      terminal: true,
+    };
+  }
+
+  if (statusCode === 403) {
+    return {
+      code: 'cli_permission_denied',
+      message: 'Gemini direct upstream denied this account or project.',
+      statusCode: 403,
+      fallbackEligible: true,
+      retryable: false,
+      terminal: true,
+    };
+  }
+
+  if (
+    statusCode === 429 ||
+    statusCode === 499 ||
+    statusCode === 503 ||
+    upstream.googleStatus === 'RESOURCE_EXHAUSTED'
+  ) {
+    const terminalQuota =
+      reason === 'QUOTA_EXHAUSTED' ||
+      reason === 'INSUFFICIENT_G1_CREDITS_BALANCE' ||
+      hasDailyQuotaSignal(googleError);
+    if (terminalQuota) {
+      return {
+        code: 'cli_quota_exhausted',
+        message,
+        statusCode: 429,
+        fallbackEligible: true,
+        retryable: false,
+        terminal: true,
+      };
+    }
+    return {
+      code: 'cli_rate_limited',
+      message,
+      statusCode,
+      fallbackEligible: true,
+      retryable: true,
+      terminal: false,
+    };
+  }
+
+  if (isPolicyBlockedError(error)) {
+    return {
+      code: 'cli_policy_blocked',
+      message: 'Gemini direct request was blocked by policy or safety controls.',
+      statusCode: 400,
+      fallbackEligible: false,
+      retryable: false,
+      terminal: true,
+    };
+  }
+
+  return {
+    code: 'cli_process_error',
+    message,
+    statusCode: 502,
+    fallbackEligible: true,
+    retryable: false,
+    terminal: false,
+  };
+}
+
 async function requestJson<T>(
   client: OAuth2Client,
   method: string,
   payload: Record<string, unknown>,
   timeoutMs: number,
+  options?: { retryDelayMs?: number },
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`Gemini request timed out after ${timeoutMs}ms.`)), timeoutMs);
@@ -332,9 +610,19 @@ async function requestJson<T>(
       headers: {
         'Content-Type': 'application/json',
       },
-      data: payload,
+      body: JSON.stringify(payload),
       responseType: 'json',
       signal: controller.signal,
+      retryConfig: {
+        retryDelay: options?.retryDelayMs ?? 100,
+        retry: 3,
+        noResponseRetries: 3,
+        statusCodesToRetry: [
+          [429, 429],
+          [499, 499],
+          [500, 599],
+        ],
+      },
     });
     return response.data;
   } catch (error) {
@@ -345,7 +633,10 @@ async function requestJson<T>(
         cause: error,
       });
     }
-    throw error;
+    throw attachUpstreamError(error, buildUpstreamErrorSnapshot(error, {
+      method,
+      model: typeof payload.model === 'string' ? payload.model : null,
+    }));
   } finally {
     clearTimeout(timer);
   }
@@ -355,6 +646,9 @@ function resolveModelAttemptSequence(config: GeminiCliProviderConfig, requestedM
   const primary = requestedModel && isDirectGeminiModelId(requestedModel) ? requestedModel : config.model;
   const ordered = [primary, ...config.models];
   const unique = [...new Set(ordered.map((value) => value.trim().toLowerCase()).filter(Boolean))];
+  if (runtimeState.quotaAuthoritative !== true) {
+    return unique;
+  }
   const buckets = runtimeState.quotaBuckets ?? [];
   const available = unique.filter((modelId) => {
     const bucket = buckets.find((entry) => entry.modelId === modelId);
@@ -372,6 +666,8 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
     authReady: null,
     authVerifiedAt: null,
     lastError: null,
+    lastMappedErrorCode: null,
+    lastFailureAt: null,
     lastSuccessAt: null,
     lastLatencyMs: null,
     lastResolvedModel: null,
@@ -380,12 +676,87 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
     userTierName: null,
     availableCredits: [],
     quotaBuckets: [],
+    quotaAuthoritative: false,
     quotaUpdatedAt: null,
     quotaLastError: null,
+    lastUpstreamError: null,
   };
 
   let runtimeCache: CodeAssistRuntime | null = null;
   let runtimePromise: Promise<CodeAssistRuntime> | null = null;
+
+  function buildSyntheticUpstreamError(
+    method: string,
+    model: string | null,
+    message: string,
+    statusCode: number | null,
+  ): GeminiCliUpstreamErrorSnapshot {
+    return {
+      at: new Date().toISOString(),
+      method,
+      endpoint: `${CODE_ASSIST_BASE_URL}:${method}`,
+      model,
+      statusCode,
+      statusText: null,
+      googleCode: statusCode,
+      googleStatus: null,
+      googleReason: null,
+      requestId: null,
+      message,
+      body: null,
+      retryable: null,
+      terminal: null,
+    };
+  }
+
+  function recordNormalizedError(
+    error: LLMProviderError,
+    upstream: GeminiCliUpstreamErrorSnapshot,
+    options?: { retryable?: boolean; terminal?: boolean },
+  ): LLMProviderError {
+    runtimeState.lastError = error.message;
+    runtimeState.lastMappedErrorCode = error.code;
+    runtimeState.lastFailureAt = upstream.at ?? new Date().toISOString();
+    runtimeState.lastUpstreamError = {
+      ...upstream,
+      retryable: typeof options?.retryable === 'boolean' ? options.retryable : upstream.retryable,
+      terminal: typeof options?.terminal === 'boolean' ? options.terminal : upstream.terminal,
+    };
+    if (error.code === 'cli_auth_expired' || error.code === 'cli_auth_missing') {
+      runtimeState.authReady = false;
+    }
+    return error;
+  }
+
+  function normalizeAndRecordError(
+    error: unknown,
+    context: { method: string; model?: string | null },
+  ): LLMProviderError {
+    if (error instanceof LLMProviderError) {
+      const upstream = getAttachedUpstreamError(error) ?? buildSyntheticUpstreamError(
+        context.method,
+        context.model ?? null,
+        error.message,
+        error.options.statusCode ?? null,
+      );
+      return recordNormalizedError(error, upstream);
+    }
+
+    const upstream = getAttachedUpstreamError(error) ?? buildUpstreamErrorSnapshot(error, context);
+    const classification = classifyUpstreamError(error, upstream);
+    return recordNormalizedError(
+      buildProviderError(classification.code, classification.message, {
+        statusCode: classification.statusCode,
+        fallbackEligible: classification.fallbackEligible,
+        cause: error,
+      }),
+      upstream,
+      {
+        retryable: classification.retryable,
+        terminal: classification.terminal,
+      },
+    );
+  }
 
   async function loadRuntime(): Promise<CodeAssistRuntime> {
     const cached = await loadGeminiCachedOAuthClient(config).catch((error) => {
@@ -396,14 +767,14 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
 
     if (!cached) {
       runtimeState.authReady = false;
-      throw buildProviderError(
+      throw recordNormalizedError(buildProviderError(
         'cli_auth_missing',
         'Gemini cached Google auth is missing. Run pnpm login:gemini-cli.',
         {
           statusCode: 503,
           fallbackEligible: true,
         },
-      );
+      ), buildSyntheticUpstreamError('loadCodeAssist', null, 'Gemini cached Google auth is missing. Run pnpm login:gemini-cli.', 503));
     }
 
     const loadedAt = new Date().toISOString();
@@ -424,30 +795,7 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
         mode: 'HEALTH_CHECK',
       },
       Math.min(config.timeoutMs, 45_000),
-    ).catch((error) => {
-      if (error instanceof LLMProviderError) throw error;
-      if (isAuthExpiredError(error)) {
-        runtimeState.authReady = false;
-        throw buildProviderError('cli_auth_expired', 'Gemini cached Google auth expired or was revoked.', {
-          statusCode: 503,
-          fallbackEligible: true,
-          cause: error,
-        });
-      }
-      if (isQuotaError(error)) {
-        throw buildProviderError('cli_quota_exhausted', 'Gemini direct quota is exhausted right now.', {
-          statusCode: 429,
-          fallbackEligible: true,
-          cause: error,
-        });
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      throw buildProviderError('cli_process_error', message, {
-        statusCode: 502,
-        fallbackEligible: true,
-        cause: error,
-      });
-    });
+    ).catch((error) => { throw normalizeAndRecordError(error, { method: 'loadCodeAssist' }); });
 
     runtimeState.projectId =
       (typeof loadResponse.cloudaicompanionProject === 'string' && loadResponse.cloudaicompanionProject.trim()
@@ -532,14 +880,14 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
         Math.min(config.timeoutMs, 30_000),
       );
       runtimeState.quotaBuckets = mapQuotaBuckets(quota);
+      runtimeState.quotaAuthoritative = true;
       runtimeState.quotaUpdatedAt = new Date().toISOString();
       runtimeState.quotaLastError = null;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      runtimeState.quotaLastError = message;
-      if (error instanceof LLMProviderError && error.code === 'cli_quota_exhausted') {
-        runtimeState.quotaUpdatedAt = new Date().toISOString();
-      }
+      const normalized = normalizeAndRecordError(error, { method: 'retrieveUserQuota' });
+      runtimeState.quotaAuthoritative = false;
+      runtimeState.quotaUpdatedAt = new Date().toISOString();
+      runtimeState.quotaLastError = normalized.message;
     }
   }
 
@@ -564,53 +912,8 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
         },
       },
       config.timeoutMs,
-    ).catch((error) => {
-      if (error instanceof LLMProviderError) throw error;
-      if (isModelUnsupportedError(error)) {
-        throw buildProviderError('cli_model_unsupported', `Gemini direct model ${model} is not available for this account.`, {
-          statusCode: 400,
-          fallbackEligible: false,
-          cause: error,
-        });
-      }
-      if (isAuthExpiredError(error)) {
-        runtimeState.authReady = false;
-        throw buildProviderError('cli_auth_expired', 'Gemini cached Google auth expired or was revoked.', {
-          statusCode: 503,
-          fallbackEligible: true,
-          cause: error,
-        });
-      }
-      if (isQuotaError(error)) {
-        runtimeState.quotaBuckets = upsertQuotaBucket(runtimeState.quotaBuckets ?? [], {
-          modelId: model,
-          remainingAmount: '0',
-          remainingFraction: 0,
-          resetTime: null,
-          tokenType: null,
-        });
-        runtimeState.quotaUpdatedAt = new Date().toISOString();
-        runtimeState.quotaLastError = error instanceof Error ? error.message : String(error);
-        throw buildProviderError('cli_quota_exhausted', `Gemini direct quota is exhausted for ${model}.`, {
-          statusCode: 429,
-          fallbackEligible: true,
-          cause: error,
-        });
-      }
-      if (isPolicyBlockedError(error)) {
-        throw buildProviderError('cli_policy_blocked', 'Gemini direct request was blocked by policy or safety controls.', {
-          statusCode: 400,
-          fallbackEligible: false,
-          cause: error,
-        });
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      throw buildProviderError('cli_process_error', message, {
-        statusCode: 502,
-        fallbackEligible: true,
-        cause: error,
-      });
-    });
+      { retryDelayMs: 1_000 },
+    ).catch((error) => { throw normalizeAndRecordError(error, { method: 'generateContent', model }); });
 
     if (isPolicyBlockedError(null, payload)) {
       throw buildProviderError('cli_policy_blocked', 'Gemini direct request was blocked by policy or safety controls.', {
@@ -693,7 +996,11 @@ export function createGeminiCliClient(config: GeminiCliProviderConfig): LLMClien
           lastError = normalized;
           const canTryNextModel =
             attempts.length > 1 &&
-            (normalized.code === 'cli_quota_exhausted' || normalized.code === 'cli_model_unsupported') &&
+            (
+              normalized.code === 'cli_quota_exhausted' ||
+              normalized.code === 'cli_rate_limited' ||
+              normalized.code === 'cli_model_unsupported'
+            ) &&
             model !== attempts[attempts.length - 1];
           if (canTryNextModel) continue;
           throw normalized;

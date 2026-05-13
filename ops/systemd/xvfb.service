@@ -1,0 +1,14 @@
+[Unit]
+Description=GemRouterFE Xvfb virtual display
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/GemRouterFE
+EnvironmentFile=-%h/GemRouterFE/.env
+ExecStart=%h/GemRouterFE/scripts/start-xvfb.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

@@ -12,6 +12,7 @@ import { OAuth2Client, type Credentials } from 'google-auth-library';
 import type {
   GeminiAvailableCredit,
   GeminiCliHealthSnapshot,
+  GeminiCliUpstreamErrorSnapshot,
   GeminiCliProviderConfig,
   GeminiQuotaBucket,
 } from '../llm/providers/gemini-cli/types.js';
@@ -26,6 +27,8 @@ export interface GeminiCliRuntimeState {
   authReady?: boolean | null;
   authVerifiedAt?: string | null;
   lastError?: string | null;
+  lastMappedErrorCode?: string | null;
+  lastFailureAt?: string | null;
   lastSuccessAt?: string | null;
   lastLatencyMs?: number | null;
   lastResolvedModel?: string | null;
@@ -34,8 +37,10 @@ export interface GeminiCliRuntimeState {
   userTierName?: string | null;
   availableCredits?: GeminiAvailableCredit[];
   quotaBuckets?: GeminiQuotaBucket[];
+  quotaAuthoritative?: boolean;
   quotaUpdatedAt?: string | null;
   quotaLastError?: string | null;
+  lastUpstreamError?: GeminiCliUpstreamErrorSnapshot | null;
 }
 
 interface CachedAccounts {
@@ -398,12 +403,16 @@ export function buildGeminiCliHealthSnapshot(
     userTierName: runtimeState.userTierName ?? null,
     availableCredits: runtimeState.availableCredits ?? [],
     quotaBuckets: runtimeState.quotaBuckets ?? [],
+    quotaAuthoritative: runtimeState.quotaAuthoritative === true,
     quotaUpdatedAt: runtimeState.quotaUpdatedAt ?? null,
     quotaLastError: runtimeState.quotaLastError ?? null,
     lastResolvedModel: runtimeState.lastResolvedModel ?? null,
     loginHint: buildGeminiCliLoginHint(config),
+    lastMappedErrorCode: runtimeState.lastMappedErrorCode ?? null,
     lastError: runtimeState.lastError ?? null,
+    lastFailureAt: runtimeState.lastFailureAt ?? null,
     lastSuccessAt: runtimeState.lastSuccessAt ?? null,
     lastLatencyMs: runtimeState.lastLatencyMs ?? null,
+    lastUpstreamError: runtimeState.lastUpstreamError ?? null,
   };
 }

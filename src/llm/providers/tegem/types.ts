@@ -4,6 +4,8 @@ export interface GeminiConfig {
   browserExecutablePath?: string;
   baseProfileDir: string;
   profileNamespace: string;
+  viewportWidth: number;
+  viewportHeight: number;
   streamPollIntervalMs: number;
   streamStableTicks: number;
   streamFirstChunkTimeoutMs: number;
@@ -15,6 +17,7 @@ export interface GeminiProviderConfig {
   label: string;
   baseUrl: string;
   readySelectors: string[];
+  inputSelectors: string[];
   inputSelector: string;
   submitSelector: string;
   messageSelectors: string[];

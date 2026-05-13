@@ -66,7 +66,9 @@ It is not the paid Gemini API path and it does not require `GEMINI_API_KEY` for 
 ## Quick Start
 
 ```bash
+corepack enable
 pnpm install
+pnpm setup:browser
 pnpm check
 pnpm build
 pnpm setup:gemini-cli
@@ -91,12 +93,21 @@ pnpm smoke:playwright
 
 `smoke:playwright` drives the user-facing inference surfaces with `model=gemini-web`, so it verifies the real Playwright/Gemini Web path instead of failing on direct-model quota exhaustion.
 
+When running the headed browser stack through user `systemd`, install the repo-provided units with:
+
+```bash
+pnpm setup:systemd
+```
+
+That installer writes user units pointing at the current clone path.
+
 ## Auth Model
 
 - Client apps must still send the local router bearer API key.
 - Gemini direct auth is Google-login based and reuses cached local credentials.
 - Playwright fallback reuses the already authenticated browser profile under `.playwright/`.
 - This repo does not require a paid Gemini API key for the intended path.
+- The Gemini Web browser profile itself is sensitive session state and is not committed.
 
 ## First-Time Google Login Setup
 
@@ -178,6 +189,7 @@ The documentation set is split into topical pages under [`docs/`](./docs).
 ### Getting Started
 
 - [Product Overview](./docs/getting-started/overview.md)
+- [First Install](./docs/getting-started/first-install.md)
 - [Quickstart](./docs/getting-started/quickstart.md)
 - [Configuration](./docs/getting-started/configuration.md)
 
