@@ -1021,6 +1021,32 @@ function buildGuestSummary() {
   const routing = (runtime.routing as Record<string, unknown> | undefined) ?? {};
   const backends = (runtime.backends as Record<string, unknown> | undefined) ?? {};
   const geminiCli = (backends.geminiCli as Record<string, unknown> | undefined) ?? {};
+  const provider = (runtime.provider as Record<string, unknown> | undefined) ?? {};
+  const providerGeminiApi = (provider.geminiApi as Record<string, unknown> | undefined) ?? {};
+  const providerQuota = (provider.quota as Record<string, unknown> | undefined) ?? {};
+  const publicApiKeys = Array.isArray(providerQuota.apiKeys)
+    ? (providerQuota.apiKeys as Record<string, unknown>[]).map((key) => ({
+      enabled: key.enabled !== false,
+      priority: key.priority ?? 0,
+      lastUsedAt: key.lastUsedAt ?? null,
+    }))
+    : [];
+  const publicQuotaGroups = Array.isArray(providerQuota.quotaGroups)
+    ? (providerQuota.quotaGroups as Record<string, unknown>[]).map((group) => ({
+      models: Array.isArray(group.models)
+        ? (group.models as Record<string, unknown>[]).map((model) => ({
+          model: model.model ?? 'unknown',
+          rpm: model.rpm ?? null,
+          tpm: model.tpm ?? null,
+          rpd: model.rpd ?? null,
+          cooldownUntil: model.cooldownUntil ?? null,
+          source: model.source ?? 'local-ledger',
+        }))
+        : [],
+    }))
+    : [];
+  const providerModels = Array.isArray(provider.models) ? provider.models as Record<string, unknown>[] : [];
+  const directModelCount = providerModels.filter((model) => model.kind === 'gemini-api').length;
   const stats = interactions.summary(24);
   const recent = interactions.list(240);
   const now = Date.now();
@@ -1078,6 +1104,22 @@ function buildGuestSummary() {
     compatibility: {
       defaultSurface: compatibility.get().defaultSurface,
       enabledSurfaces: compatibility.get().enabledSurfaces,
+    },
+    provider: {
+      configuredModel: provider.configuredModel ?? null,
+      geminiApi: {
+        enabled: providerGeminiApi.enabled ?? false,
+        configuredKeyCount: providerGeminiApi.configuredKeyCount ?? publicApiKeys.length,
+        usableKeyCount: providerGeminiApi.usableKeyCount ?? publicApiKeys.filter((key) => key.enabled).length,
+        defaultTier: providerGeminiApi.defaultTier ?? null,
+        lastResolvedModel: providerGeminiApi.lastResolvedModel ?? null,
+      },
+      lastDirectRequestState: provider.lastDirectRequestState ?? null,
+      directModelCount,
+      quota: {
+        apiKeys: publicApiKeys,
+        quotaGroups: publicQuotaGroups,
+      },
     },
     stats: {
       requests: totalRequests,

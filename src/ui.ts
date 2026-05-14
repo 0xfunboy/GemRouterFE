@@ -16,6 +16,25 @@ function loadPngDataUri(fileName: string): string {
 
 const UI_ICON_DATA_URI = loadPngDataUri('GemRouterFE_Icon_logo256.png');
 const UI_WORDMARK_DATA_URI = loadPngDataUri('GemRouterFE_Trasp_horiz_Logo_textonly.png');
+
+function svgIcon(name: 'activity' | 'admin' | 'api' | 'bolt' | 'browser' | 'chart' | 'health' | 'menu' | 'moon' | 'plug' | 'route' | 'sun'): string {
+  const paths: Record<typeof name, string> = {
+    activity: '<path d="M3 12h4l2-7 4 14 2-7h6"/>',
+    admin: '<path d="M12 3l7 4v5c0 4.4-2.8 7.2-7 9-4.2-1.8-7-4.6-7-9V7l7-4z"/><path d="M9.5 12.5l1.7 1.7 3.8-4.4"/>',
+    api: '<path d="M8 6H6a3 3 0 0 0 0 6h2"/><path d="M16 12h2a3 3 0 0 0 0-6h-2"/><path d="M8 18h8"/><path d="M12 6v12"/><path d="M9 9h6"/>',
+    bolt: '<path d="M13 2L4 14h7l-1 8 10-13h-7l0-7z"/>',
+    browser: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/><path d="M7 7h.01M10 7h.01"/>',
+    chart: '<path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5"/><path d="M12 16V8"/><path d="M16 16v-9"/>',
+    health: '<path d="M20.8 8.6a5.5 5.5 0 0 0-9.1-3.9L12 5l.3-.3a5.5 5.5 0 1 1 7.8 7.8L12 20.6 3.9 12.5a5.5 5.5 0 0 1 7.8-7.8"/><path d="M7 12h3l1.5-3 2 6 1.5-3h2"/>',
+    menu: '<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>',
+    moon: '<path d="M21 14.8A8.5 8.5 0 0 1 9.2 3a7 7 0 1 0 11.8 11.8z"/>',
+    plug: '<path d="M9 7V3"/><path d="M15 7V3"/><path d="M7 7h10v4a5 5 0 0 1-10 0V7z"/><path d="M12 16v5"/>',
+    route: '<circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M9 6h3a4 4 0 0 1 4 4v5"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.9 4.9l1.4 1.4"/><path d="M17.7 17.7l1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M4.9 19.1l1.4-1.4"/><path d="M17.7 6.3l1.4-1.4"/>',
+  };
+  return `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -33,7 +52,7 @@ export function renderAppShell(input: {
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
   const pageTitle = `${input.projectName} — Gemini Direct + Playwright Compatibility Router`;
-  const pageDescription = 'Embedded Gemini direct auth first, Playwright Gemini Web fallback, exposed through OpenAI, DeepSeek and Ollama compatible APIs.';
+  const pageDescription = 'GemRouterFE routes across Gemini API keys, Gemini direct auth, and Playwright Gemini Web while exposing OpenAI, DeepSeek, and Ollama compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
     : '';
@@ -91,21 +110,21 @@ export function renderAppShell(input: {
     <style>
       :root {
         color-scheme: dark;
-        --bg: #06070b;
-        --bg-soft: #0d1017;
-        --surface: rgba(17, 20, 29, 0.92);
-        --surface-strong: rgba(24, 27, 39, 0.96);
-        --surface-muted: rgba(20, 24, 34, 0.78);
-        --line: rgba(255, 255, 255, 0.08);
-        --line-strong: rgba(255, 255, 255, 0.14);
-        --text: #f5f7fb;
-        --muted: #9ba4b5;
-        --accent: #10a37f;
-        --accent-soft: #3ea9ff;
-        --good: #4ade80;
-        --warn: #f59e0b;
-        --bad: #fb7185;
-        --shadow: 0 28px 80px rgba(0, 0, 0, 0.35);
+        --bg: #070713;
+        --bg-soft: #101120;
+        --surface: rgba(15, 17, 33, 0.9);
+        --surface-strong: rgba(22, 24, 45, 0.97);
+        --surface-muted: rgba(20, 23, 43, 0.82);
+        --line: rgba(86, 242, 255, 0.12);
+        --line-strong: rgba(255, 62, 201, 0.24);
+        --text: #f8f7ff;
+        --muted: #a9abc4;
+        --accent: #18f0d0;
+        --accent-soft: #ff3ec9;
+        --good: #51ff9b;
+        --warn: #ffd166;
+        --bad: #ff5f8f;
+        --shadow: 0 28px 90px rgba(0, 0, 0, 0.48), 0 0 60px rgba(24, 240, 208, 0.06);
         --radius: 22px;
         --radius-sm: 16px;
       }
@@ -120,8 +139,8 @@ export function renderAppShell(input: {
         --line-strong: rgba(13, 18, 30, 0.14);
         --text: #111827;
         --muted: #5f6b7d;
-        --accent: #0f8d6e;
-        --accent-soft: #287fe5;
+        --accent: #087f7a;
+        --accent-soft: #c4148d;
         --good: #0d8f57;
         --warn: #b87400;
         --bad: #d23764;
@@ -131,11 +150,15 @@ export function renderAppShell(input: {
       html, body { min-height: 100%; }
       body {
         margin: 0;
-        font-family: "Soehne", "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+        font-family: "Eurostile", "Bank Gothic", "Rajdhani", "Avenir Next", "Segoe UI", sans-serif;
         background:
-          radial-gradient(circle at 12% 10%, rgba(62, 169, 255, 0.13), transparent 24%),
-          radial-gradient(circle at 88% 12%, rgba(16, 163, 127, 0.14), transparent 26%),
+          linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+          radial-gradient(circle at 14% 8%, rgba(255, 62, 201, 0.2), transparent 26%),
+          radial-gradient(circle at 86% 16%, rgba(24, 240, 208, 0.2), transparent 30%),
+          radial-gradient(circle at 50% 96%, rgba(255, 209, 102, 0.1), transparent 34%),
           linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 54%, var(--bg) 100%);
+        background-size: 42px 42px, 42px 42px, auto, auto, auto, auto;
         color: var(--text);
       }
       a { color: inherit; text-decoration: none; }
@@ -152,7 +175,18 @@ export function renderAppShell(input: {
         border-radius: var(--radius);
         box-shadow: var(--shadow);
         backdrop-filter: blur(18px);
+        position: relative;
+        overflow: hidden;
       }
+      .panel::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(120deg, rgba(255, 62, 201, 0.06), transparent 32%, rgba(24, 240, 208, 0.05));
+        opacity: 0.75;
+      }
+      .panel > * { position: relative; z-index: 1; }
       .nav {
         display: flex;
         align-items: center;
@@ -207,6 +241,16 @@ export function renderAppShell(input: {
         flex-wrap: wrap;
         gap: 10px;
       }
+      .icon {
+        width: 17px;
+        height: 17px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex: 0 0 auto;
+      }
       .chip, .ghost-link {
         display: inline-flex;
         align-items: center;
@@ -223,7 +267,7 @@ export function renderAppShell(input: {
       .chip.bad { color: var(--bad); }
       .hero {
         display: grid;
-        grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+        grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
         gap: 18px;
         padding: 18px;
         margin-bottom: 16px;
@@ -243,10 +287,11 @@ export function renderAppShell(input: {
         text-transform: uppercase;
       }
       .hero h1 {
-        font-size: clamp(34px, 6vw, 64px);
-        line-height: 0.94;
-        letter-spacing: -0.06em;
-        max-width: 15ch;
+        font-size: clamp(28px, 4.5vw, 46px);
+        line-height: 0.98;
+        letter-spacing: -0.045em;
+        max-width: 14ch;
+        text-shadow: 0 0 24px rgba(24, 240, 208, 0.12);
       }
       .hero-copy p {
         margin-top: 16px;
@@ -261,9 +306,60 @@ export function renderAppShell(input: {
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
         border: 1px solid var(--line);
       }
+      .source-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .source-card {
+        min-height: 172px;
+        padding: 16px;
+        border-radius: 18px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
+          radial-gradient(circle at 20% 0%, rgba(24, 240, 208, 0.16), transparent 48%);
+        border: 1px solid var(--line);
+      }
+      .source-card strong {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 16px;
+        letter-spacing: -0.02em;
+      }
+      .source-card p {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .nav-menu {
+        position: relative;
+      }
+      .menu-popover {
+        position: absolute;
+        top: calc(100% + 10px);
+        right: 0;
+        width: min(440px, calc(100vw - 32px));
+        padding: 16px;
+        border-radius: 20px;
+        background: var(--surface-strong);
+        border: 1px solid var(--line-strong);
+        box-shadow: var(--shadow);
+        z-index: 20;
+      }
+      .menu-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
       .hero-card h2 {
         font-size: 18px;
         letter-spacing: -0.03em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       .hero-card p {
         margin-top: 8px;
@@ -327,6 +423,9 @@ export function renderAppShell(input: {
       .section-title {
         font-size: 19px;
         letter-spacing: -0.03em;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
       .section-copy {
         margin-top: 6px;
@@ -514,6 +613,9 @@ export function renderAppShell(input: {
         .hero, .chart-grid, .shell-grid {
           grid-template-columns: 1fr;
         }
+        .source-grid {
+          grid-template-columns: 1fr;
+        }
         .stats-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -548,49 +650,71 @@ export function renderAppShell(input: {
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
             ${brandTitle}
-            <span>Router console for Gemini direct auth and Gemini Web compatibility</span>
+            <span>Three-source Gemini router with compatible API surfaces</span>
           </div>
         </div>
-        <div class="nav-actions">
-          <button id="theme-toggle" type="button" class="secondary">Toggle theme</button>
-          <a class="ghost-link" href="/health" target="_blank" rel="noreferrer">Health JSON</a>
+        <div class="nav-actions nav-menu">
+          <button id="menu-toggle" type="button" class="secondary">${svgIcon('menu')} Menu</button>
+          <div id="top-menu" class="menu-popover hidden">
+            <div class="menu-links">
+              <button id="theme-toggle" type="button" class="secondary">${svgIcon('moon')} Toggle theme</button>
+              <a class="ghost-link" href="/health" target="_blank" rel="noreferrer">${svgIcon('health')} Health JSON</a>
+              <button id="menu-refresh-button" type="button" class="secondary">${svgIcon('activity')} Refresh</button>
+            </div>
+            <div class="hero-card" style="padding:14px">
+              <h2>${svgIcon('admin')} Admin Login</h2>
+              <p>Use the dashboard credentials from <span class="mono">.env</span>. The session is stored in an HttpOnly cookie.</p>
+              <div id="auth-summary" class="status" style="margin-top:12px">Loading session state…</div>
+              <form id="login-form" style="margin-top:12px">
+                <label>
+                  Username
+                  <input type="text" name="username" autocomplete="username" placeholder="admin" required />
+                </label>
+                <label>
+                  Password
+                  <input type="password" name="password" autocomplete="current-password" placeholder="Dashboard password" required />
+                </label>
+                <div class="button-row">
+                  <button type="submit">${svgIcon('admin')} Sign in</button>
+                  <button id="menu-logout-button" type="button" class="warn">${svgIcon('plug')} Log out</button>
+                </div>
+              </form>
+              <div id="auth-status" class="status" style="margin-top:10px"></div>
+              <div class="footer-note" style="margin-top:12px">
+                noVNC stays separately protected. This dashboard never injects the VNC password into the browser.
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
       <section class="panel hero">
         <div class="hero-copy">
           <span class="eyebrow">Gemini Local Router</span>
-          <h1>Gemini direct first, Playwright fallback, familiar API surfaces.</h1>
+          <h1>Gemini routing with API keys, direct auth, and web fallback.</h1>
           <p>
-            One local router behind multiple compatible API surfaces. Public view shows health and usage only.
-            Admin mode exposes apps, keys, backend diagnostics, prompt testing, interaction logs and recovery tools.
+            One local router chooses between Gemini API accounts, Gemini direct auth, and a headed Playwright
+            Gemini Web session. It keeps OpenAI, DeepSeek, and Ollama clients happy while preserving the browser
+            path for web-only Gemini tools such as music, video, and other UI capabilities outside the API.
           </p>
           <div class="chip-row" style="margin-top:18px">
             ${input.modelIds.map((modelId) => `<span class="chip">${escapeHtml(modelId)}</span>`).join('')}
             <span class="chip">OpenAI / DeepSeek / Ollama</span>
-            <span class="chip">Gemini Direct + Playwright</span>
+            <span class="chip">Gemini API + Direct + Playwright</span>
           </div>
         </div>
-        <div class="hero-card">
-          <h2>Admin Login</h2>
-          <p>Use the dashboard credentials from <span class="mono">.env</span>. The session is stored in an HttpOnly cookie.</p>
-          <div id="auth-summary" class="status" style="margin-top:12px">Loading session state…</div>
-          <form id="login-form" style="margin-top:12px">
-            <label>
-              Username
-              <input type="text" name="username" autocomplete="username" placeholder="admin" required />
-            </label>
-            <label>
-              Password
-              <input type="password" name="password" autocomplete="current-password" placeholder="Dashboard password" required />
-            </label>
-            <div class="button-row">
-              <button type="submit">Sign in</button>
-            </div>
-          </form>
-          <div id="auth-status" class="status" style="margin-top:10px"></div>
-          <div class="footer-note" style="margin-top:12px">
-            noVNC stays separately protected. This dashboard never injects the VNC password into the browser.
+        <div class="source-grid">
+          <div class="source-card">
+            <strong>${svgIcon('api')} Gemini API</strong>
+            <p>Multi-key pool with account aliases, local RPM/TPM/RPD ledger, model discovery, and quota-aware routing.</p>
+          </div>
+          <div class="source-card">
+            <strong>${svgIcon('bolt')} Direct Auth</strong>
+            <p>Uses cached Google/Gemini direct auth when available, useful for account-level access without browser automation.</p>
+          </div>
+          <div class="source-card">
+            <strong>${svgIcon('browser')} Playwright Web</strong>
+            <p>Headed Gemini Web fallback for logged-in sessions and UI-only tasks that the official API does not cover.</p>
           </div>
         </div>
       </section>
@@ -598,8 +722,8 @@ export function renderAppShell(input: {
       <section class="panel section">
         <div class="section-head">
           <div>
-            <h2 class="section-title">Guest Overview</h2>
-            <p class="section-copy">Guest view hides prompts, app names and API keys. Only aggregate router usage is shown.</p>
+            <h2 class="section-title">${svgIcon('activity')} Guest Overview</h2>
+            <p class="section-copy">Guest view hides prompts, app names and API keys. It shows aggregate usage plus safe Gemini API quota aliases.</p>
           </div>
           <div id="public-runtime-pills" class="meta-row"></div>
         </div>
@@ -607,13 +731,59 @@ export function renderAppShell(input: {
       </section>
 
       <section class="panel section">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">${svgIcon('api')} Gemini API Keys and Quota</h3>
+            <p class="section-copy">Configured upstream accounts, local quota ledger, and per-model RPM/TPM/RPD remaining capacity. API keys are never shown.</p>
+          </div>
+          <div id="provider-pills" class="meta-row"></div>
+        </div>
+        <div class="shell-grid">
+          <div>
+            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('plug')} Configured Accounts</h4>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Quota Group</th>
+                    <th>Priority</th>
+                    <th>Health</th>
+                  </tr>
+                </thead>
+                <tbody id="gemini-api-keys-table"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Quota Snapshot</h4>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Group</th>
+                    <th>Model</th>
+                    <th>RPM</th>
+                    <th>TPM</th>
+                    <th>RPD</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody id="gemini-api-quota-table"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel section">
         <div class="chart-grid">
           <div class="chart-card">
-            <div class="section-head">
-              <div>
-                <h3 class="section-title">24h Throughput</h3>
-                <p class="section-copy">Hourly request volume. Failed requests are highlighted when present.</p>
-              </div>
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('chart')} 24h Throughput</h3>
+              <p class="section-copy">Hourly request volume. Failed requests are highlighted when present.</p>
+            </div>
             </div>
             <div class="chart-frame">
               <div id="hourly-chart" class="bar-chart"></div>
@@ -622,7 +792,7 @@ export function renderAppShell(input: {
           <div class="chart-card">
             <div class="section-head">
               <div>
-                <h3 class="section-title">Compatibility Surface Mix</h3>
+                <h3 class="section-title">${svgIcon('route')} Compatibility Surface Mix</h3>
                 <p class="section-copy">Traffic grouped by compatibility surface.</p>
               </div>
             </div>
@@ -671,49 +841,13 @@ export function renderAppShell(input: {
         <section class="panel section">
           <div class="section-head">
             <div>
-              <h3 class="section-title">Gemini API Keys and Quota</h3>
-              <p class="section-copy">Configured upstream accounts, local quota ledger, and per-model RPM/TPM/RPD remaining capacity. API keys are never shown.</p>
-            </div>
-            <div id="provider-pills" class="meta-row"></div>
-          </div>
-          <div class="shell-grid">
-            <div>
-              <h4 class="section-title" style="font-size:15px;margin-bottom:10px">Configured Accounts</h4>
-              <div class="table-wrap">
-                <table class="table">
-                  <thead>
-                    <tr>
-                      <th>Account</th>
-                      <th>Quota Group</th>
-                      <th>Priority</th>
-                      <th>Health</th>
-                    </tr>
-                  </thead>
-                  <tbody id="gemini-api-keys-table"></tbody>
-                </table>
-              </div>
-            </div>
-            <div>
-              <h4 class="section-title" style="font-size:15px;margin-bottom:10px">Quota Snapshot</h4>
-              <div class="table-wrap">
-                <table class="table">
-                  <thead>
-                    <tr>
-                      <th>Group</th>
-                      <th>Model</th>
-                      <th>RPM</th>
-                      <th>TPM</th>
-                      <th>RPD</th>
-                      <th>State</th>
-                    </tr>
-                  </thead>
-                  <tbody id="gemini-api-quota-table"></tbody>
-                </table>
-              </div>
+              <h3 class="section-title">${svgIcon('api')} Provider Diagnostics</h3>
+              <p class="section-copy">Admin-only raw backend state for Gemini API, direct auth and fallback investigation.</p>
             </div>
           </div>
           <div id="provider-output" class="mono-box">Loading direct model and quota snapshot…</div>
         </section>
+
 
         <section class="panel section">
           <div class="section-head">
@@ -911,7 +1045,11 @@ export function renderAppShell(input: {
       const savedTheme = localStorage.getItem('gemrouter-theme') || 'dark';
       root.setAttribute('data-theme', savedTheme);
 
+      const menuToggle = document.getElementById('menu-toggle');
+      const topMenu = document.getElementById('top-menu');
       const themeToggle = document.getElementById('theme-toggle');
+      const menuRefreshButton = document.getElementById('menu-refresh-button');
+      const menuLogoutButton = document.getElementById('menu-logout-button');
       const authSummary = document.getElementById('auth-summary');
       const authStatus = document.getElementById('auth-status');
       const loginForm = document.getElementById('login-form');
@@ -965,9 +1103,17 @@ export function renderAppShell(input: {
       function setTheme(theme) {
         root.setAttribute('data-theme', theme);
         localStorage.setItem('gemrouter-theme', theme);
-        themeToggle.textContent = theme === 'dark' ? 'Switch to light' : 'Switch to dark';
+        themeToggle.innerHTML = (theme === 'dark' ? '${svgIcon('sun')} Switch to light' : '${svgIcon('moon')} Switch to dark');
       }
 
+      menuToggle.addEventListener('click', () => {
+        topMenu.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (event) => {
+        if (!topMenu.contains(event.target) && !menuToggle.contains(event.target)) {
+          topMenu.classList.add('hidden');
+        }
+      });
       themeToggle.addEventListener('click', () => {
         setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
       });
@@ -1165,6 +1311,7 @@ export function renderAppShell(input: {
         const quotaGroups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
         const models = Array.isArray(provider.models) ? provider.models : [];
         const directModels = models.filter(function(model) { return model && model.kind === 'gemini-api'; });
+        const directModelCount = directModels.length || provider.directModelCount || 0;
         providerPills.innerHTML = [
           '<span class="chip ' + (geminiApi.enabled ? 'good' : 'warn') + '">' + (geminiApi.enabled ? 'Gemini API enabled' : 'Gemini API disabled') + '</span>',
           '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
@@ -1172,7 +1319,7 @@ export function renderAppShell(input: {
           '<span class="chip">Last API model ' + escapeHtml(String(geminiApi.lastResolvedModel || 'n/a')) + '</span>',
           '<span class="chip">Direct state ' + escapeHtml(String(provider.lastDirectRequestState || 'unknown')) + '</span>',
           '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || provider.userTierName || provider.userTier || 'n/a')) + '</span>',
-          '<span class="chip">Direct models ' + escapeHtml(String(directModels.length || 0)) + '</span>',
+          '<span class="chip">Direct models ' + escapeHtml(String(directModelCount)) + '</span>',
         ].join('');
 
         renderGeminiApiKeyTable(apiKeys);
@@ -1412,6 +1559,7 @@ export function renderAppShell(input: {
         state.publicSummary = data;
         renderPublicPills(data);
         renderPublicStats(data);
+        renderProviderState(data);
         renderHourlyChart(data);
         renderRouteChart(data);
       }
@@ -1481,7 +1629,16 @@ export function renderAppShell(input: {
         }
       });
 
-      logoutButton.addEventListener('click', async function() {
+      menuRefreshButton.addEventListener('click', async function() {
+        try {
+          await loadPublicSummary();
+          await refreshSession();
+        } catch (error) {
+          authStatus.textContent = error.message;
+        }
+      });
+
+      async function logoutAdminSession() {
         try {
           await request('/auth/logout', { method: 'POST', body: JSON.stringify({}) });
         } finally {
@@ -1492,7 +1649,10 @@ export function renderAppShell(input: {
           authStatus.textContent = '';
           vncFrame.src = 'about:blank';
         }
-      });
+      }
+
+      logoutButton.addEventListener('click', logoutAdminSession);
+      menuLogoutButton.addEventListener('click', logoutAdminSession);
 
       compatibilityForm.addEventListener('submit', async function(event) {
         event.preventDefault();
