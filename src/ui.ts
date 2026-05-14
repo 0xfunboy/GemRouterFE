@@ -501,6 +501,15 @@ export function renderAppShell(input: {
         overflow: auto;
         resize: vertical;
       }
+      .prompt-user-textarea {
+        min-height: 84px;
+        box-shadow: 0 0 0 1px rgba(81, 255, 155, 0.16), 0 0 24px rgba(81, 255, 155, 0.08);
+      }
+      .prompt-user-textarea:focus {
+        outline: none;
+        border-color: rgba(81, 255, 155, 0.34);
+        box-shadow: 0 0 0 1px rgba(81, 255, 155, 0.22), 0 0 28px rgba(81, 255, 155, 0.14);
+      }
       button {
         border: 1px solid var(--line-strong);
         border-radius: 4px;
@@ -738,6 +747,9 @@ export function renderAppShell(input: {
       .response-box.markdown-body a {
         color: var(--accent);
       }
+      .prompt-response-box {
+        box-shadow: 0 0 0 1px rgba(255, 95, 143, 0.16), 0 0 26px rgba(255, 95, 143, 0.08);
+      }
       .mono-box, .footer-note, .mono {
         font-family: "IBM Plex Mono", "SFMono-Regular", "Consolas", monospace;
       }
@@ -957,6 +969,60 @@ export function renderAppShell(input: {
         border-radius: 5px;
         border: 1px solid var(--line);
         background: rgba(3, 5, 8, 0.68);
+        cursor: zoom-in;
+        transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      }
+      .image-preview-card img:hover {
+        transform: translateY(-1px);
+        border-color: var(--line-strong);
+        box-shadow: 0 0 22px rgba(24, 240, 208, 0.08);
+      }
+      .image-preview-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .image-download-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        font-size: 12px;
+      }
+      .image-download-link:hover {
+        border-color: var(--line-strong);
+        color: var(--accent);
+      }
+      .image-lightbox {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+        background: rgba(3, 5, 8, 0.84);
+        backdrop-filter: blur(10px);
+        z-index: 1500;
+        cursor: zoom-out;
+      }
+      .image-lightbox img {
+        display: block;
+        max-width: min(92vw, 1440px);
+        max-height: 88vh;
+        width: auto;
+        height: auto;
+        border-radius: 6px;
+        border: 1px solid var(--line-strong);
+        box-shadow: 0 34px 90px rgba(0, 0, 0, 0.55);
+        background: rgba(3, 5, 8, 0.8);
+      }
+      .image-lightbox.hidden {
+        display: none !important;
       }
       .app-footer {
         padding: 18px;
@@ -979,10 +1045,13 @@ export function renderAppShell(input: {
         font-weight: 700;
         letter-spacing: -0.04em;
       }
+      .footer-brand-top span {
+        color: var(--accent);
+      }
       .footer-brand-mark {
         width: 40px;
         height: 40px;
-        color: var(--accent-soft);
+        color: var(--accent);
         flex: 0 0 auto;
       }
       .footer-brand-copy {
@@ -1009,7 +1078,7 @@ export function renderAppShell(input: {
         gap: 8px;
       }
       .footer-column h4 {
-        color: var(--accent-soft);
+        color: var(--accent);
         font-size: 12px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
@@ -1343,16 +1412,16 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">Compatibility Surfaces</h3>
-              <p class="section-copy">Manage enabled API surfaces and choose the primary compatibility surface.</p>
+              <p class="section-copy">Choose the primary compatibility surface and inspect the routed endpoints.</p>
             </div>
             <div class="section-head-actions">
-              <button type="button" class="secondary section-toggle" data-section-toggle="compatibility-section-body" aria-controls="compatibility-section-body" aria-expanded="false">
-                <span class="section-toggle-label">Expand</span>
+              <button type="button" class="secondary section-toggle" data-section-toggle="compatibility-section-body" aria-controls="compatibility-section-body" aria-expanded="true">
+                <span class="section-toggle-label">Collapse</span>
                 <span class="section-toggle-arrow" aria-hidden="true">▸</span>
               </button>
             </div>
           </div>
-          <div id="compatibility-section-body" class="section-body hidden">
+          <div id="compatibility-section-body" class="section-body">
           <div class="shell-grid">
             <div>
               <form id="compatibility-form">
@@ -1365,16 +1434,7 @@ export function renderAppShell(input: {
                     <option value="ollama">ollama</option>
                   </select>
                 </label>
-                <div class="button-row">
-                  <label class="chip"><input type="checkbox" name="enabledSurfaces" value="gemrouter" style="margin-right:8px" />gemrouter</label>
-                  <label class="chip"><input type="checkbox" name="enabledSurfaces" value="openai" style="margin-right:8px" />openai</label>
-                  <label class="chip"><input type="checkbox" name="enabledSurfaces" value="deepseek" style="margin-right:8px" />deepseek</label>
-                  <label class="chip"><input type="checkbox" name="enabledSurfaces" value="ollama" style="margin-right:8px" />ollama</label>
-                </div>
-                <div class="button-row">
-                  <button type="submit">Save surfaces</button>
-                </div>
-                <div id="compatibility-status" class="status"></div>
+                <div id="compatibility-status" class="status">Changes apply automatically when you switch the surface.</div>
               </form>
               <div class="section-head" style="margin-top:24px">
                 <div>
@@ -1397,7 +1457,7 @@ export function renderAppShell(input: {
                 </label>
                 <label>
                   User prompt
-                  <textarea class="compact-textarea" rows="1" name="prompt" placeholder="Write a prompt to test" required></textarea>
+                  <textarea class="compact-textarea prompt-user-textarea" rows="2" data-min-height="84" name="prompt" placeholder="Write a prompt to test" required></textarea>
                 </label>
                 <label>
                   Session hint
@@ -1408,7 +1468,7 @@ export function renderAppShell(input: {
                 </div>
                 <div id="prompt-status" class="status"></div>
               </form>
-              <div id="prompt-response" class="response-box markdown-body"><div class="muted">No prompt run yet.</div></div>
+              <div id="prompt-response" class="response-box markdown-body prompt-response-box"><div class="muted">No prompt run yet.</div></div>
             </div>
             <div>
               <div id="compatibility-output" class="mono-box">Loading compatibility surface snapshot…</div>
@@ -1435,13 +1495,13 @@ export function renderAppShell(input: {
               <p class="section-copy">Create apps, rotate API keys, and manage client-facing limits from one console.</p>
             </div>
             <div class="section-head-actions">
-              <button type="button" class="secondary section-toggle" data-section-toggle="apps-section-body" aria-controls="apps-section-body" aria-expanded="false">
-                <span class="section-toggle-label">Expand</span>
+              <button type="button" class="secondary section-toggle" data-section-toggle="apps-section-body" aria-controls="apps-section-body" aria-expanded="true">
+                <span class="section-toggle-label">Collapse</span>
                 <span class="section-toggle-arrow" aria-hidden="true">▸</span>
               </button>
             </div>
           </div>
-          <div id="apps-section-body" class="section-body hidden">
+          <div id="apps-section-body" class="section-body">
           <div class="shell-grid apps-shell">
             <div>
               <form id="app-form">
@@ -1605,6 +1665,9 @@ export function renderAppShell(input: {
           </div>
         </div>
       </footer>
+      <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
+        <img id="image-lightbox-media" src="" alt="Expanded generated image" />
+      </div>
     </main>
 
     <script>
@@ -1665,6 +1728,8 @@ export function renderAppShell(input: {
       const promptStatus = document.getElementById('prompt-status');
       const promptResponse = document.getElementById('prompt-response');
       const promptImageOutput = document.getElementById('prompt-image-output');
+      const imageLightbox = document.getElementById('image-lightbox');
+      const imageLightboxMedia = document.getElementById('image-lightbox-media');
       const appForm = document.getElementById('app-form');
       const appStatus = document.getElementById('app-status');
       const appReset = document.getElementById('app-reset');
@@ -1751,6 +1816,39 @@ export function renderAppShell(input: {
         return 'Request failed with HTTP ' + response.status + '.';
       }
 
+      function imageFileExtension(mimeType) {
+        const normalized = String(mimeType || '').trim().toLowerCase();
+        if (normalized === 'image/jpeg') return 'jpg';
+        if (normalized === 'image/svg+xml') return 'svg';
+        if (!normalized.startsWith('image/')) return 'png';
+        const rawExtension = normalized.slice('image/'.length);
+        const cleaned = rawExtension.replace(/[^a-z0-9]+/gi, '');
+        return cleaned || 'png';
+      }
+
+      function closeImageLightbox() {
+        if (!imageLightbox || !imageLightboxMedia) return;
+        imageLightbox.classList.add('hidden');
+        imageLightbox.setAttribute('aria-hidden', 'true');
+        imageLightboxMedia.setAttribute('src', '');
+        document.body.style.overflow = '';
+      }
+
+      function toggleImageLightbox(src, alt) {
+        if (!imageLightbox || !imageLightboxMedia || !src) return;
+        const isOpen = !imageLightbox.classList.contains('hidden');
+        const isSameImage = imageLightboxMedia.getAttribute('src') === src;
+        if (isOpen && isSameImage) {
+          closeImageLightbox();
+          return;
+        }
+        imageLightboxMedia.setAttribute('src', src);
+        imageLightboxMedia.setAttribute('alt', alt || 'Expanded generated image');
+        imageLightbox.classList.remove('hidden');
+        imageLightbox.setAttribute('aria-hidden', 'false');
+        document.body.style.overflow = 'hidden';
+      }
+
       Array.from(document.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
         autosizeTextarea(textarea);
         textarea.addEventListener('input', function() {
@@ -1801,8 +1899,9 @@ export function renderAppShell(input: {
 
       function autosizeTextarea(textarea) {
         if (!textarea || !textarea.classList || !textarea.classList.contains('compact-textarea')) return;
-        textarea.style.height = '46px';
-        const nextHeight = Math.max(46, Math.min(textarea.scrollHeight, 180));
+        const minHeight = Math.max(46, Number(textarea.dataset.minHeight || 46) || 46);
+        textarea.style.height = minHeight + 'px';
+        const nextHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, 180));
         textarea.style.height = nextHeight + 'px';
       }
 
@@ -1926,9 +2025,13 @@ export function renderAppShell(input: {
           const mimeType = typeof image.mimeType === 'string' && image.mimeType.trim() ? image.mimeType.trim() : 'image/png';
           const data = typeof image.data === 'string' ? image.data.trim() : '';
           const src = 'data:' + mimeType + ';base64,' + data;
+          const extension = imageFileExtension(mimeType);
           return '<div class="image-preview-card">' +
-            '<img src="' + src + '" alt="Generated image ' + escapeHtml(String(index + 1)) + '" />' +
-            '<div class="footer-note mono">' + escapeHtml(mimeType) + '</div>' +
+            '<img class="prompt-preview-image" src="' + src + '" data-image-src="' + src + '" alt="Generated image ' + escapeHtml(String(index + 1)) + '" />' +
+            '<div class="image-preview-meta">' +
+              '<div class="footer-note mono">' + escapeHtml(mimeType) + '</div>' +
+              '<a class="image-download-link" href="' + src + '" download="gemrouter-image-' + escapeHtml(String(index + 1)) + '.' + escapeHtml(extension) + '">Download</a>' +
+            '</div>' +
           '</div>';
         }).join('') + '</div>';
       }
@@ -2379,9 +2482,9 @@ export function renderAppShell(input: {
         }
         const endpoints = compatibility.endpoints || {};
         compatibilityForm.elements.defaultSurface.value = compatibility.defaultSurface || 'gemrouter';
-        Array.from(compatibilityForm.querySelectorAll('input[name="enabledSurfaces"]')).forEach(function(input) {
-          input.checked = (compatibility.enabledSurfaces || []).includes(input.value);
-        });
+        if (!compatibilityStatus.textContent.trim()) {
+          compatibilityStatus.textContent = 'Changes apply automatically when you switch the surface.';
+        }
 
         const gemrouter = endpoints.gemrouter || { enabled: false, routes: {} };
         const openai = endpoints.openai || { enabled: false, routes: {} };
@@ -2618,24 +2721,29 @@ export function renderAppShell(input: {
       logoutButton.addEventListener('click', logoutAdminSession);
       menuLogoutButton.addEventListener('click', logoutAdminSession);
 
-      compatibilityForm.addEventListener('submit', async function(event) {
-        event.preventDefault();
-        compatibilityStatus.textContent = 'Saving compatibility surfaces…';
-        const enabledSurfaces = Array.from(compatibilityForm.querySelectorAll('input[name="enabledSurfaces"]:checked')).map(function(input) { return input.value; });
+      async function saveCompatibilitySurface() {
+        compatibilityStatus.textContent = 'Updating primary surface…';
         try {
           await request('/admin/compatibility', {
             method: 'POST',
             body: JSON.stringify({
               defaultSurface: compatibilityForm.elements.defaultSurface.value,
-              enabledSurfaces: enabledSurfaces,
             }),
           });
-          compatibilityStatus.textContent = 'Compatibility surfaces updated.';
+          compatibilityStatus.textContent = 'Primary surface updated.';
           await loadPublicSummary();
           await loadAdminSummary();
         } catch (error) {
           compatibilityStatus.textContent = error.message;
         }
+      }
+
+      compatibilityForm.addEventListener('submit', async function(event) {
+        event.preventDefault();
+        await saveCompatibilitySurface();
+      });
+      compatibilityForm.elements.defaultSurface.addEventListener('change', function() {
+        void saveCompatibilitySurface();
       });
 
       promptForm.addEventListener('submit', async function(event) {
@@ -2664,6 +2772,24 @@ export function renderAppShell(input: {
           promptStatus.textContent = error.message;
           promptResponse.innerHTML = '<div class="muted">' + escapeHtml(error.message) + '</div>';
           promptImageOutput.innerHTML = '<div class="muted">No generated image yet.</div>';
+        }
+      });
+      promptImageOutput.addEventListener('click', function(event) {
+        const target = event.target;
+        if (!target || typeof target.closest !== 'function') return;
+        if (target.closest('.image-download-link')) return;
+        const image = target.closest('.prompt-preview-image');
+        if (!image) return;
+        toggleImageLightbox(image.getAttribute('data-image-src') || image.getAttribute('src') || '', image.getAttribute('alt') || 'Expanded generated image');
+      });
+      if (imageLightbox) {
+        imageLightbox.addEventListener('click', function() {
+          closeImageLightbox();
+        });
+      }
+      document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape') {
+          closeImageLightbox();
         }
       });
 
