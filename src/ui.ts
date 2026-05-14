@@ -295,6 +295,10 @@ export function renderAppShell(input: {
         max-width: 12ch;
         text-shadow: 0 0 24px rgba(24, 240, 208, 0.12);
       }
+      .hero-copy {
+        display: grid;
+        align-content: start;
+      }
       .hero-copy p {
         margin-top: 16px;
         max-width: 64ch;
@@ -348,7 +352,7 @@ export function renderAppShell(input: {
         line-height: 1.55;
       }
       .activity-strip {
-        margin-top: 16px;
+        margin-top: 0;
         padding: 12px;
         border: 1px solid var(--line);
         border-radius: 5px;
@@ -367,39 +371,42 @@ export function renderAppShell(input: {
       }
       .heartbeat {
         position: relative;
-        height: 38px;
+        height: 86px;
         margin-top: 10px;
         overflow: hidden;
         border: 1px solid rgba(24, 240, 208, 0.18);
         border-radius: 3px;
         background:
-          linear-gradient(rgba(24, 240, 208, 0.08) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(24, 240, 208, 0.08) 1px, transparent 1px),
+          linear-gradient(rgba(24, 240, 208, 0.1) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(24, 240, 208, 0.1) 1px, transparent 1px),
           rgba(2, 5, 12, 0.44);
-        background-size: 18px 18px;
+        background-size: 14px 14px;
       }
       .heartbeat-line {
         position: absolute;
-        inset: 0;
-        width: 200%;
-        background:
-          linear-gradient(90deg,
-            transparent 0 5%,
-            var(--accent) 5% 6%,
-            transparent 6% 14%,
-            transparent 14% 18%,
-            var(--accent-soft) 18% 19%,
-            transparent 19% 23%,
-            transparent 23% 35%,
-            var(--accent) 35% 36%,
-            transparent 36% 100%);
-        clip-path: polygon(0 56%, 6% 56%, 8% 18%, 11% 82%, 14% 46%, 22% 46%, 24% 64%, 27% 40%, 31% 56%, 100% 56%);
-        filter: drop-shadow(0 0 8px rgba(24, 240, 208, 0.8));
-        animation: heartbeat-scroll 2.8s linear infinite;
+        left: 0;
+        top: 0;
+        width: 240%;
+        height: 100%;
+        background: none;
+        filter: drop-shadow(0 0 7px rgba(24, 240, 208, 0.85));
+        animation: heartbeat-scroll var(--heartbeat-speed, 2.8s) linear infinite;
+      }
+      .heartbeat-line svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .heartbeat-line path {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 2.2;
+        stroke-linecap: square;
+        stroke-linejoin: miter;
       }
       @keyframes heartbeat-scroll {
         from { transform: translateX(0); }
-        to { transform: translateX(-50%); }
+        to { transform: translateX(-48%); }
       }
       .nav-menu {
         position: relative;
@@ -663,6 +670,66 @@ export function renderAppShell(input: {
         letter-spacing: 0.1em;
         font-size: 10px;
       }
+      .quota-shell {
+        grid-template-columns: minmax(300px, 0.78fr) minmax(420px, 1.22fr);
+        align-items: start;
+      }
+      .accounts-table {
+        min-width: 0;
+      }
+      .accounts-table th, .accounts-table td {
+        padding: 10px 12px;
+      }
+      .accounts-table th:nth-child(1), .accounts-table td:nth-child(1) { width: 26%; }
+      .accounts-table th:nth-child(2), .accounts-table td:nth-child(2) { width: 34%; }
+      .accounts-table th:nth-child(3), .accounts-table td:nth-child(3) { width: 12%; }
+      .accounts-table th:nth-child(4), .accounts-table td:nth-child(4) { width: 28%; }
+      .quota-table {
+        min-width: 0;
+      }
+      .quota-table th, .quota-table td {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .quota-table th:nth-child(1), .quota-table td:nth-child(1) { width: 16%; }
+      .quota-table th:nth-child(2), .quota-table td:nth-child(2) { width: 22%; }
+      .quota-table th:nth-child(3), .quota-table td:nth-child(3),
+      .quota-table th:nth-child(4), .quota-table td:nth-child(4),
+      .quota-table th:nth-child(5), .quota-table td:nth-child(5) { width: 13%; }
+      .quota-table th:nth-child(6), .quota-table td:nth-child(6) { width: 23%; }
+      @media (max-width: 980px) {
+        .table.responsive-table,
+        .table.responsive-table thead,
+        .table.responsive-table tbody,
+        .table.responsive-table tr,
+        .table.responsive-table th,
+        .table.responsive-table td {
+          display: block;
+          width: 100% !important;
+          min-width: 0;
+        }
+        .table.responsive-table thead {
+          display: none;
+        }
+        .table.responsive-table tr {
+          padding: 10px;
+          border-bottom: 1px solid var(--line);
+        }
+        .table.responsive-table td {
+          display: grid;
+          grid-template-columns: 92px minmax(0, 1fr);
+          gap: 10px;
+          padding: 7px 4px;
+          border-bottom: 0;
+        }
+        .table.responsive-table td::before {
+          content: attr(data-label);
+          color: var(--muted);
+          font: 700 10px/1.3 "IBM Plex Mono", monospace;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+        }
+      }
       iframe {
         width: 100%;
         min-height: 520px;
@@ -686,6 +753,9 @@ export function renderAppShell(input: {
         }
         .stats-grid {
           grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .quota-shell {
+          grid-template-columns: 1fr;
         }
       }
       @media (max-width: 760px) {
@@ -758,19 +828,18 @@ export function renderAppShell(input: {
 
       <section class="panel hero">
         <div class="hero-copy">
-          <span class="eyebrow">Gemini Local Router</span>
-          <h1>Gemini routing station.</h1>
           <div class="activity-strip">
             <div class="activity-head">
               <span>Live router pulse</span>
               <span id="activity-label">waiting for traffic</span>
             </div>
-            <div class="heartbeat" aria-hidden="true"><div class="heartbeat-line"></div></div>
-          </div>
-          <div class="chip-row" style="margin-top:18px">
-            ${input.modelIds.map((modelId) => `<span class="chip">${escapeHtml(modelId)}</span>`).join('')}
-            <span class="chip">OpenAI / DeepSeek / Ollama</span>
-            <span class="chip">Gemini API + Direct + Playwright</span>
+            <div class="heartbeat" aria-hidden="true">
+              <div class="heartbeat-line">
+                <svg viewBox="0 0 960 86" preserveAspectRatio="none">
+                  <path d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
+                </svg>
+              </div>
+            </div>
           </div>
         </div>
         <div class="source-grid">
@@ -808,11 +877,11 @@ export function renderAppShell(input: {
           </div>
           <div id="provider-pills" class="meta-row"></div>
         </div>
-        <div class="shell-grid">
+        <div class="shell-grid quota-shell">
           <div>
             <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('plug')} Configured Accounts</h4>
             <div class="table-wrap">
-              <table class="table">
+              <table class="table accounts-table responsive-table">
                 <thead>
                   <tr>
                     <th>Account</th>
@@ -828,7 +897,7 @@ export function renderAppShell(input: {
           <div>
             <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Quota Snapshot</h4>
             <div class="table-wrap">
-              <table class="table">
+              <table class="table quota-table responsive-table">
                 <thead>
                   <tr>
                     <th>Group</th>
@@ -1241,6 +1310,8 @@ export function renderAppShell(input: {
         if (activityLabel) {
           activityLabel.textContent = fmtNumber(stats.requests) + ' req / 24h · ' + escapeHtml(String(stats.successRatePct || 0)) + '% ok';
         }
+        const speed = Math.max(0.72, Math.min(3.2, 3.2 - Math.log10((stats.requests || 0) + 1) * 0.72));
+        root.style.setProperty('--heartbeat-speed', speed.toFixed(2) + 's');
         publicStats.innerHTML = [
           ['Requests', fmtNumber(stats.requests), 'Successful and failed requests'],
           ['Success Rate', escapeHtml(String(stats.successRatePct || 0)) + '%', 'Calculated from logged requests'],
@@ -1481,14 +1552,21 @@ export function renderAppShell(input: {
         return used + ' / ' + limit + '<div class="footer-note">remaining ' + remaining + '</div>';
       }
 
+      function formatTimestamp(value) {
+        if (!value) return 'never';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value).replace(/\\.\\d{3}Z$/, 'Z');
+        return date.toISOString().replace(/\\.\\d{3}Z$/, 'Z');
+      }
+
       function renderGeminiApiKeyTable(apiKeys) {
         geminiApiKeysTable.innerHTML = apiKeys.map(function(key, index) {
           const enabled = key.enabled !== false;
           return '<tr>' +
-            '<td><strong>' + accountAlias(index) + '</strong><div class="footer-note">API key hidden</div></td>' +
-            '<td>' + groupAlias(index) + '<div class="footer-note">real group hidden</div></td>' +
-            '<td>' + escapeHtml(String(key.priority || 0)) + '</td>' +
-            '<td><span class="chip ' + (enabled ? 'good' : 'warn') + '">' + (enabled ? 'enabled' : 'disabled') + '</span><div class="footer-note">last used: ' + escapeHtml(String(key.lastUsedAt || 'never')) + '</div></td>' +
+            '<td data-label="Account"><strong>' + accountAlias(index) + '</strong><div class="footer-note">API key hidden</div><div class="footer-note">last used:</div></td>' +
+            '<td data-label="Quota Group">' + groupAlias(index) + '<div class="footer-note">' + escapeHtml(formatTimestamp(key.lastUsedAt)) + '</div></td>' +
+            '<td data-label="Priority">' + escapeHtml(String(key.priority || 0)) + '</td>' +
+            '<td data-label="Health"><span class="chip ' + (enabled ? 'good' : 'warn') + '">' + (enabled ? 'enabled' : 'disabled') + '</span></td>' +
           '</tr>';
         }).join('') || '<tr><td colspan="4" class="muted">No Gemini API accounts configured.</td></tr>';
       }
@@ -1500,12 +1578,12 @@ export function renderAppShell(input: {
           models.slice(0, 12).forEach(function(model) {
             const cooldown = model.cooldownUntil ? 'cooldown until ' + model.cooldownUntil : 'ready';
             rows.push('<tr>' +
-              '<td>' + groupAlias(groupIndex) + '</td>' +
-              '<td><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">source: ' + escapeHtml(String(model.source || 'local-ledger')) + '</div></td>' +
-              '<td>' + formatQuotaMetric(model.rpm) + '</td>' +
-              '<td>' + formatQuotaMetric(model.tpm) + '</td>' +
-              '<td>' + formatQuotaMetric(model.rpd) + '</td>' +
-              '<td><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span><div class="footer-note">auth: estimated local ledger</div></td>' +
+              '<td data-label="Group">' + groupAlias(groupIndex) + '</td>' +
+              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">source: ' + escapeHtml(String(model.source || 'local-ledger')) + '</div></td>' +
+              '<td data-label="RPM">' + formatQuotaMetric(model.rpm) + '</td>' +
+              '<td data-label="TPM">' + formatQuotaMetric(model.tpm) + '</td>' +
+              '<td data-label="RPD">' + formatQuotaMetric(model.rpd) + '</td>' +
+              '<td data-label="State"><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span><div class="footer-note">auth: estimated local ledger</div></td>' +
             '</tr>');
           });
         });
