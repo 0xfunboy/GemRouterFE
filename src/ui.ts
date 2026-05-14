@@ -385,10 +385,11 @@ export function renderAppShell(input: {
       .heartbeat-line {
         position: absolute;
         inset: 0;
-        width: 100%;
+        width: 125%;
         height: 100%;
         background: none;
         filter: drop-shadow(0 0 7px rgba(24, 240, 208, 0.85));
+        animation: ecg-block-drift calc(var(--heartbeat-speed, 7.2s) * 4) linear infinite;
       }
       .heartbeat-line svg {
         display: block;
@@ -430,6 +431,10 @@ export function renderAppShell(input: {
         0% { transform: translateX(34px); opacity: 0.3; }
         78% { transform: translateX(-100%); opacity: 0.72; }
         100% { transform: translateX(-100%); opacity: 0; }
+      }
+      @keyframes ecg-block-drift {
+        from { transform: translateX(-20%); }
+        to { transform: translateX(0); }
       }
       .nav-menu {
         position: relative;
