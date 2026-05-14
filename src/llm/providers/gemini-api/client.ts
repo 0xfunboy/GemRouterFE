@@ -3,14 +3,23 @@ import { GeminiApiProviderError } from './errors.js';
 import { GeminiApiKeyPool, type GeminiApiKeyReservation } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
 import { GeminiApiQuotaLedger } from './quotaLedger.js';
-import { getAiStudioQuotaScraperSnapshot } from './aistudioQuotaScraper.js';
 import type { GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../../types.js';
 
 interface GeminiGenerateResponse {
   candidates?: Array<{
     content?: {
-      parts?: Array<{ text?: string }>;
+      parts?: Array<{
+        text?: string;
+        inlineData?: {
+          mimeType?: string;
+          data?: string;
+        };
+        inline_data?: {
+          mime_type?: string;
+          data?: string;
+        };
+      }>;
     };
     finishReason?: string;
   }>;
@@ -53,7 +62,6 @@ function estimateTokens(messages: LLMMessage[]): number {
 
 function normalizeGeminiApiModel(model: string | undefined): string {
   const normalized = String(model ?? 'gemini-2.5-flash-lite').trim().toLowerCase();
-  if (normalized === 'google/gemini-web' || normalized === 'gemini-web') return 'gemini-2.5-flash-lite';
   return normalized.replace(/^models\//, '');
 }
 
@@ -77,15 +85,60 @@ function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<str
   const generationConfig: Record<string, unknown> = {};
   if (typeof opts?.temperature === 'number') generationConfig.temperature = opts.temperature;
   if (typeof opts?.maxTokens === 'number') generationConfig.maxOutputTokens = opts.maxTokens;
+  if (Array.isArray(opts?.imageConfig?.responseModalities) && opts.imageConfig.responseModalities.length > 0) {
+    generationConfig.responseModalities = opts.imageConfig.responseModalities;
+  }
+  if (opts?.imageConfig?.aspectRatio || opts?.imageConfig?.imageSize) {
+    generationConfig.responseFormat = {
+      image: {
+        ...(opts.imageConfig.aspectRatio ? { aspectRatio: opts.imageConfig.aspectRatio } : {}),
+        ...(opts.imageConfig.imageSize ? { imageSize: opts.imageConfig.imageSize } : {}),
+      },
+    };
+  }
   if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
   return body;
 }
 
+function extractParts(payload: GeminiGenerateResponse): Array<{
+  text?: string;
+  inlineData?: {
+    mimeType?: string;
+    data?: string;
+  };
+  inline_data?: {
+    mime_type?: string;
+    data?: string;
+  };
+}> {
+  return payload.candidates?.[0]?.content?.parts ?? [];
+}
+
 function extractText(payload: GeminiGenerateResponse): string {
-  return (payload.candidates?.[0]?.content?.parts ?? [])
+  return extractParts(payload)
     .map((part) => (typeof part.text === 'string' ? part.text : ''))
     .join('')
     .trim();
+}
+
+function extractImages(payload: GeminiGenerateResponse): Array<{ mimeType: string; data: string }> {
+  return extractParts(payload)
+    .map((part) => {
+      const inlineData = part.inlineData ?? (
+        part.inline_data
+          ? {
+            mimeType: part.inline_data.mime_type,
+            data: part.inline_data.data,
+          }
+          : undefined
+      );
+      if (!inlineData?.mimeType || !inlineData?.data) return null;
+      return {
+        mimeType: inlineData.mimeType,
+        data: inlineData.data,
+      };
+    })
+    .filter((entry): entry is { mimeType: string; data: string } => entry !== null);
 }
 
 function parseGoogleError(payload: unknown): {
@@ -213,6 +266,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       }
       const gemini = payload as GeminiGenerateResponse;
       const content = normalizeSemanticOutput(extractText(gemini), opts?.semanticProfile);
+      const images = extractImages(gemini);
       const usage = gemini.usageMetadata;
       ledger.markSuccess({
         quotaGroup: reservation.key.quotaGroup,
@@ -227,6 +281,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       lastLatencyMs = Date.now() - started;
       return {
         content,
+        images,
         provider: 'gemini-api',
         model: opts?.model ?? model,
         backend: 'gemini-api',
@@ -376,7 +431,6 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           lastError: discoverySnapshot.lastError,
         },
         models: discoverySnapshot.models,
-        aiStudioQuotaScraper: getAiStudioQuotaScraperSnapshot(),
         lastSelectedKeyId,
         lastSelectedQuotaGroup,
         lastResolvedModel,
@@ -401,6 +455,15 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       };
     },
 
+    async listModels(): Promise<Record<string, unknown>> {
+      await discovery.refreshIfStale();
+      return {
+        ok: true,
+        models: discovery.snapshot().models,
+        modelDiscovery: discovery.snapshot(),
+      };
+    },
+
     clearCooldown(): Record<string, unknown> {
       ledger.clearCooldown();
       return {
@@ -411,6 +474,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
   } as LLMClient & {
     health: () => Record<string, unknown>;
     discoverModels: () => Promise<Record<string, unknown>>;
+    listModels: () => Promise<Record<string, unknown>>;
     clearCooldown: () => Record<string, unknown>;
   };
 }

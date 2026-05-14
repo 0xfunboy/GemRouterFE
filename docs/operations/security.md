@@ -1,40 +1,18 @@
 # Security
 
-GemRouterFE controls a real authenticated Gemini Web session. Treat it as a privileged runtime.
+Treat GemRouter as a privileged routing backend.
 
-## Protect These Separately
+## Protect
 
-- dashboard credentials
-- admin token
-- bootstrap API key
-- app keys
-- noVNC access
-- browser profile data
+- `GEMROUTER_ADMIN_TOKEN`
+- bootstrap API keys
+- Gemini API keys
+- Gemini CLI OAuth cache if that backend is enabled
+- audit and interaction logs if they contain sensitive prompts
 
-## Operational Rules
+## Recommendations
 
-- keep secrets in environment configuration, not in the repo
-- rotate app keys when exposure is suspected
-- keep guest mode generic
-- reserve admin mode for operators
-- do not collapse dashboard auth and noVNC auth into one visible browser flow
-
-## API Key Scope
-
-Use app policies to reduce blast radius:
-
-- restrict origins
-- restrict models
-- keep concurrency low where possible
-- isolate clients with session namespaces
-
-## Browser Profile Handling
-
-The profile is effectively a credential store for Gemini Web.
-
-Protect it accordingly:
-
-- isolate it from unrelated browsing
-- avoid copying it unnecessarily
-- control filesystem access tightly
-- do not expose profile paths in public-facing material
+- keep admin auth separate from client bootstrap auth
+- expose the admin UI only where operators need it
+- rotate bootstrap keys and app keys when access changes
+- do not commit `.env`, `data/`, or `.gemini/`

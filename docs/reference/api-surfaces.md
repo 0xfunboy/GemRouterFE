@@ -1,22 +1,22 @@
 # API Surfaces
 
-GemRouterFE exposes three compatibility families.
+GemRouter exposes three compatibility families.
 
-## OpenAI-Compatible
+## OpenAI-compatible
 
 - `GET /v1/models`
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
 - `GET /v1/provider/runtime`
 - `GET /v1/provider/models`
 - `GET /v1/provider/quota`
-- `POST /v1/chat/completions`
-- `POST /v1/responses`
 
-## DeepSeek-Compatible
+## DeepSeek-compatible
 
 - `GET /models`
 - `POST /chat/completions`
 
-## Ollama-Compatible
+## Ollama-compatible
 
 - `GET /api/version`
 - `GET /api/tags`
@@ -24,34 +24,4 @@ GemRouterFE exposes three compatibility families.
 - `POST /api/chat`
 - `POST /api/generate`
 
-## Authentication Notes
-
-- Bearer auth is supported on the OpenAI and DeepSeek style routes
-- Basic auth is supported for Ollama-style clients that expect that pattern
-
-## Model IDs
-
-Common exposed aliases:
-
-- `gemini-2.5-pro`
-- `gemini-2.5-flash`
-- `gemini-2.5-flash-lite`
-- `gemini-web`
-- `google/gemini-web`
-
-The `gemini-web` aliases map to the Playwright Gemini Web runtime.
-The `gemini-*` IDs map to the official Gemini API backend by default, then fall back to Playwright in `auto` mode.
-
-## Backend Overrides
-
-Use `x-gemrouter-backend` to force one upstream:
-
-- `gemini-api`
-- `playwright`
-- `gemini-cli`
-
-Successful Gemini API responses include quota/key metadata headers when available:
-
-- `x-gemrouter-api-key-id`
-- `x-gemrouter-quota-group`
-- `x-gemrouter-quota-source`
+All surfaces route into the same backend selection logic.

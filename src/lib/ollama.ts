@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { LLMMessage } from '../llm/types.js';
 import { normalizeModelId, type UsageSummary } from './openai.js';
-import { describePublicModel, isPlaywrightModelId } from './models.js';
+import { describePublicModel } from './models.js';
 
 export interface OllamaChatRequest {
   model?: string;
@@ -197,36 +197,39 @@ export function buildOllamaTagsResponse(models: string[]): {
 } {
   const uniqueModels = [...new Set(models)];
   return {
-    models: uniqueModels.map((model) => ({
-      ...describePublicModel(model),
-      name: model,
-      model,
-      modified_at: nowIso(),
-      size: 0,
-      digest: buildDigest(model),
-      details: {
-        format: 'gemrouter',
-        family: isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct',
-        families: [isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct'],
-        parameter_size: 'remote',
-        quantization_level: 'remote',
-      },
-    })),
+    models: uniqueModels.map((model) => {
+      const descriptor = describePublicModel(model);
+      return {
+        ...descriptor,
+        name: model,
+        model,
+        modified_at: nowIso(),
+        size: 0,
+        digest: buildDigest(model),
+        details: {
+          format: 'gemrouter',
+          family: descriptor.family,
+          families: [descriptor.family],
+          parameter_size: 'remote',
+          quantization_level: 'remote',
+        },
+      };
+    }),
   };
 }
 
 export function buildOllamaShowResponse(model: string): Record<string, unknown> {
   const descriptor = describePublicModel(model);
   return {
-    license: 'GemRouterFE remote surface',
+    license: 'GemRouter remote surface',
     modelfile: `FROM ${model}`,
     parameters: 'temperature 0.7',
     template: '{{ .Prompt }}',
     model_descriptor: descriptor,
     details: {
       format: 'gemrouter',
-      family: isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct',
-      families: [isPlaywrightModelId(model) ? 'gemini-web' : 'gemini-direct'],
+      family: descriptor.family,
+      families: [descriptor.family],
       parameter_size: 'remote',
       quantization_level: 'remote',
     },

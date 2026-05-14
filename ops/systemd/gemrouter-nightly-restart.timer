@@ -1,0 +1,10 @@
+[Unit]
+Description=Timer: restart GemRouter nightly at 03:30
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=gemrouter-nightly-restart.service
+
+[Install]
+WantedBy=timers.target

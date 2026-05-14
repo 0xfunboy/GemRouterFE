@@ -1,85 +1,52 @@
 # Quickstart
 
-If this is a brand-new machine, start with [First Install](./first-install.md).
-
-## Prerequisites
-
-You need:
-
-- Node.js 24 with `corepack`
-- `Xvfb`
-- `x11vnc`
-- `websockify` with the noVNC web assets available under `/usr/share/novnc`
-- a valid Gemini Web browser profile for Playwright to use, or operator access to log in through noVNC
-- a headed display path if you plan to run the browser visibly
-
-## Install
+## 1. Install dependencies
 
 ```bash
-corepack enable
-pnpm install
-pnpm setup:browser
+pnpm install --frozen-lockfile
 ```
 
-If you plan to expose the headed browser stack, create the VNC password file once:
+## 2. Create local config
 
 ```bash
-mkdir -p ~/.vnc
-x11vnc -storepasswd ~/.vnc/passwd
+cp .env.example .env
 ```
 
-Install the repo-provided user services:
+Set at least:
 
-```bash
-pnpm setup:systemd
-```
+- `GEMROUTER_ADMIN_TOKEN`
+- `GEMROUTER_BOOTSTRAP_API_KEY`
+- `GEMROUTER_GEMINI_API_KEYS` or `GEMROUTER_GEMINI_API_KEYS_JSON`
 
-This writes the user `systemd` units against the current clone path.
-
-## Validate the Codebase
+## 3. Verify the repo
 
 ```bash
 pnpm check
 pnpm build
 ```
 
-## Run in Development
+## 4. Start GemRouter
 
 ```bash
-pnpm dev
+pnpm start
 ```
 
-## Run Smoke Validation
+## 5. Check health
 
 ```bash
-pnpm smoke
+curl -fsS http://127.0.0.1:4024/health
 ```
 
-Smoke validation exercises:
+## 6. Send an OpenAI-compatible request
 
-- `/health`
-- OpenAI-compatible routes
-- DeepSeek-compatible routes
-- Ollama-compatible routes
-- `admin/test-chat` when admin credentials are present
-
-Use `pnpm smoke:playwright` when you want to prove the Playwright/Gemini Web path specifically; it uses `gemini-web` for the primary inference checks.
-- admin login and summary when admin credentials are configured
-
-## Open the Dashboard
-
-Open the router base URL in a browser.
-
-Guest mode loads first. Admin mode requires the configured dashboard credentials.
-
-If Playwright has no authenticated Gemini session yet, open noVNC and log in interactively after the headed services are up.
-
-## First Operator Checks
-
-After startup, verify:
-
-1. browser profile is ready
-2. Gemini Web session is still authenticated
-3. health reports the enabled compatibility surfaces you expect
-4. prompt lab can complete a simple request
-5. smoke checks pass against the target environment
+```bash
+curl -sS http://127.0.0.1:4024/v1/chat/completions \
+  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash",
+    "messages": [
+      { "role": "user", "content": "Reply only with OK." }
+    ]
+  }'
+```
