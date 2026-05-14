@@ -1365,8 +1365,8 @@ export function renderAppShell(input: {
           <div class="chart-card">
             <div class="section-head">
               <div>
-                <h3 class="section-title">${svgIcon('route')} Compatibility Endpoint Mix</h3>
-                <p class="section-copy">Share of logged requests by API endpoint family across the latest 240 interactions.</p>
+              <h3 class="section-title">${svgIcon('route')} Compatibility Surface Mix</h3>
+              <p class="section-copy">Top compatibility traffic families across the latest 240 logged interactions. Each bar shows request count and share of this sampled window.</p>
               </div>
             </div>
             <div class="chart-frame">
@@ -1956,19 +1956,19 @@ export function renderAppShell(input: {
       function describeRouteFamily(label) {
         switch (String(label || '')) {
           case 'chat':
-            return { title: 'Chat completions', detail: 'Primary/OpenAI-compatible chat endpoints' };
+            return { title: 'GemRouter / OpenAI chat', detail: 'Traffic hitting /chat/completions style compatibility routes' };
           case 'images':
-            return { title: 'Image generation', detail: 'Primary/OpenAI-compatible image endpoints' };
+            return { title: 'GemRouter / OpenAI images', detail: 'Traffic hitting /images/generations style compatibility routes' };
           case 'responses':
-            return { title: 'Responses API', detail: 'OpenAI responses endpoint traffic' };
+            return { title: 'OpenAI responses', detail: 'Traffic hitting the OpenAI-style /responses endpoint' };
           case 'ollama_chat':
-            return { title: 'Ollama chat', detail: 'Ollama-compatible chat requests' };
+            return { title: 'Ollama chat', detail: 'Traffic hitting Ollama-compatible /api/chat requests' };
           case 'ollama_generate':
-            return { title: 'Ollama generate', detail: 'Ollama-compatible generate requests' };
+            return { title: 'Ollama generate', detail: 'Traffic hitting Ollama-compatible /api/generate requests' };
           case 'models':
-            return { title: 'Model discovery', detail: 'Model list, tags, or show requests' };
+            return { title: 'Model discovery', detail: 'Traffic hitting model list, tags, show, or discovery endpoints' };
           default:
-            return { title: 'Other routes', detail: 'Requests outside the main compatibility families' };
+            return { title: 'Other compatibility routes', detail: 'Traffic outside the main chat, image, Ollama, and model-discovery families' };
         }
       }
 
@@ -2230,7 +2230,7 @@ export function renderAppShell(input: {
             '<div class="route-track"><div class="route-fill" style="width:' + width + '%"></div></div>' +
             '<div class="footer-note">' + escapeHtml(routeInfo.detail) + '</div>' +
           '</div>';
-        }).join('') || '<div class="muted">No compatibility traffic logged yet.</div>';
+        }).join('') || '<div class="muted">No compatibility traffic logged in the latest 240 interactions.</div>';
       }
 
       function modelId(entry) {
