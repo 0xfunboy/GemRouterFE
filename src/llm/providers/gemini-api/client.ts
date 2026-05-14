@@ -157,7 +157,32 @@ function parseGoogleError(payload: unknown): {
   };
 }
 
-function mapErrorCode(status: number): {
+function isHighDemandCondition(
+  status: number,
+  googleError: ReturnType<typeof parseGoogleError>,
+): boolean {
+  if (status !== 503) return false;
+  const text = [
+    googleError.status,
+    googleError.reason,
+    googleError.message,
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join(' ')
+    .toLowerCase();
+  return (
+    text.includes('high demand') ||
+    text.includes('unavailable') ||
+    text.includes('overloaded') ||
+    text.includes('capacity') ||
+    text.includes('try again')
+  );
+}
+
+function mapErrorCode(
+  status: number,
+  googleError: ReturnType<typeof parseGoogleError>,
+): {
   code: ConstructorParameters<typeof GeminiApiProviderError>[0];
   fallbackEligible: boolean;
 } {
@@ -165,6 +190,7 @@ function mapErrorCode(status: number): {
   if (status === 401 || status === 403) return { code: 'gemini_api_auth_failed', fallbackEligible: true };
   if (status === 404) return { code: 'gemini_api_model_not_found', fallbackEligible: true };
   if (status === 429) return { code: 'gemini_api_rate_limited', fallbackEligible: true };
+  if (isHighDemandCondition(status, googleError)) return { code: 'gemini_api_high_demand', fallbackEligible: true };
   return { code: 'gemini_api_upstream_error', fallbackEligible: true };
 }
 
@@ -191,6 +217,32 @@ function withKey(endpoint: string, key: string, stream = false): string {
 
 function sanitizeKeyPreview(key: string): string {
   return key.length <= 10 ? 'configured' : `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+function hasAnotherConfiguredKeyForModel(
+  config: GeminiApiProviderConfig,
+  model: string,
+  excludedKeyIds: Set<string>,
+): boolean {
+  return config.keys.some((key) => (
+    key.enabled &&
+    !excludedKeyIds.has(key.id) &&
+    (!key.models || key.models.length === 0 || key.models.includes(model))
+  ));
+}
+
+function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
+  switch (error.code) {
+    case 'gemini_api_auth_failed':
+    case 'gemini_api_rate_limited':
+    case 'gemini_api_quota_unavailable':
+    case 'gemini_api_high_demand':
+    case 'gemini_api_upstream_error':
+    case 'gemini_api_timeout':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function effectiveRequestTimeoutMs(timeoutMs: number): number {
@@ -253,62 +305,84 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     const started = Date.now();
     const model = normalizeGeminiApiModel(opts?.model);
     const estimatedTokens = estimateTokens(messages);
-    const reservation = keyPool.reserve(model, estimatedTokens);
-    lastSelectedKeyId = reservation.key.id;
-    lastSelectedQuotaGroup = reservation.key.quotaGroup;
-    lastResolvedModel = model;
-    const endpoint = buildEndpoint(config, model);
+    const excludedKeyIds = new Set<string>();
+    let lastProviderError: GeminiApiProviderError | null = null;
 
-    try {
-      const response = await fetch(withKey(endpoint, reservation.key.key), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(toGenerationBody(messages, opts)),
-        signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throwGeminiError(response, payload, endpoint, model, reservation);
+    while (true) {
+      let reservation: GeminiApiKeyReservation;
+      try {
+        reservation = keyPool.reserve(model, estimatedTokens, {
+          excludeKeyIds: [...excludedKeyIds],
+        });
+      } catch (error) {
+        if (lastProviderError) throw lastProviderError;
+        throw error;
       }
-      const gemini = payload as GeminiGenerateResponse;
-      const content = normalizeSemanticOutput(extractText(gemini), opts?.semanticProfile);
-      const images = extractImages(gemini);
-      const usage = gemini.usageMetadata;
-      ledger.markSuccess({
-        quotaGroup: reservation.key.quotaGroup,
-        keyId: reservation.key.id,
-        model,
-        requestId: reservation.requestId,
-        totalTokens: usage?.totalTokenCount,
-      });
-      lastError = null;
-      lastUpstreamError = null;
-      lastSuccessAt = nowIso();
-      lastLatencyMs = Date.now() - started;
-      return {
-        content,
-        images,
-        provider: 'gemini-api',
-        model: opts?.model ?? model,
-        backend: 'gemini-api',
-        backendModel: model,
-        apiKeyId: reservation.key.id,
-        quotaGroup: reservation.key.quotaGroup,
-        quotaSource: 'local-ledger',
-        usage: {
-          promptTokens: usage?.promptTokenCount,
-          completionTokens: usage?.candidatesTokenCount,
+
+      lastSelectedKeyId = reservation.key.id;
+      lastSelectedQuotaGroup = reservation.key.quotaGroup;
+      lastResolvedModel = model;
+      const endpoint = buildEndpoint(config, model);
+
+      try {
+        const response = await fetch(withKey(endpoint, reservation.key.key), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(toGenerationBody(messages, opts)),
+          signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throwGeminiError(response, payload, endpoint, model, reservation);
+        }
+        const gemini = payload as GeminiGenerateResponse;
+        const content = normalizeSemanticOutput(extractText(gemini), opts?.semanticProfile);
+        const images = extractImages(gemini);
+        const usage = gemini.usageMetadata;
+        ledger.markSuccess({
+          quotaGroup: reservation.key.quotaGroup,
+          keyId: reservation.key.id,
+          model,
+          requestId: reservation.requestId,
           totalTokens: usage?.totalTokenCount,
-        },
-        tokensUsed: usage?.totalTokenCount,
-        latencyMs: lastLatencyMs,
-      };
-    } catch (error) {
-      const providerError = normalizeError(error, endpoint, model, reservation);
-      lastError = providerError.message;
-      lastFailureAt = nowIso();
-      lastLatencyMs = Date.now() - started;
-      throw providerError;
+        });
+        lastError = null;
+        lastUpstreamError = null;
+        lastSuccessAt = nowIso();
+        lastLatencyMs = Date.now() - started;
+        return {
+          content,
+          images,
+          provider: 'gemini-api',
+          model: opts?.model ?? model,
+          backend: 'gemini-api',
+          backendModel: model,
+          apiKeyId: reservation.key.id,
+          quotaGroup: reservation.key.quotaGroup,
+          quotaSource: 'local-ledger',
+          usage: {
+            promptTokens: usage?.promptTokenCount,
+            completionTokens: usage?.candidatesTokenCount,
+            totalTokens: usage?.totalTokenCount,
+          },
+          tokensUsed: usage?.totalTokenCount,
+          latencyMs: lastLatencyMs,
+        };
+      } catch (error) {
+        const providerError = normalizeError(error, endpoint, model, reservation);
+        lastProviderError = providerError;
+        lastError = providerError.message;
+        lastFailureAt = nowIso();
+        lastLatencyMs = Date.now() - started;
+        excludedKeyIds.add(reservation.key.id);
+        if (
+          shouldRetryWithAnotherKey(providerError) &&
+          hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
+        ) {
+          continue;
+        }
+        throw providerError;
+      }
     }
   }
 
@@ -320,7 +394,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     reservation: GeminiApiKeyReservation,
   ): never {
     const googleError = parseGoogleError(payload);
-    const mapped = mapErrorCode(response.status);
+    const mapped = mapErrorCode(response.status, googleError);
     lastUpstreamError = {
       status: response.status,
       code: googleError.code,

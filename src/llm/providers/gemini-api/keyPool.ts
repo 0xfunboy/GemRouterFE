@@ -34,7 +34,13 @@ export class GeminiApiKeyPool {
     private readonly ledger: GeminiApiQuotaLedger,
   ) {}
 
-  reserve(model: string, estimatedTokens: number): GeminiApiKeyReservation {
+  reserve(
+    model: string,
+    estimatedTokens: number,
+    options?: {
+      excludeKeyIds?: string[];
+    },
+  ): GeminiApiKeyReservation {
     if (!this.config.enabled) {
       throw new GeminiApiProviderError('backend_disabled', 'Gemini API backend is disabled.', {
         statusCode: 503,
@@ -48,9 +54,11 @@ export class GeminiApiKeyPool {
       });
     }
 
+    const excludedKeyIds = new Set((options?.excludeKeyIds ?? []).map((value) => value.trim()).filter(Boolean));
     const candidates = this.config.keys
       .filter((key) => key.enabled)
       .filter((key) => allowsModel(key, model))
+      .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => {
         const availability = this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens);
         return { key, availability };
@@ -99,4 +107,3 @@ export class GeminiApiKeyPool {
     return { key: selected, model, requestId, estimatedTokens };
   }
 }
-
