@@ -60,7 +60,7 @@ export interface LLMClient {
   chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse>;
   streamChat?(
     messages: LLMMessage[],
-  opts?: LLMOptions
+    opts?: LLMOptions,
   ): AsyncGenerator<LLMStreamChunk, LLMResponse, void>;
   prewarmSessions?(sessions: LLMOptions[]): Promise<void>;
   getDiagnostics?(): Record<string, unknown>;

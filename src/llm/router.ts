@@ -37,8 +37,8 @@ function annotateResponse(
     ...response,
     provider: response.provider || backend,
     backend,
-    fallbackFrom,
-    fallbackReason,
+    fallbackFrom: fallbackFrom ?? response.fallbackFrom,
+    fallbackReason: fallbackReason ?? response.fallbackReason,
   };
 }
 
