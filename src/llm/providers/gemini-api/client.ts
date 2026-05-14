@@ -1,9 +1,17 @@
+import {
+  isGeminiEmbeddingModelId,
+  isGeminiImageGenerationModelId,
+  isGeminiLiveModelId,
+  isGeminiLongRunningModelId,
+  isGeminiNativeAudioModelId,
+  isGeminiTtsModelId,
+} from '../../../lib/models.js';
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
 import { GeminiApiProviderError } from './errors.js';
 import { GeminiApiKeyPool, type GeminiApiKeyReservation } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
 import { GeminiApiQuotaLedger } from './quotaLedger.js';
-import type { GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
+import type { GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../../types.js';
 
 interface GeminiGenerateResponse {
@@ -234,15 +242,157 @@ function hasAnotherConfiguredKeyForModel(
 function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
   switch (error.code) {
     case 'gemini_api_auth_failed':
+    case 'gemini_api_no_key_for_model':
     case 'gemini_api_rate_limited':
     case 'gemini_api_quota_unavailable':
     case 'gemini_api_high_demand':
+    case 'gemini_api_model_not_found':
     case 'gemini_api_upstream_error':
     case 'gemini_api_timeout':
       return true;
     default:
       return false;
   }
+}
+
+function isPureImageRequest(opts?: LLMOptions): boolean {
+  const modalities = opts?.imageConfig?.responseModalities;
+  return Array.isArray(modalities) && modalities.length > 0 && modalities.every((value) => value === 'IMAGE');
+}
+
+function isTextFallbackModelCandidate(
+  modelId: string,
+  supportedGenerationMethods?: string[],
+): boolean {
+  if (!modelId.trim()) return false;
+  if (isGeminiImageGenerationModelId(modelId)) return false;
+  if (isGeminiLiveModelId(modelId)) return false;
+  if (isGeminiEmbeddingModelId(modelId)) return false;
+  if (isGeminiLongRunningModelId(modelId)) return false;
+  if (isGeminiNativeAudioModelId(modelId)) return false;
+  if (isGeminiTtsModelId(modelId)) return false;
+  if (Array.isArray(supportedGenerationMethods) && supportedGenerationMethods.length > 0) {
+    const methods = new Set(supportedGenerationMethods.map((method) => method.trim()));
+    return methods.has('generateContent');
+  }
+  return true;
+}
+
+function parseModelVersion(modelId: string): number {
+  const match = normalizeGeminiApiModel(modelId).match(/^(?:gemini|gemma)-(\d+(?:\.\d+)?)/i);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function classifyTextModel(modelId: string): {
+  normalized: string;
+  family: string;
+  version: number;
+  isPro: boolean;
+  isFlash: boolean;
+  isLite: boolean;
+  isPreview: boolean;
+} {
+  const normalized = normalizeGeminiApiModel(modelId);
+  return {
+    normalized,
+    family: normalized.startsWith('gemma-') ? 'gemma' : 'gemini',
+    version: parseModelVersion(normalized),
+    isPro: /(^|-)pro(?:-|$)/i.test(normalized),
+    isFlash: /flash/i.test(normalized),
+    isLite: /lite/i.test(normalized),
+    isPreview: /preview/i.test(normalized),
+  };
+}
+
+function baseTextModelRank(modelId: string): number {
+  const model = classifyTextModel(modelId);
+  if (model.isPro) return 420;
+  if (model.isFlash && !model.isLite) return 320;
+  if (model.isFlash && model.isLite) return 280;
+  return 180;
+}
+
+function textFallbackScore(requestedModelId: string, candidateModelId: string): number {
+  const requested = classifyTextModel(requestedModelId);
+  const candidate = classifyTextModel(candidateModelId);
+  let score = baseTextModelRank(candidate.normalized);
+
+  if (requested.family === candidate.family) score += 24;
+  if (requested.isPro && candidate.isPro) score += 180;
+  else if (requested.isPro && candidate.isFlash) score += 96;
+  else if (requested.isFlash && candidate.isFlash) score += 140;
+  else if (requested.isFlash && candidate.isPro) score += 116;
+  else if (requested.isLite && candidate.isLite) score += 36;
+
+  if (requested.isLite === candidate.isLite) score += 12;
+  if (requested.isPreview === candidate.isPreview) score += 8;
+
+  const versionDistance = Math.abs(requested.version - candidate.version);
+  score += Math.max(0, 60 - Math.round(versionDistance * 24));
+
+  if (candidate.version > requested.version) score += 6;
+  return score;
+}
+
+function buildTextFallbackModels(
+  requestedModelId: string,
+  allowedModelIds: string[] | undefined,
+  discoveredModels: GeminiApiModelInfo[],
+  opts?: LLMOptions,
+): string[] {
+  if (isPureImageRequest(opts)) return [];
+  if (!Array.isArray(allowedModelIds) || allowedModelIds.length === 0) return [];
+  const requested = normalizeGeminiApiModel(requestedModelId);
+  const discoveredMethodsById = new Map(
+    discoveredModels.map((entry) => [
+      normalizeGeminiApiModel(String(entry.id ?? '')),
+      Array.isArray(entry.supportedGenerationMethods)
+        ? entry.supportedGenerationMethods.map((method) => String(method))
+        : [],
+    ]),
+  );
+  return [...new Set(
+    allowedModelIds
+      .map((modelId) => normalizeGeminiApiModel(modelId))
+      .filter((modelId) => modelId && modelId !== requested)
+      .filter((modelId) => isTextFallbackModelCandidate(modelId, discoveredMethodsById.get(modelId)))
+  )].sort((left, right) => textFallbackScore(requested, right) - textFallbackScore(requested, left));
+}
+
+function shouldRetryWithFallbackModel(
+  error: GeminiApiProviderError,
+  remainingModels: string[],
+  opts?: LLMOptions,
+): boolean {
+  if (remainingModels.length === 0) return false;
+  if (isPureImageRequest(opts)) return false;
+  switch (error.code) {
+    case 'gemini_api_auth_failed':
+    case 'gemini_api_no_key_for_model':
+    case 'gemini_api_rate_limited':
+    case 'gemini_api_quota_unavailable':
+    case 'gemini_api_high_demand':
+    case 'gemini_api_model_not_found':
+    case 'gemini_api_upstream_error':
+    case 'gemini_api_timeout':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function createAttemptOptions(
+  opts: LLMOptions | undefined,
+  modelId: string,
+): LLMOptions | undefined {
+  if (!opts) return opts;
+  if (!opts.imageConfig) return opts;
+  if (isGeminiImageGenerationModelId(modelId)) return opts;
+  const next = { ...opts };
+  delete next.imageConfig;
+  return next;
 }
 
 function effectiveRequestTimeoutMs(timeoutMs: number): number {
@@ -303,87 +453,116 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     }
     void discovery.refreshIfStale();
     const started = Date.now();
-    const model = normalizeGeminiApiModel(opts?.model);
+    const requestedModel = normalizeGeminiApiModel(opts?.model);
+    const modelAttempts = [
+      requestedModel,
+      ...buildTextFallbackModels(requestedModel, opts?.allowedModelIds, discovery.snapshot().models, opts),
+    ];
     const estimatedTokens = estimateTokens(messages);
-    const excludedKeyIds = new Set<string>();
     let lastProviderError: GeminiApiProviderError | null = null;
 
-    while (true) {
-      let reservation: GeminiApiKeyReservation;
-      try {
-        reservation = keyPool.reserve(model, estimatedTokens, {
-          excludeKeyIds: [...excludedKeyIds],
-        });
-      } catch (error) {
-        if (lastProviderError) throw lastProviderError;
-        throw error;
-      }
+    for (let modelIndex = 0; modelIndex < modelAttempts.length; modelIndex++) {
+      const model = modelAttempts[modelIndex];
+      const remainingModels = modelAttempts.slice(modelIndex + 1);
+      const attemptOptions = createAttemptOptions(opts, model);
+      const excludedKeyIds = new Set<string>();
 
-      lastSelectedKeyId = reservation.key.id;
-      lastSelectedQuotaGroup = reservation.key.quotaGroup;
-      lastResolvedModel = model;
-      const endpoint = buildEndpoint(config, model);
-
-      try {
-        const response = await fetch(withKey(endpoint, reservation.key.key), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(toGenerationBody(messages, opts)),
-          signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throwGeminiError(response, payload, endpoint, model, reservation);
+      while (true) {
+        let reservation: GeminiApiKeyReservation;
+        try {
+          reservation = keyPool.reserve(model, estimatedTokens, {
+            excludeKeyIds: [...excludedKeyIds],
+          });
+        } catch (error) {
+          if (lastProviderError && shouldRetryWithFallbackModel(lastProviderError, remainingModels, attemptOptions)) {
+            break;
+          }
+          if (lastProviderError) throw lastProviderError;
+          throw error;
         }
-        const gemini = payload as GeminiGenerateResponse;
-        const content = normalizeSemanticOutput(extractText(gemini), opts?.semanticProfile);
-        const images = extractImages(gemini);
-        const usage = gemini.usageMetadata;
-        ledger.markSuccess({
-          quotaGroup: reservation.key.quotaGroup,
-          keyId: reservation.key.id,
-          model,
-          requestId: reservation.requestId,
-          totalTokens: usage?.totalTokenCount,
-        });
-        lastError = null;
-        lastUpstreamError = null;
-        lastSuccessAt = nowIso();
-        lastLatencyMs = Date.now() - started;
-        return {
-          content,
-          images,
-          provider: 'gemini-api',
-          model: opts?.model ?? model,
-          backend: 'gemini-api',
-          backendModel: model,
-          apiKeyId: reservation.key.id,
-          quotaGroup: reservation.key.quotaGroup,
-          quotaSource: 'local-ledger',
-          usage: {
-            promptTokens: usage?.promptTokenCount,
-            completionTokens: usage?.candidatesTokenCount,
+
+        lastSelectedKeyId = reservation.key.id;
+        lastSelectedQuotaGroup = reservation.key.quotaGroup;
+        lastResolvedModel = model;
+        const endpoint = buildEndpoint(config, model);
+
+        try {
+          const response = await fetch(withKey(endpoint, reservation.key.key), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(toGenerationBody(messages, attemptOptions)),
+            signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throwGeminiError(response, payload, endpoint, model, reservation);
+          }
+          const gemini = payload as GeminiGenerateResponse;
+          const content = normalizeSemanticOutput(extractText(gemini), attemptOptions?.semanticProfile);
+          const images = extractImages(gemini);
+          const usage = gemini.usageMetadata;
+          ledger.markSuccess({
+            quotaGroup: reservation.key.quotaGroup,
+            keyId: reservation.key.id,
+            model,
+            requestId: reservation.requestId,
             totalTokens: usage?.totalTokenCount,
-          },
-          tokensUsed: usage?.totalTokenCount,
-          latencyMs: lastLatencyMs,
-        };
-      } catch (error) {
-        const providerError = normalizeError(error, endpoint, model, reservation);
-        lastProviderError = providerError;
-        lastError = providerError.message;
-        lastFailureAt = nowIso();
-        lastLatencyMs = Date.now() - started;
-        excludedKeyIds.add(reservation.key.id);
-        if (
-          shouldRetryWithAnotherKey(providerError) &&
-          hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
-        ) {
-          continue;
+          });
+          lastError = null;
+          lastUpstreamError = null;
+          lastSuccessAt = nowIso();
+          lastLatencyMs = Date.now() - started;
+          return {
+            content,
+            images,
+            provider: 'gemini-api',
+            model: opts?.model ?? model,
+            backend: 'gemini-api',
+            backendModel: model,
+            apiKeyId: reservation.key.id,
+            quotaGroup: reservation.key.quotaGroup,
+            quotaSource: 'local-ledger',
+            usage: {
+              promptTokens: usage?.promptTokenCount,
+              completionTokens: usage?.candidatesTokenCount,
+              totalTokens: usage?.totalTokenCount,
+            },
+            tokensUsed: usage?.totalTokenCount,
+            latencyMs: lastLatencyMs,
+            fallbackReason:
+              model !== requestedModel
+                ? (lastProviderError?.code ?? `fallback_model:${requestedModel}`)
+                : undefined,
+          };
+        } catch (error) {
+          const providerError = normalizeError(error, endpoint, model, reservation);
+          lastProviderError = providerError;
+          lastError = providerError.message;
+          lastFailureAt = nowIso();
+          lastLatencyMs = Date.now() - started;
+          excludedKeyIds.add(reservation.key.id);
+          if (
+            shouldRetryWithAnotherKey(providerError) &&
+            hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
+          ) {
+            continue;
+          }
+          if (shouldRetryWithFallbackModel(providerError, remainingModels, attemptOptions)) {
+            break;
+          }
+          throw providerError;
         }
-        throw providerError;
       }
     }
+
+    throw lastProviderError ?? new GeminiApiProviderError(
+      'gemini_api_upstream_error',
+      'No Gemini API model could satisfy the request.',
+      {
+        statusCode: 503,
+        fallbackEligible: true,
+      },
+    );
   }
 
   function throwGeminiError(

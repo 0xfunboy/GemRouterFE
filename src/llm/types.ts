@@ -13,6 +13,7 @@ export type ModelTier = 'small' | 'medium' | 'large';
 
 export interface LLMOptions {
   model?: string;
+  allowedModelIds?: string[];
   tier?: ModelTier;
   maxTokens?: number;
   temperature?: number;

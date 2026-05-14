@@ -446,6 +446,7 @@ function ensureModelAllowed(
 
 function buildSessionOptions(input: {
   model: string;
+  allowedModelIds?: string[];
   maxTokens?: number;
   temperature?: number;
   sessionNamespace: string;
@@ -462,6 +463,7 @@ function buildSessionOptions(input: {
   const sessionKey = `${input.sessionNamespace}:${semanticSurface}:${sessionHint}`;
   return {
     model: input.model,
+    allowedModelIds: input.allowedModelIds,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     sessionKey,
@@ -485,6 +487,7 @@ function buildRequestLlmOptions(input: {
   user?: string;
   sessionNamespace: string;
   model: string;
+  allowedModelIds?: string[];
   maxTokens?: number;
   temperature?: number;
   fingerprintFallback: string;
@@ -503,6 +506,7 @@ function buildRequestLlmOptions(input: {
   return buildSessionOptions({
     backendPreference: parseBackendPreference(input.request),
     model: input.model,
+    allowedModelIds: input.allowedModelIds,
     maxTokens: input.maxTokens,
     temperature: input.temperature,
     sessionNamespace: input.sessionNamespace,
@@ -1127,6 +1131,7 @@ async function handleChatCompletionsRequest(
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
       model: parsed.model,
+      allowedModelIds: access.app.allowedModels,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1364,6 +1369,7 @@ async function handleResponsesRequest(
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
       model: parsed.model,
+      allowedModelIds: access.app.allowedModels,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1663,6 +1669,7 @@ async function handleImageGenerationsRequest(
     const messages: LLMMessage[] = [{ role: 'user', content: parsed.prompt }];
     const options = buildSessionOptions({
       model: parsed.model,
+      allowedModelIds: access.app.allowedModels,
       sessionNamespace: access.app.sessionNamespace,
       sessionHint: parsed.user,
       fingerprintFallback: createRequestFingerprint(messages),
@@ -1779,6 +1786,7 @@ async function handleOllamaChatRequest(
       request,
       sessionNamespace: access.app.sessionNamespace,
       model: parsed.model,
+      allowedModelIds: access.app.allowedModels,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1972,6 +1980,7 @@ async function handleOllamaGenerateRequest(
       request,
       sessionNamespace: access.app.sessionNamespace,
       model: parsed.model,
+      allowedModelIds: access.app.allowedModels,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -2474,6 +2483,7 @@ app.post<{
   try {
     const options = buildSessionOptions({
       model,
+      allowedModelIds: selectedApp.allowedModels,
       maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
       temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
       sessionNamespace: selectedApp.sessionNamespace,
