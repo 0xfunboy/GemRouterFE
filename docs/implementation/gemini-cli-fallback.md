@@ -1,15 +1,17 @@
 # Gemini CLI Fallback Integration
 
-`GemRouterFE` now routes inference through an embedded Gemini Code Assist client first and Playwright Gemini Web second.
+`GemRouterFE` now routes normal direct inference through the official `gemini-api` provider first. The embedded Gemini Code Assist client remains available as `gemini-cli` for diagnostics and forced tests, while Playwright Gemini Web remains the browser fallback.
 
 ## Backend Order
 
-1. `gemini-cli`
+1. `gemini-api`
 2. `playwright`
+3. `gemini-cli`
 
 The router keeps its own bearer API keys for client access. Backend Gemini auth is separate:
 
-- The direct backend uses the same cached Google login auth files that Gemini CLI uses.
+- The API backend uses AI Studio / Gemini Developer API keys.
+- The CLI backend uses the same cached Google login auth files that Gemini CLI uses.
 - Playwright uses the existing authenticated browser profile.
 
 ## Health Signals
@@ -35,7 +37,7 @@ The repo implements the operator-assisted bootstrap path fully:
 3. Complete Google login once
 4. Restart or reuse the router and confirm `/health`
 
-If cached auth is missing, unusable, or the direct quota is exhausted, the router falls back to Playwright when available.
+If API keys are missing, rate-limited, or unusable, the router falls back to Playwright when available. If the CLI backend is forced and cached auth is missing, unusable, or exhausted, that path can also fall back to Playwright when enabled.
 
 ## Testing
 
