@@ -40,4 +40,18 @@ Common exposed aliases:
 - `google/gemini-web`
 
 The `gemini-web` aliases map to the Playwright Gemini Web runtime.
-The `gemini-2.5-*` IDs map to the embedded direct backend that reuses Gemini CLI auth cache files.
+The `gemini-*` IDs map to the official Gemini API backend by default, then fall back to Playwright in `auto` mode.
+
+## Backend Overrides
+
+Use `x-gemrouter-backend` to force one upstream:
+
+- `gemini-api`
+- `playwright`
+- `gemini-cli`
+
+Successful Gemini API responses include quota/key metadata headers when available:
+
+- `x-gemrouter-api-key-id`
+- `x-gemrouter-quota-group`
+- `x-gemrouter-quota-source`

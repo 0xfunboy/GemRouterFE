@@ -1,5 +1,5 @@
 import { GeminiNotReadyError, GeminiQuotaError, GeminiTimeoutError } from './providers/tegem/errors.js';
-import { isPlaywrightModelId } from '../lib/models.js';
+import { isGeminiApiModelId, isPlaywrightModelId } from '../lib/models.js';
 import { LLMProviderError } from './errors.js';
 import type { LLMBackendId, LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from './types.js';
 
@@ -59,7 +59,7 @@ function normalizeBackendError(backend: LLMBackendId, error: unknown): LLMProvid
   const message = error instanceof Error ? error.message : String(error);
   return new LLMProviderError('backend_unavailable', backend, message, {
     statusCode: 502,
-    fallbackEligible: backend === 'gemini-cli',
+    fallbackEligible: backend === 'gemini-cli' || backend === 'gemini-api',
     cause: error,
   });
 }
@@ -90,10 +90,11 @@ function shouldFallback(
   opts?: LLMOptions,
 ): boolean {
   if (opts?.backendPreference && opts.backendPreference !== 'auto') return false;
-  if (backend !== 'gemini-cli') return false;
   if (!config.allowPlaywrightFallback) return false;
   if (!remainingBackends.includes('playwright')) return false;
   if (error.options.fallbackEligible !== true) return false;
+  if (backend === 'gemini-api') return true;
+  if (backend !== 'gemini-cli') return false;
   if ((error.code === 'cli_auth_missing' || error.code === 'cli_auth_expired') && !config.retryOnCliAuthFailure) {
     return false;
   }
@@ -103,7 +104,11 @@ function shouldFallback(
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   if (opts?.model && isPlaywrightModelId(opts.model)) return ['playwright'];
   const preference = opts?.backendPreference ?? 'auto';
-  if (preference === 'gemini-cli' || preference === 'playwright') return [preference];
+  if (preference === 'gemini-api' || preference === 'gemini-cli' || preference === 'playwright') return [preference];
+  if (opts?.model && isGeminiApiModelId(opts.model)) {
+    const apiSequence = config.backendOrder.filter((backend) => backend === 'gemini-api' || backend === 'playwright');
+    return apiSequence.length > 0 ? [...new Set(apiSequence)] : ['gemini-api', 'playwright'];
+  }
   return [...new Set(config.backendOrder)];
 }
 
@@ -122,6 +127,7 @@ async function* singleResponseStream(
 export function createLlmRouter(
   config: LLMRouterConfig,
   backends: {
+    geminiApi: BackendClient;
     geminiCli: BackendClient;
     playwright: BackendClient;
   },
@@ -142,9 +148,13 @@ export function createLlmRouter(
       const backend = sequence[index];
       const remaining = sequence.slice(index + 1);
       try {
-        const rawResponse = await (backend === 'gemini-cli'
-          ? backends.geminiCli.chat(messages, opts)
-          : backends.playwright.chat(messages, opts));
+        const rawResponse = await (
+          backend === 'gemini-api'
+            ? backends.geminiApi.chat(messages, opts)
+            : backend === 'gemini-cli'
+              ? backends.geminiCli.chat(messages, opts)
+              : backends.playwright.chat(messages, opts)
+        );
         const response = annotateResponse(rawResponse, backend, lastError?.backend, lastError?.code);
         state.lastBackendUsed = response.backend ?? backend;
         state.lastFallbackFrom = response.fallbackFrom ?? null;
@@ -206,7 +216,11 @@ export function createLlmRouter(
         const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
-          const client = backend === 'gemini-cli' ? backends.geminiCli : backends.playwright;
+          const client = backend === 'gemini-api'
+            ? backends.geminiApi
+            : backend === 'gemini-cli'
+              ? backends.geminiCli
+              : backends.playwright;
           const stream = client.streamChat ? client.streamChat(messages, opts) : singleResponseStream(client, messages, opts);
           let finalResponse: LLMResponse | null = null;
           while (true) {
@@ -282,6 +296,9 @@ export function createLlmRouter(
       const geminiCli = backends.geminiCli.health
         ? (backends.geminiCli.health() as Record<string, unknown>)
         : backends.geminiCli.getDiagnostics?.() ?? null;
+      const geminiApi = backends.geminiApi.health
+        ? (backends.geminiApi.health() as Record<string, unknown>)
+        : backends.geminiApi.getDiagnostics?.() ?? null;
       const playwright = backends.playwright.getDiagnostics?.() ?? null;
       return {
         provider: 'router',
@@ -295,6 +312,7 @@ export function createLlmRouter(
         lastFallbackReason: state.lastFallbackReason,
         lastResolutionAt: state.lastResolutionAt,
         lastError: state.lastError,
+        geminiApi,
         geminiCli,
         playwright,
         promptPackingStyle:

@@ -5,7 +5,7 @@ export interface LLMMessage {
   content: string;
 }
 
-export type LLMBackendId = 'gemini-cli' | 'playwright';
+export type LLMBackendId = 'gemini-api' | 'gemini-cli' | 'playwright';
 export type LLMBackendPreference = 'auto' | LLMBackendId;
 
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */
@@ -30,6 +30,14 @@ export interface LLMResponse {
   tokensUsed?: number;
   backend?: LLMBackendId;
   backendModel?: string;
+  apiKeyId?: string;
+  quotaGroup?: string;
+  quotaSource?: 'static-config' | 'local-ledger' | 'aistudio-scrape' | 'upstream-error';
+  usage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    totalTokens?: number;
+  };
   fallbackFrom?: LLMBackendId;
   fallbackReason?: string;
   latencyMs?: number;

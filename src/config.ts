@@ -1,9 +1,11 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { coerceCompatibilityState, type ApiSurface } from './lib/compatibility.js';
 import { buildPublicModelIds, DEFAULT_DIRECT_MODEL_IDS } from './lib/models.js';
 import type { LLMBackendId } from './llm/types.js';
+import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
+import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
 import type { GeminiCliProviderConfig } from './llm/providers/gemini-cli/types.js';
 import type { TeGemProviderConfig } from './llm/providers/tegem/client.js';
 
@@ -38,6 +40,7 @@ export interface RuntimeConfig {
     defaultSurface: ApiSurface;
     enabledSurfaces: ApiSurface[];
   };
+  geminiApi: GeminiApiProviderConfig;
   geminiCli: GeminiCliProviderConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
@@ -81,6 +84,16 @@ function readList(env: Record<string, string | undefined>, fallback: string[], .
     .filter(Boolean);
 }
 
+function readJsonValue<T>(env: Record<string, string | undefined>, fallback: T, ...keys: string[]): T {
+  const value = pick(env, ...keys);
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function readDashboardUsers(
   env: Record<string, string | undefined>,
   fallback: DashboardAdminUser[],
@@ -121,11 +134,70 @@ function readGeminiCliBootstrapMode(
 
 function normalizeBackendId(value: string): LLMBackendId | null {
   const normalized = value.trim().toLowerCase();
+  if (normalized === 'gemini-api' || normalized === 'gemini' || normalized === 'ai-studio') return 'gemini-api';
   if (normalized === 'gemini-cli') return 'gemini-cli';
   if (normalized === 'playwright' || normalized === 'tegem' || normalized === 'playwright-tegem') {
     return 'playwright';
   }
   return null;
+}
+
+function readGeminiApiLimits(
+  env: Record<string, string | undefined>,
+): Record<string, GeminiApiRateLimit> {
+  const pathValue = pick(env, 'GEMROUTER_GEMINI_API_LIMITS_PATH');
+  let fileLimits: Record<string, GeminiApiRateLimit> = {};
+  if (pathValue && existsSync(pathValue)) {
+    try {
+      fileLimits = JSON.parse(readFileSync(pathValue, 'utf8')) as Record<string, GeminiApiRateLimit>;
+    } catch {
+      fileLimits = {};
+    }
+  }
+  const envLimits = readJsonValue<Record<string, GeminiApiRateLimit>>(env, {}, 'GEMROUTER_GEMINI_API_LIMITS_JSON');
+  return {
+    ...GEMINI_API_TIER1_LIMITS,
+    ...fileLimits,
+    ...envLimits,
+  };
+}
+
+function readGeminiApiKeys(
+  env: Record<string, string | undefined>,
+  defaultTier: string,
+  defaultQuotaGroupMode: 'per-key' | 'shared',
+): GeminiApiKeyConfig[] {
+  const advanced = readJsonValue<Array<Partial<GeminiApiKeyConfig>> | null>(env, null, 'GEMROUTER_GEMINI_API_KEYS_JSON');
+  if (Array.isArray(advanced) && advanced.length > 0) {
+    return advanced.flatMap((entry, index) => {
+      const key = typeof entry.key === 'string' ? entry.key.trim() : '';
+      if (!key) return [];
+      const id = String(entry.id ?? `key-${index + 1}`).trim();
+      return [{
+        id,
+        key,
+        owner: entry.owner,
+        projectId: entry.projectId,
+        quotaGroup: String(entry.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
+        tier: String(entry.tier ?? defaultTier).trim(),
+        priority: typeof entry.priority === 'number' ? entry.priority : 100,
+        enabled: entry.enabled !== false,
+        models: Array.isArray(entry.models) ? entry.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean) : undefined,
+      }];
+    });
+  }
+
+  return readList(env, [], 'GEMROUTER_GEMINI_API_KEYS').map((key, index) => {
+    const id = `account${index + 1}`;
+    return {
+      id,
+      key,
+      quotaGroup: defaultQuotaGroupMode === 'shared' ? 'default' : id,
+      tier: defaultTier,
+      priority: 100,
+      enabled: true,
+    };
+  });
 }
 
 function readBackendOrder(
@@ -212,7 +284,12 @@ export function loadConfig(
   const geminiCliUserHome = pick(env, 'GEMINI_CLI_USER_HOME')?.trim() || undefined;
   const geminiCliDotDir = pick(env, 'GEMINI_CLI_DOT_GEMINI_DIR')?.trim() || undefined;
   const geminiCliEnabled = readBoolean(env, true, 'GEMINI_CLI_ENABLED');
-  const backendOrder = readBackendOrder(env, ['gemini-cli', 'playwright'], 'GEMROUTER_BACKEND_ORDER');
+  const backendOrder = readBackendOrder(env, ['gemini-api', 'playwright', 'gemini-cli'], 'GEMROUTER_BACKEND_ORDER');
+  const geminiApiDefaultTier = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_TIER') ?? 'tier1';
+  const geminiApiQuotaGroupMode = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE') === 'shared'
+    ? 'shared'
+    : 'per-key';
+  const geminiApiKeys = readGeminiApiKeys(env, geminiApiDefaultTier, geminiApiQuotaGroupMode);
 
   return {
     host: pick(env, 'HOST', 'GEMROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',
@@ -289,6 +366,32 @@ export function loadConfig(
       settingsStorePath: path.join(dataDir, 'compatibility.json'),
       defaultSurface: compatibilityState.defaultSurface,
       enabledSurfaces: compatibilityState.enabledSurfaces,
+    },
+    geminiApi: {
+      enabled: readBoolean(env, geminiApiKeys.length > 0, 'GEMROUTER_GEMINI_API_ENABLED'),
+      keys: geminiApiKeys,
+      baseUrl: pick(env, 'GEMROUTER_GEMINI_API_BASE_URL') ?? 'https://generativelanguage.googleapis.com',
+      version: pick(env, 'GEMROUTER_GEMINI_API_VERSION') ?? 'v1beta',
+      defaultTier: geminiApiDefaultTier,
+      defaultQuotaGroupMode: geminiApiQuotaGroupMode,
+      limits: readGeminiApiLimits(env),
+      ledgerPath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_GEMINI_API_LEDGER_PATH') ?? 'data/gemini-api-quota-ledger.json',
+      ),
+      discoveryCachePath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_GEMINI_API_DISCOVERY_CACHE_PATH') ?? 'data/gemini-api-models-cache.json',
+      ),
+      discoveryRefreshMs: readNumber(env, 3_600_000, 'GEMROUTER_GEMINI_API_DISCOVERY_REFRESH_MS'),
+      quotaCooldownMs: readNumber(env, 600_000, 'GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS'),
+      rpdWindowMs: readNumber(env, 86_400_000, 'GEMROUTER_GEMINI_API_RPD_WINDOW_MS'),
+      rpmWindowMs: readNumber(env, 60_000, 'GEMROUTER_GEMINI_API_RPM_WINDOW_MS'),
+      tpmWindowMs: readNumber(env, 60_000, 'GEMROUTER_GEMINI_API_TPM_WINDOW_MS'),
+      countTokensPreflight: readBoolean(env, false, 'GEMROUTER_GEMINI_API_COUNT_TOKENS_PREFLIGHT'),
+      countFailed429AsUsage: readBoolean(env, true, 'GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE'),
+      timeoutMs: readNumber(env, 120_000, 'GEMROUTER_GEMINI_API_TIMEOUT_MS'),
+      streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_GEMINI_API_STREAM_TIMEOUT_MS'),
     },
     geminiCli: {
       enabled: geminiCliEnabled,

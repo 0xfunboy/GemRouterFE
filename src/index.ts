@@ -39,6 +39,7 @@ import {
   type OllamaChatRequest,
   type OllamaGenerateRequest,
 } from './lib/ollama.js';
+import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
 import { createGeminiCliClient } from './llm/providers/gemini-cli/client.js';
 import { createTeGemClient } from './llm/providers/tegem/client.js';
 import { LLMProviderError } from './llm/errors.js';
@@ -78,8 +79,10 @@ const SOCIAL_PREVIEW_IMAGE = (() => {
 
 const config = loadConfig();
 const playwrightLlm = createTeGemClient(config.llm);
+const geminiApiLlm = createGeminiApiClient(config.geminiApi);
 const geminiCliLlm = createGeminiCliClient(config.geminiCli);
 const llm = createLlmRouter(config.llmRouting, {
+  geminiApi: geminiApiLlm,
   geminiCli: geminiCliLlm,
   playwright: playwrightLlm,
 });
@@ -480,6 +483,7 @@ function parseBackendPreference(request: FastifyRequest): LLMBackendPreference {
   if (!raw) return 'auto';
   const value = raw.trim().toLowerCase();
   if (value === 'auto') return 'auto';
+  if (value === 'gemini-api' || value === 'gemini' || value === 'ai-studio') return 'gemini-api';
   if (value === 'gemini-cli') return 'gemini-cli';
   if (value === 'playwright' || value === 'tegem' || value === 'playwright-tegem') return 'playwright';
   throw new Error(`Unsupported backend override: ${raw}`);
@@ -600,6 +604,33 @@ function sanitizeLlmDiagnostics(
     lastLaunchAt: input.lastLaunchAt ?? null,
     lastLaunchOkAt: input.lastLaunchOkAt ?? null,
     lastLaunchError: input.lastLaunchError ?? null,
+    geminiApi:
+      input.geminiApi && typeof input.geminiApi === 'object'
+        ? {
+          provider: (input.geminiApi as Record<string, unknown>).provider ?? 'gemini-api',
+          enabled: (input.geminiApi as Record<string, unknown>).enabled ?? null,
+          available: (input.geminiApi as Record<string, unknown>).available ?? null,
+          configuredKeyCount: (input.geminiApi as Record<string, unknown>).configuredKeyCount ?? 0,
+          usableKeyCount: (input.geminiApi as Record<string, unknown>).usableKeyCount ?? 0,
+          defaultTier: (input.geminiApi as Record<string, unknown>).defaultTier ?? null,
+          baseUrl: (input.geminiApi as Record<string, unknown>).baseUrl ?? null,
+          version: (input.geminiApi as Record<string, unknown>).version ?? null,
+          keys: (input.geminiApi as Record<string, unknown>).keys ?? [],
+          quotaGroups: (input.geminiApi as Record<string, unknown>).quotaGroups ?? [],
+          quotaUpdatedAt: (input.geminiApi as Record<string, unknown>).quotaUpdatedAt ?? null,
+          modelDiscovery: (input.geminiApi as Record<string, unknown>).modelDiscovery ?? null,
+          models: (input.geminiApi as Record<string, unknown>).models ?? [],
+          aiStudioQuotaScraper: (input.geminiApi as Record<string, unknown>).aiStudioQuotaScraper ?? null,
+          lastSelectedKeyId: (input.geminiApi as Record<string, unknown>).lastSelectedKeyId ?? null,
+          lastSelectedQuotaGroup: (input.geminiApi as Record<string, unknown>).lastSelectedQuotaGroup ?? null,
+          lastResolvedModel: (input.geminiApi as Record<string, unknown>).lastResolvedModel ?? null,
+          lastError: (input.geminiApi as Record<string, unknown>).lastError ?? null,
+          lastFailureAt: (input.geminiApi as Record<string, unknown>).lastFailureAt ?? null,
+          lastSuccessAt: (input.geminiApi as Record<string, unknown>).lastSuccessAt ?? null,
+          lastLatencyMs: (input.geminiApi as Record<string, unknown>).lastLatencyMs ?? null,
+          lastUpstreamError: (input.geminiApi as Record<string, unknown>).lastUpstreamError ?? null,
+        }
+        : null,
     geminiCli:
       input.geminiCli && typeof input.geminiCli === 'object'
         ? {
@@ -704,6 +735,9 @@ function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
   if (response.fallbackFrom) reply.header('x-gemrouter-fallback-from', response.fallbackFrom);
   if (response.fallbackReason) reply.header('x-gemrouter-fallback-reason', response.fallbackReason);
   if (response.backendModel) reply.header('x-gemrouter-backend-model', response.backendModel);
+  if (response.apiKeyId) reply.header('x-gemrouter-api-key-id', response.apiKeyId);
+  if (response.quotaGroup) reply.header('x-gemrouter-quota-group', response.quotaGroup);
+  if (response.quotaSource) reply.header('x-gemrouter-quota-source', response.quotaSource);
 }
 
 function applyErrorHeaders(reply: FastifyReply, error: unknown): void {
@@ -737,6 +771,9 @@ function buildStreamResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.fallbackFrom) headers['x-gemrouter-fallback-from'] = response.fallbackFrom;
   if (response?.fallbackReason) headers['x-gemrouter-fallback-reason'] = response.fallbackReason;
   if (response?.backendModel) headers['x-gemrouter-backend-model'] = response.backendModel;
+  if (response?.apiKeyId) headers['x-gemrouter-api-key-id'] = response.apiKeyId;
+  if (response?.quotaGroup) headers['x-gemrouter-quota-group'] = response.quotaGroup;
+  if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
   return headers;
 }
 
@@ -753,6 +790,9 @@ function buildNdjsonResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.fallbackFrom) headers['x-gemrouter-fallback-from'] = response.fallbackFrom;
   if (response?.fallbackReason) headers['x-gemrouter-fallback-reason'] = response.fallbackReason;
   if (response?.backendModel) headers['x-gemrouter-backend-model'] = response.backendModel;
+  if (response?.apiKeyId) headers['x-gemrouter-api-key-id'] = response.apiKeyId;
+  if (response?.quotaGroup) headers['x-gemrouter-quota-group'] = response.quotaGroup;
+  if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
   return headers;
 }
 
@@ -765,9 +805,15 @@ function mapLlmErrorToHttp(error: unknown): {
   if (error instanceof LLMProviderError) {
     const statusCode = error.options.statusCode ?? 502;
     const type =
-      error.code === 'playwright_quota' || error.code === 'cli_quota_exhausted' || error.code === 'cli_rate_limited'
+      error.code === 'playwright_quota' ||
+      error.code === 'cli_quota_exhausted' ||
+      error.code === 'cli_rate_limited' ||
+      error.code === 'gemini_api_rate_limited' ||
+      error.code === 'gemini_api_quota_unavailable'
         ? 'rate_limit_error'
-        : error.code === 'cli_model_unsupported'
+        : error.code === 'cli_model_unsupported' ||
+            error.code === 'gemini_api_invalid_request' ||
+            error.code === 'gemini_api_model_not_found'
           ? 'invalid_request_error'
           : 'server_error';
     return {
@@ -878,27 +924,31 @@ function getDirectRequestState(geminiCli: Record<string, unknown>): string {
 }
 
 function buildProviderModelState(
+  geminiApi: Record<string, unknown>,
   geminiCli: Record<string, unknown>,
   playwrightReady: boolean,
 ): Array<Record<string, unknown>> {
   const buckets = Array.isArray(geminiCli.quotaBuckets) ? geminiCli.quotaBuckets as Record<string, unknown>[] : [];
+  const apiModels = Array.isArray(geminiApi.models) ? geminiApi.models as Record<string, unknown>[] : [];
+  const apiModelIds = new Set(apiModels.map((model) => String(model.id ?? '').trim()).filter(Boolean));
+  const apiAvailable = geminiApi.available === true;
   const authReady = geminiCli.authReady === true;
   const quotaAuthoritative = geminiCli.quotaAuthoritative === true;
   const routingBlocked = isDirectRoutingBlocked(geminiCli);
   return config.modelIds.map((modelId) => {
     const descriptor = describePublicModel(modelId);
-    const quota = descriptor.kind === 'direct'
+    const quota = descriptor.kind === 'gemini-cli'
       ? (buckets.find((bucket) => bucket.modelId === modelId) ?? null)
       : null;
     return {
       ...descriptor,
-      backend: descriptor.kind === 'playwright' ? 'playwright' : 'gemini-cli',
-      selected: descriptor.kind === 'direct' ? geminiCli.model === modelId : false,
+      backend: descriptor.kind === 'playwright' ? 'playwright' : 'gemini-api',
+      selected: descriptor.kind === 'gemini-cli' ? geminiCli.model === modelId : false,
       available:
         descriptor.kind === 'playwright'
           ? playwrightReady
-          : (authReady && !routingBlocked && (!quotaAuthoritative || !isQuotaBucketExhausted(quota))),
-      authReady: descriptor.kind === 'direct' ? authReady : null,
+          : (apiAvailable && (apiModelIds.size === 0 || apiModelIds.has(modelId))),
+      authReady: descriptor.kind === 'gemini-cli' ? authReady : null,
       profileReady: descriptor.kind === 'playwright' ? playwrightReady : null,
       quota,
     };
@@ -906,11 +956,35 @@ function buildProviderModelState(
 }
 
 function buildProviderSnapshot(
+  geminiApi: Record<string, unknown>,
   geminiCli: Record<string, unknown>,
   playwrightReady: boolean,
 ): Record<string, unknown> {
   return {
-    backend: 'gemini-cli',
+    backend: 'gemini-api',
+    geminiApi: {
+      enabled: geminiApi.enabled ?? null,
+      configuredKeyCount: geminiApi.configuredKeyCount ?? 0,
+      usableKeyCount: geminiApi.usableKeyCount ?? 0,
+      defaultTier: geminiApi.defaultTier ?? null,
+      modelDiscovery: geminiApi.modelDiscovery ?? null,
+      lastSelectedKeyId: geminiApi.lastSelectedKeyId ?? null,
+      lastSelectedQuotaGroup: geminiApi.lastSelectedQuotaGroup ?? null,
+      lastResolvedModel: geminiApi.lastResolvedModel ?? null,
+      lastError: geminiApi.lastError ?? null,
+    },
+    geminiCli: {
+      authReady: geminiCli.authReady ?? null,
+      authCacheDetected: geminiCli.authCacheDetected ?? null,
+      authVerifiedAt: geminiCli.authVerifiedAt ?? null,
+      activeAccount: geminiCli.activeAccount ?? null,
+      projectId: geminiCli.projectId ?? null,
+      model: geminiCli.model ?? null,
+      models: geminiCli.models ?? [],
+      lastMappedErrorCode: geminiCli.lastMappedErrorCode ?? null,
+      lastFailureAt: geminiCli.lastFailureAt ?? null,
+      lastUpstreamError: geminiCli.lastUpstreamError ?? null,
+    },
     runtime: geminiCli.runtime ?? 'embedded-codeassist',
     authReady: geminiCli.authReady ?? null,
     authCacheDetected: geminiCli.authCacheDetected ?? null,
@@ -933,7 +1007,12 @@ function buildProviderSnapshot(
     lastMappedErrorCode: geminiCli.lastMappedErrorCode ?? null,
     lastFailureAt: geminiCli.lastFailureAt ?? null,
     lastUpstreamError: geminiCli.lastUpstreamError ?? null,
-    models: buildProviderModelState(geminiCli, playwrightReady),
+    quota: {
+      apiKeys: geminiApi.keys ?? [],
+      quotaGroups: geminiApi.quotaGroups ?? [],
+      models: geminiApi.models ?? [],
+    },
+    models: buildProviderModelState(geminiApi, geminiCli, playwrightReady),
   };
 }
 
@@ -1031,19 +1110,23 @@ function getRuntimeSnapshot(
   const cookiesExists = existsSync(cookiesFile);
   const rawLlmDiagnostics = typeof llm.getDiagnostics === 'function' ? llm.getDiagnostics() : null;
   const sanitizedLlmDiagnostics = sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm });
+  const geminiApiDiagnostics = ((sanitizedLlmDiagnostics?.geminiApi as Record<string, unknown> | undefined) ?? {});
   const geminiCliDiagnostics = ((sanitizedLlmDiagnostics?.geminiCli as Record<string, unknown> | undefined) ?? {});
   const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? config.llmRouting.backendOrder[0] ?? 'gemini-cli');
+  const geminiApiAvailable = Boolean(geminiApiDiagnostics.enabled) && Boolean(geminiApiDiagnostics.available);
   const geminiCliAvailable =
     Boolean(geminiCliDiagnostics.enabled) &&
     Boolean(geminiCliDiagnostics.authReady) &&
     !isDirectRoutingBlocked(geminiCliDiagnostics);
   const playwrightReady = executableExists && profileExists && cookiesExists;
   const activeDefaultBackend: LLMBackendId =
-    configuredDefaultBackend === 'gemini-cli'
-      ? (geminiCliAvailable ? 'gemini-cli' : playwrightReady ? 'playwright' : 'gemini-cli')
-      : (playwrightReady ? 'playwright' : geminiCliAvailable ? 'gemini-cli' : 'playwright');
+    configuredDefaultBackend === 'gemini-api'
+      ? (geminiApiAvailable ? 'gemini-api' : playwrightReady ? 'playwright' : 'gemini-api')
+      : configuredDefaultBackend === 'gemini-cli'
+        ? (geminiCliAvailable ? 'gemini-cli' : playwrightReady ? 'playwright' : 'gemini-cli')
+        : (playwrightReady ? 'playwright' : geminiApiAvailable ? 'gemini-api' : 'playwright');
   const backendOrder = (sanitizedLlmDiagnostics?.backendOrder as LLMBackendId[] | undefined) ?? config.llmRouting.backendOrder;
-  const provider = buildProviderSnapshot(geminiCliDiagnostics, playwrightReady);
+  const provider = buildProviderSnapshot(geminiApiDiagnostics, geminiCliDiagnostics, playwrightReady);
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -1068,6 +1151,7 @@ function getRuntimeSnapshot(
     provider,
     backends: {
       geminiCli: geminiCliDiagnostics,
+      geminiApi: geminiApiDiagnostics,
       playwright: {
         enabled: true,
         executablePath: config.llm.browserExecutablePath ?? null,
@@ -2262,6 +2346,47 @@ app.get('/admin/summary', async (request, reply) => {
   };
 });
 
+app.post('/admin/provider/gemini-api/discover-models', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const client = geminiApiLlm as typeof geminiApiLlm & {
+    discoverModels?: () => Promise<Record<string, unknown>>;
+  };
+  if (typeof client.discoverModels !== 'function') {
+    return sendError(reply, 503, {
+      message: 'Gemini API model discovery is not available',
+      type: 'server_error',
+      code: 'gemini_api_discovery_unavailable',
+    });
+  }
+  return client.discoverModels();
+});
+
+app.post('/admin/provider/gemini-api/refresh-quota', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+  return {
+    ok: true,
+    source: 'local-ledger',
+    authoritative: false,
+    geminiApi: (runtime.backends as Record<string, unknown>).geminiApi ?? null,
+  };
+});
+
+app.post('/admin/provider/gemini-api/clear-cooldown', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const client = geminiApiLlm as typeof geminiApiLlm & {
+    clearCooldown?: () => Record<string, unknown>;
+  };
+  if (typeof client.clearCooldown !== 'function') {
+    return sendError(reply, 503, {
+      message: 'Gemini API cooldown controls are not available',
+      type: 'server_error',
+      code: 'gemini_api_cooldown_unavailable',
+    });
+  }
+  return client.clearCooldown();
+});
+
 app.post<{
   Body: {
     defaultSurface?: ApiSurface;
@@ -2475,8 +2600,20 @@ app.get('/v1/provider/quota', async (request, reply) => {
   try {
     const runtime = buildProviderRuntimeResponse(request, access.app);
     const provider = (runtime.provider as Record<string, unknown> | null) ?? {};
+    const backends = (runtime.backends as Record<string, unknown> | null) ?? {};
+    const geminiApi = (backends.geminiApi as Record<string, unknown> | null) ?? {};
     return {
       ok: true,
+      geminiApi: {
+        enabled: geminiApi.enabled ?? false,
+        source: 'local-ledger',
+        authoritative: false,
+        apiKeys: geminiApi.keys ?? [],
+        quotaGroups: geminiApi.quotaGroups ?? [],
+        models: geminiApi.models ?? [],
+        updatedAt: geminiApi.quotaUpdatedAt ?? null,
+        modelDiscovery: geminiApi.modelDiscovery ?? null,
+      },
       model: provider.configuredModel ?? null,
       lastResolvedModel: provider.lastResolvedModel ?? null,
       availableCredits: provider.availableCredits ?? [],
