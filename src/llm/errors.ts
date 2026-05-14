@@ -10,6 +10,7 @@ export type LLMProviderErrorCode =
   | 'gemini_api_auth_failed'
   | 'gemini_api_invalid_request'
   | 'gemini_api_model_not_found'
+  | 'gemini_api_high_demand'
   | 'gemini_api_upstream_error'
   | 'gemini_api_timeout'
   | 'gemini_api_stream_error';
