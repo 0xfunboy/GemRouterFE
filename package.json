@@ -1,7 +1,8 @@
 {
-  "name": "gem-router-fe",
+  "name": "gem-router",
   "version": "0.1.0",
   "private": true,
+  "description": "Lightweight Gemini routing backend with API-key and CLI fallback.",
   "type": "module",
   "packageManager": "pnpm@10.26.1",
   "scripts": {
@@ -11,26 +12,15 @@
     "check:app": "tsc --noEmit -p tsconfig.json",
     "dev": "pnpm run dev:app",
     "dev:app": "tsx watch src/index.ts",
-    "dev:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run dev:app",
-    "dev:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run dev:app",
-    "setup:browser": "bash ./scripts/setup-playwright-browser.sh",
-    "setup:gemini-cli": "bash ./scripts/setup-gemini-cli.sh",
-    "setup:systemd": "bash ./scripts/install-systemd-user-units.sh",
-    "login:gemini-cli": "pnpm exec tsx ./src/bin/gemini-login.ts",
+    "setup:systemd": "bash ./ops/systemd/install-gemrouter-services.sh",
     "start": "pnpm run start:app",
     "start:app": "node dist/index.js",
-    "start:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run start:app",
-    "start:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run start:app",
     "smoke": "pnpm build && bash ./scripts/smoke.sh",
-    "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh",
-    "smoke:gemini-cli": "pnpm build && SMOKE_BACKEND=gemini-cli bash ./scripts/smoke.sh",
-    "smoke:playwright": "pnpm build && SMOKE_BACKEND=playwright bash ./scripts/smoke.sh"
+    "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
-    "fastify": "^4.29.1",
-    "google-auth-library": "^10.3.0",
-    "playwright": "^1.59.1"
+    "fastify": "^4.29.1"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",

@@ -1,21 +1,27 @@
 import 'dotenv/config';
 
-import { createHash, timingSafeEqual } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { timingSafeEqual } from 'node:crypto';
 
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
-import { describePublicModel, isPlaywrightModelId } from './lib/models.js';
+import {
+  buildDiscoveredModelCatalog,
+  describePublicModel,
+  inferModelCapabilities,
+  isGeminiImageGenerationModelId,
+  isGemRouterCompatibleModelCapabilities,
+} from './lib/models.js';
 import {
   buildChatCompletionResponse,
+  buildImageGenerationResponse,
   buildOpenAIError,
   buildResponsesApiResponse,
   createRequestFingerprint,
   estimateUsage,
+  type ImageGenerationsRequest,
+  parseImageGenerationsRequest,
   normalizeModelId,
   parseChatCompletionsRequest,
   parseResponsesRequest,
@@ -40,8 +46,6 @@ import {
   type OllamaGenerateRequest,
 } from './lib/ollama.js';
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
-import { createGeminiCliClient } from './llm/providers/gemini-cli/client.js';
-import { createTeGemClient } from './llm/providers/tegem/client.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -59,32 +63,14 @@ import { CompatibilityStore } from './store/compatibilityStore.js';
 import { InteractionStore } from './store/interactions.js';
 import { renderAppShell } from './ui.js';
 
-const PROJECT_NAME = 'GemRouterFE';
-const SERVICE_NAME = 'gem-router-fe';
+const PROJECT_NAME = 'GemRouter';
+const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
-const SRC_DIR = path.dirname(fileURLToPath(import.meta.url));
-const SOCIAL_PREVIEW_PATH = '/social-preview.png';
-const SOCIAL_PREVIEW_IMAGE = (() => {
-  try {
-    const assetPath = path.resolve(SRC_DIR, '../docs/assets/GemRouterFE_Web_Preview.png');
-    const buffer = readFileSync(assetPath);
-    return {
-      buffer,
-      version: createHash('sha1').update(buffer).digest('hex').slice(0, 12),
-    };
-  } catch {
-    return null;
-  }
-})();
 
 const config = loadConfig();
-const playwrightLlm = createTeGemClient(config.llm);
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
-const geminiCliLlm = createGeminiCliClient(config.geminiCli);
 const llm = createLlmRouter(config.llmRouting, {
   geminiApi: geminiApiLlm,
-  geminiCli: geminiCliLlm,
-  playwright: playwrightLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
 const audit = new AuditLogger(config.auditLogPath);
@@ -250,6 +236,10 @@ function getCompatibilitySnapshot(request: FastifyRequest): {
     enabledSurfaces: state.enabledSurfaces,
     updatedAt: state.updatedAt,
     endpoints: {
+      gemrouter: {
+        enabled: state.enabledSurfaces.includes('gemrouter'),
+        routes: routes.gemrouter,
+      },
       openai: {
         enabled: state.enabledSurfaces.includes('openai'),
         routes: routes.openai,
@@ -280,6 +270,24 @@ function ensureOpenAiSurfaceEnabled(surface: ApiSurface, reply: FastifyReply): b
   return false;
 }
 
+function isAnySurfaceEnabled(surfaces: ApiSurface[]): boolean {
+  return surfaces.some((surface) => isSurfaceEnabled(surface));
+}
+
+function ensureAnySurfaceEnabled(
+  surfaces: ApiSurface[],
+  reply: FastifyReply,
+  label: string,
+): boolean {
+  if (isAnySurfaceEnabled(surfaces)) return true;
+  sendError(reply, 404, {
+    message: `${label} compatibility surface is disabled`,
+    type: 'invalid_request_error',
+    code: 'surface_disabled',
+  });
+  return false;
+}
+
 function sendOllamaError(reply: FastifyReply, statusCode: number, message: string): FastifyReply {
   return reply.code(statusCode).send(buildOllamaError(message));
 }
@@ -288,15 +296,6 @@ function ensureOllamaSurfaceEnabled(reply: FastifyReply): boolean {
   if (isSurfaceEnabled('ollama')) return true;
   sendOllamaError(reply, 404, 'ollama compatibility surface is disabled');
   return false;
-}
-
-function inferVncUrl(request: FastifyRequest): string {
-  if (config.vncPublicUrl?.trim()) return config.vncPublicUrl.trim();
-  const host = readHeaderValue(request, 'x-forwarded-host') ?? String(request.headers.host ?? '');
-  if (/solclawn\.com$/i.test(host)) {
-    return 'https://vnc.solclawn.com/vnc.html?autoconnect=true&resize=scale';
-  }
-  return 'http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale';
 }
 
 function wantsHtml(request: FastifyRequest): boolean {
@@ -311,12 +310,6 @@ function isSocialPreviewBot(request: FastifyRequest): boolean {
 
 function wantsHtmlShell(request: FastifyRequest): boolean {
   return wantsHtml(request) || isSocialPreviewBot(request);
-}
-
-function buildSocialPreviewUrl(request: FastifyRequest): string | undefined {
-  if (!SOCIAL_PREVIEW_IMAGE) return undefined;
-  const baseUrl = inferPublicBaseUrl(request).replace(/\/+$/, '');
-  return `${baseUrl}${SOCIAL_PREVIEW_PATH}?v=${SOCIAL_PREVIEW_IMAGE.version}`;
 }
 
 function sanitizeAdminApp(appRecord: ApiAppRecord): Omit<ApiAppRecord, 'apiKeyHash'> {
@@ -484,8 +477,6 @@ function parseBackendPreference(request: FastifyRequest): LLMBackendPreference {
   const value = raw.trim().toLowerCase();
   if (value === 'auto') return 'auto';
   if (value === 'gemini-api' || value === 'gemini' || value === 'ai-studio') return 'gemini-api';
-  if (value === 'gemini-cli') return 'gemini-cli';
-  if (value === 'playwright' || value === 'tegem' || value === 'playwright-tegem') return 'playwright';
   throw new Error(`Unsupported backend override: ${raw}`);
 }
 
@@ -578,32 +569,19 @@ function recordInteraction(input: {
 
 function sanitizeLlmDiagnostics(
   input: Record<string, unknown> | null,
-  options?: { includeSensitive?: boolean },
+  _options?: { includeSensitive?: boolean },
 ): Record<string, unknown> | null {
   if (!input) return null;
-  const includeSensitive = options?.includeSensitive === true;
-  const base = {
+  return {
     provider: input.provider ?? null,
     model: input.model ?? null,
     backendOrder: input.backendOrder ?? [],
-    fallbackEnabled: input.fallbackEnabled ?? null,
-    retryOnCliAuthFailure: input.retryOnCliAuthFailure ?? null,
     configuredDefaultBackend: input.configuredDefaultBackend ?? null,
     lastBackendUsed: input.lastBackendUsed ?? null,
     lastFallbackFrom: input.lastFallbackFrom ?? null,
     lastFallbackReason: input.lastFallbackReason ?? null,
     lastResolutionAt: input.lastResolutionAt ?? null,
     lastError: input.lastError ?? null,
-    promptPackingStyle: input.promptPackingStyle ?? null,
-    contextAlive: input.contextAlive ?? null,
-    openPages: input.openPages ?? null,
-    storedSessions: input.storedSessions ?? null,
-    respondedOpenTabs: input.respondedOpenTabs ?? null,
-    unresolvedOpenTabs: input.unresolvedOpenTabs ?? null,
-    busyOpenTabs: input.busyOpenTabs ?? null,
-    lastLaunchAt: input.lastLaunchAt ?? null,
-    lastLaunchOkAt: input.lastLaunchOkAt ?? null,
-    lastLaunchError: input.lastLaunchError ?? null,
     geminiApi:
       input.geminiApi && typeof input.geminiApi === 'object'
         ? {
@@ -620,7 +598,6 @@ function sanitizeLlmDiagnostics(
           quotaUpdatedAt: (input.geminiApi as Record<string, unknown>).quotaUpdatedAt ?? null,
           modelDiscovery: (input.geminiApi as Record<string, unknown>).modelDiscovery ?? null,
           models: (input.geminiApi as Record<string, unknown>).models ?? [],
-          aiStudioQuotaScraper: (input.geminiApi as Record<string, unknown>).aiStudioQuotaScraper ?? null,
           lastSelectedKeyId: (input.geminiApi as Record<string, unknown>).lastSelectedKeyId ?? null,
           lastSelectedQuotaGroup: (input.geminiApi as Record<string, unknown>).lastSelectedQuotaGroup ?? null,
           lastResolvedModel: (input.geminiApi as Record<string, unknown>).lastResolvedModel ?? null,
@@ -631,97 +608,6 @@ function sanitizeLlmDiagnostics(
           lastUpstreamError: (input.geminiApi as Record<string, unknown>).lastUpstreamError ?? null,
         }
         : null,
-    geminiCli:
-      input.geminiCli && typeof input.geminiCli === 'object'
-        ? {
-          enabled: (input.geminiCli as Record<string, unknown>).enabled ?? null,
-          available: (input.geminiCli as Record<string, unknown>).available ?? null,
-          runtime: (input.geminiCli as Record<string, unknown>).runtime ?? null,
-          externalDependency: (input.geminiCli as Record<string, unknown>).externalDependency ?? null,
-          authReady: (input.geminiCli as Record<string, unknown>).authReady ?? null,
-          authVerifiedAt: (input.geminiCli as Record<string, unknown>).authVerifiedAt ?? null,
-          authCacheDetected: (input.geminiCli as Record<string, unknown>).authCacheDetected ?? null,
-          selectedAuthType: (input.geminiCli as Record<string, unknown>).selectedAuthType ?? null,
-          activeAccount: (input.geminiCli as Record<string, unknown>).activeAccount ?? null,
-          model: (input.geminiCli as Record<string, unknown>).model ?? null,
-          models: (input.geminiCli as Record<string, unknown>).models ?? [],
-          timeoutMs: (input.geminiCli as Record<string, unknown>).timeoutMs ?? null,
-          quotaRefreshMs: (input.geminiCli as Record<string, unknown>).quotaRefreshMs ?? null,
-          projectId: (input.geminiCli as Record<string, unknown>).projectId ?? null,
-          userTier: (input.geminiCli as Record<string, unknown>).userTier ?? null,
-          userTierName: (input.geminiCli as Record<string, unknown>).userTierName ?? null,
-          availableCredits: (input.geminiCli as Record<string, unknown>).availableCredits ?? [],
-          quotaBuckets: (input.geminiCli as Record<string, unknown>).quotaBuckets ?? [],
-          quotaAuthoritative: (input.geminiCli as Record<string, unknown>).quotaAuthoritative ?? false,
-          quotaUpdatedAt: (input.geminiCli as Record<string, unknown>).quotaUpdatedAt ?? null,
-          quotaLastError: (input.geminiCli as Record<string, unknown>).quotaLastError ?? null,
-          lastResolvedModel: (input.geminiCli as Record<string, unknown>).lastResolvedModel ?? null,
-          loginHint: (input.geminiCli as Record<string, unknown>).loginHint ?? null,
-          bootstrapEnabled: (input.geminiCli as Record<string, unknown>).bootstrapEnabled ?? null,
-          bootstrapMode: (input.geminiCli as Record<string, unknown>).bootstrapMode ?? null,
-          lastMappedErrorCode: (input.geminiCli as Record<string, unknown>).lastMappedErrorCode ?? null,
-          lastError: (input.geminiCli as Record<string, unknown>).lastError ?? null,
-          lastFailureAt: (input.geminiCli as Record<string, unknown>).lastFailureAt ?? null,
-          lastSuccessAt: (input.geminiCli as Record<string, unknown>).lastSuccessAt ?? null,
-          lastLatencyMs: (input.geminiCli as Record<string, unknown>).lastLatencyMs ?? null,
-          lastUpstreamError: (input.geminiCli as Record<string, unknown>).lastUpstreamError ?? null,
-        }
-        : null,
-    playwright:
-      input.playwright && typeof input.playwright === 'object'
-        ? {
-          provider: (input.playwright as Record<string, unknown>).provider ?? null,
-          model: (input.playwright as Record<string, unknown>).model ?? null,
-          contextAlive: (input.playwright as Record<string, unknown>).contextAlive ?? null,
-          openPages: (input.playwright as Record<string, unknown>).openPages ?? null,
-          storedSessions: (input.playwright as Record<string, unknown>).storedSessions ?? null,
-          respondedOpenTabs: (input.playwright as Record<string, unknown>).respondedOpenTabs ?? null,
-          unresolvedOpenTabs: (input.playwright as Record<string, unknown>).unresolvedOpenTabs ?? null,
-          busyOpenTabs: (input.playwright as Record<string, unknown>).busyOpenTabs ?? null,
-          lastLaunchAt: (input.playwright as Record<string, unknown>).lastLaunchAt ?? null,
-          lastLaunchOkAt: (input.playwright as Record<string, unknown>).lastLaunchOkAt ?? null,
-          lastLaunchError: (input.playwright as Record<string, unknown>).lastLaunchError ?? null,
-        }
-        : null,
-  };
-
-  if (!includeSensitive) return base;
-
-  return {
-    ...base,
-    activeSessionKeys: input.activeSessionKeys ?? [],
-    profilePath: input.profilePath ?? null,
-    idleTimeoutMs: input.idleTimeoutMs ?? null,
-    conversationTtlMs: input.conversationTtlMs ?? null,
-    maxTabs: input.maxTabs ?? null,
-    respondedSessionTtlMs: input.respondedSessionTtlMs ?? null,
-    orphanSessionTtlMs: input.orphanSessionTtlMs ?? null,
-    lifecycle: input.lifecycle ?? [],
-    geminiCli: base.geminiCli
-      ? {
-        ...base.geminiCli,
-        userHome: (input.geminiCli as Record<string, unknown>).userHome ?? null,
-        dotGeminiDir: (input.geminiCli as Record<string, unknown>).dotGeminiDir ?? null,
-        settingsExists: (input.geminiCli as Record<string, unknown>).settingsExists ?? null,
-        authCacheFiles: (input.geminiCli as Record<string, unknown>).authCacheFiles ?? [],
-        callbackHost: (input.geminiCli as Record<string, unknown>).callbackHost ?? null,
-        callbackPort: (input.geminiCli as Record<string, unknown>).callbackPort ?? null,
-      }
-      : null,
-    playwright: base.playwright
-      ? {
-        ...base.playwright,
-        promptPackingStyle: (input.playwright as Record<string, unknown>).promptPackingStyle ?? null,
-        activeSessionKeys: (input.playwright as Record<string, unknown>).activeSessionKeys ?? [],
-        profilePath: (input.playwright as Record<string, unknown>).profilePath ?? null,
-        idleTimeoutMs: (input.playwright as Record<string, unknown>).idleTimeoutMs ?? null,
-        conversationTtlMs: (input.playwright as Record<string, unknown>).conversationTtlMs ?? null,
-        maxTabs: (input.playwright as Record<string, unknown>).maxTabs ?? null,
-        respondedSessionTtlMs: (input.playwright as Record<string, unknown>).respondedSessionTtlMs ?? null,
-        orphanSessionTtlMs: (input.playwright as Record<string, unknown>).orphanSessionTtlMs ?? null,
-        lifecycle: (input.playwright as Record<string, unknown>).lifecycle ?? [],
-      }
-      : null,
   };
 }
 
@@ -805,14 +691,10 @@ function mapLlmErrorToHttp(error: unknown): {
   if (error instanceof LLMProviderError) {
     const statusCode = error.options.statusCode ?? 502;
     const type =
-      error.code === 'playwright_quota' ||
-      error.code === 'cli_quota_exhausted' ||
-      error.code === 'cli_rate_limited' ||
       error.code === 'gemini_api_rate_limited' ||
       error.code === 'gemini_api_quota_unavailable'
         ? 'rate_limit_error'
-        : error.code === 'cli_model_unsupported' ||
-            error.code === 'gemini_api_invalid_request' ||
+        : error.code === 'gemini_api_invalid_request' ||
             error.code === 'gemini_api_model_not_found'
           ? 'invalid_request_error'
           : 'server_error';
@@ -842,6 +724,7 @@ function mapLlmErrorToHttp(error: unknown): {
 }
 
 function classifyInteractionRoute(route: string): string {
+  if (route.includes('/images/generations')) return 'images';
   if (route.includes('/chat/completions')) return 'chat';
   if (route.includes('/responses')) return 'responses';
   if (route.includes('/api/chat')) return 'ollama_chat';
@@ -854,116 +737,99 @@ function formatHourLabel(timestamp: number): string {
   return new Date(timestamp).toISOString().slice(11, 16);
 }
 
-function isQuotaBucketExhausted(bucket: Record<string, unknown> | null | undefined): boolean {
-  if (!bucket) return false;
-  const remainingAmount = bucket.remainingAmount;
-  if (typeof remainingAmount === 'string' && remainingAmount.trim()) {
-    const amount = Number(remainingAmount);
-    if (Number.isFinite(amount)) return amount <= 0;
-  }
-  const remainingFraction = bucket.remainingFraction;
-  if (typeof remainingFraction === 'number') {
-    return remainingFraction <= 0;
-  }
-  return false;
-}
-
-function parseOptionalTimestamp(value: unknown): number | null {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function isGeminiCliFailureActive(geminiCli: Record<string, unknown>): boolean {
-  const failureAt = parseOptionalTimestamp(geminiCli.lastFailureAt);
-  if (failureAt == null) return false;
-  const successAt = parseOptionalTimestamp(geminiCli.lastSuccessAt);
-  return successAt == null || failureAt >= successAt;
-}
-
-function getGeminiCliLastErrorCode(geminiCli: Record<string, unknown>): string {
-  return String(geminiCli.lastMappedErrorCode ?? '').trim();
-}
-
-function getGeminiCliLastErrorMethod(geminiCli: Record<string, unknown>): string {
-  const upstream = geminiCli.lastUpstreamError;
-  if (!upstream || typeof upstream !== 'object') return '';
-  return String((upstream as Record<string, unknown>).method ?? '').trim();
-}
-
-function isDirectRoutingBlocked(geminiCli: Record<string, unknown>): boolean {
-  if (geminiCli.authReady !== true) return true;
-  if (!isGeminiCliFailureActive(geminiCli)) return false;
-
-  const code = getGeminiCliLastErrorCode(geminiCli);
-  const method = getGeminiCliLastErrorMethod(geminiCli);
-
-  if (!code) return false;
-  if (method === 'retrieveUserQuota') {
-    return code === 'cli_quota_exhausted';
-  }
-
-  return [
-    'cli_auth_missing',
-    'cli_auth_expired',
-    'cli_validation_required',
-    'cli_permission_denied',
-    'cli_rate_limited',
-    'cli_quota_exhausted',
-    'cli_timeout',
-    'cli_process_error',
-  ].includes(code);
-}
-
-function getDirectRequestState(geminiCli: Record<string, unknown>): string {
-  if (geminiCli.authReady !== true) return 'auth_unready';
-  if (isDirectRoutingBlocked(geminiCli)) return 'failed';
-  return typeof geminiCli.lastSuccessAt === 'string' && geminiCli.lastSuccessAt.trim()
-    ? 'succeeded'
-    : 'unknown';
-}
-
 function buildProviderModelState(
   geminiApi: Record<string, unknown>,
-  geminiCli: Record<string, unknown>,
-  playwrightReady: boolean,
 ): Array<Record<string, unknown>> {
-  const buckets = Array.isArray(geminiCli.quotaBuckets) ? geminiCli.quotaBuckets as Record<string, unknown>[] : [];
   const apiModels = Array.isArray(geminiApi.models) ? geminiApi.models as Record<string, unknown>[] : [];
   const apiModelIds = new Set(apiModels.map((model) => String(model.id ?? '').trim()).filter(Boolean));
   const apiAvailable = geminiApi.available === true;
-  const authReady = geminiCli.authReady === true;
-  const quotaAuthoritative = geminiCli.quotaAuthoritative === true;
-  const routingBlocked = isDirectRoutingBlocked(geminiCli);
-  return config.modelIds.map((modelId) => {
+
+  return buildCompatibleSurfaceModelCatalog(geminiApi, 'chat-or-image').map((model) => {
+    const modelId = String(model.id ?? '').trim();
     const descriptor = describePublicModel(modelId);
-    const quota = descriptor.kind === 'gemini-cli'
-      ? (buckets.find((bucket) => bucket.modelId === modelId) ?? null)
-      : null;
     return {
       ...descriptor,
-      backend: descriptor.kind === 'playwright' ? 'playwright' : 'gemini-api',
-      selected: descriptor.kind === 'gemini-cli' ? geminiCli.model === modelId : false,
-      available:
-        descriptor.kind === 'playwright'
-          ? playwrightReady
-          : (apiAvailable && (apiModelIds.size === 0 || apiModelIds.has(modelId))),
-      authReady: descriptor.kind === 'gemini-cli' ? authReady : null,
-      profileReady: descriptor.kind === 'playwright' ? playwrightReady : null,
-      quota,
+      displayName: model.displayName ?? descriptor.label,
+      label: model.label ?? descriptor.label,
+      capabilities: model.capabilities ?? inferModelCapabilities(modelId, ['generateContent']),
+      available: apiAvailable && (apiModelIds.size === 0 || apiModelIds.has(modelId)),
+      backends: {
+        geminiApi: apiAvailable && (apiModelIds.size === 0 || apiModelIds.has(modelId)),
+      },
     };
   });
 }
 
+function buildAdminModelCatalog(
+  geminiApi: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const discovered = Array.isArray(geminiApi.models) ? geminiApi.models as Array<Record<string, unknown>> : [];
+  if (discovered.length > 0) {
+    return buildDiscoveredModelCatalog(
+      discovered.map((model) => ({
+        id: String(model.id ?? '').trim(),
+        displayName: typeof model.displayName === 'string' ? model.displayName : null,
+        supportedGenerationMethods: Array.isArray(model.supportedGenerationMethods)
+          ? model.supportedGenerationMethods.map((method) => String(method))
+          : [],
+      })).filter((model) => model.id),
+    ) as unknown as Array<Record<string, unknown>>;
+  }
+
+  return config.modelIds.map((modelId) => ({
+    id: modelId,
+    displayName: modelId,
+    label: modelId,
+    supportedGenerationMethods: ['generateContent'],
+    capabilities: inferModelCapabilities(modelId, ['generateContent']),
+  }));
+}
+
+function modelSupportsSurface(
+  model: Record<string, unknown>,
+  mode: 'chat' | 'chat-or-image',
+): boolean {
+  const capabilities = (model.capabilities as Record<string, unknown> | null) ?? null;
+  const chat = capabilities?.chat === true;
+  const imageGeneration = capabilities?.imageGeneration === true;
+  if (mode === 'chat') return chat;
+  return chat || imageGeneration;
+}
+
+function buildCompatibleSurfaceModelCatalog(
+  geminiApi: Record<string, unknown>,
+  mode: 'chat' | 'chat-or-image',
+): Array<Record<string, unknown>> {
+  return buildAdminModelCatalog(geminiApi).filter((model) => {
+    const capabilities = model.capabilities as ReturnType<typeof inferModelCapabilities> | undefined;
+    if (capabilities) {
+      return mode === 'chat'
+        ? capabilities.chat
+        : isGemRouterCompatibleModelCapabilities(capabilities);
+    }
+    return modelSupportsSurface(model, mode);
+  });
+}
+
+function buildCompatibleSurfaceModelIds(
+  geminiApi: Record<string, unknown>,
+  mode: 'chat' | 'chat-or-image',
+): string[] {
+  return buildCompatibleSurfaceModelCatalog(geminiApi, mode)
+    .map((model) => String(model.id ?? '').trim())
+    .filter(Boolean);
+}
+
 function buildProviderSnapshot(
   geminiApi: Record<string, unknown>,
-  geminiCli: Record<string, unknown>,
-  playwrightReady: boolean,
 ): Record<string, unknown> {
+  const routedModelIds = buildCompatibleSurfaceModelIds(geminiApi, 'chat');
   return {
     backend: 'gemini-api',
+    configuredModel: routedModelIds[0] ?? config.modelIds[0] ?? null,
     geminiApi: {
       enabled: geminiApi.enabled ?? null,
+      available: geminiApi.available ?? null,
       configuredKeyCount: geminiApi.configuredKeyCount ?? 0,
       usableKeyCount: geminiApi.usableKeyCount ?? 0,
       defaultTier: geminiApi.defaultTier ?? null,
@@ -972,57 +838,34 @@ function buildProviderSnapshot(
       lastSelectedQuotaGroup: geminiApi.lastSelectedQuotaGroup ?? null,
       lastResolvedModel: geminiApi.lastResolvedModel ?? null,
       lastError: geminiApi.lastError ?? null,
+      lastFailureAt: geminiApi.lastFailureAt ?? null,
+      lastSuccessAt: geminiApi.lastSuccessAt ?? null,
     },
-    geminiCli: {
-      authReady: geminiCli.authReady ?? null,
-      authCacheDetected: geminiCli.authCacheDetected ?? null,
-      authVerifiedAt: geminiCli.authVerifiedAt ?? null,
-      activeAccount: geminiCli.activeAccount ?? null,
-      projectId: geminiCli.projectId ?? null,
-      model: geminiCli.model ?? null,
-      models: geminiCli.models ?? [],
-      lastMappedErrorCode: geminiCli.lastMappedErrorCode ?? null,
-      lastFailureAt: geminiCli.lastFailureAt ?? null,
-      lastUpstreamError: geminiCli.lastUpstreamError ?? null,
-    },
-    runtime: geminiCli.runtime ?? 'embedded-codeassist',
-    authReady: geminiCli.authReady ?? null,
-    authCacheDetected: geminiCli.authCacheDetected ?? null,
-    authVerifiedAt: geminiCli.authVerifiedAt ?? null,
-    selectedAuthType: geminiCli.selectedAuthType ?? null,
-    activeAccount: geminiCli.activeAccount ?? null,
-    projectId: geminiCli.projectId ?? null,
-    userTier: geminiCli.userTier ?? null,
-    userTierName: geminiCli.userTierName ?? null,
-    configuredModel: geminiCli.model ?? null,
-    configuredModels: geminiCli.models ?? [],
-    lastResolvedModel: geminiCli.lastResolvedModel ?? null,
-    lastDirectRequestState: getDirectRequestState(geminiCli),
-    availableCredits: geminiCli.availableCredits ?? [],
-    quotaBuckets: geminiCli.quotaBuckets ?? [],
-    quotaAuthoritative: geminiCli.quotaAuthoritative === true,
-    quotaUpdatedAt: geminiCli.quotaUpdatedAt ?? null,
-    quotaLastError: geminiCli.quotaLastError ?? null,
-    loginHint: geminiCli.loginHint ?? null,
-    lastMappedErrorCode: geminiCli.lastMappedErrorCode ?? null,
-    lastFailureAt: geminiCli.lastFailureAt ?? null,
-    lastUpstreamError: geminiCli.lastUpstreamError ?? null,
     quota: {
       apiKeys: geminiApi.keys ?? [],
       quotaGroups: geminiApi.quotaGroups ?? [],
       models: geminiApi.models ?? [],
     },
-    models: buildProviderModelState(geminiApi, geminiCli, playwrightReady),
+    models: buildProviderModelState(geminiApi),
   };
+}
+
+function resolveActiveDefaultBackend(
+  backendOrder: LLMBackendId[],
+  geminiApiAvailable: boolean,
+): LLMBackendId {
+  for (const backend of backendOrder) {
+    if (backend === 'gemini-api' && geminiApiAvailable) return backend;
+  }
+  return backendOrder[0] ?? 'gemini-api';
 }
 
 function buildGuestSummary() {
   const runtime = getRuntimeSnapshot();
   const routing = (runtime.routing as Record<string, unknown> | undefined) ?? {};
   const backends = (runtime.backends as Record<string, unknown> | undefined) ?? {};
-  const geminiCli = (backends.geminiCli as Record<string, unknown> | undefined) ?? {};
+  const geminiApi = (backends.geminiApi as Record<string, unknown> | undefined) ?? {};
   const provider = (runtime.provider as Record<string, unknown> | undefined) ?? {};
-  const providerGeminiApi = (provider.geminiApi as Record<string, unknown> | undefined) ?? {};
   const providerQuota = (provider.quota as Record<string, unknown> | undefined) ?? {};
   const publicApiKeys = Array.isArray(providerQuota.apiKeys)
     ? (providerQuota.apiKeys as Record<string, unknown>[]).map((key) => ({
@@ -1046,7 +889,6 @@ function buildGuestSummary() {
     }))
     : [];
   const providerModels = Array.isArray(provider.models) ? provider.models as Record<string, unknown>[] : [];
-  const directModelCount = providerModels.filter((model) => model.kind === 'gemini-api').length;
   const stats = interactions.summary(24);
   const recent = interactions.list(240);
   const now = Date.now();
@@ -1090,16 +932,10 @@ function buildGuestSummary() {
     service: SERVICE_NAME,
     ts: new Date().toISOString(),
     runtime: {
-      headed: !config.llm.headless,
-      profileReady: Boolean((runtime.runtime as Record<string, unknown>)?.profileReady),
+      backendOnly: true,
       activeDefaultBackend: routing.activeDefaultBackend ?? null,
       lastBackendUsed: routing.lastBackendUsed ?? null,
-      geminiCliReady: geminiCli.authReady ?? null,
-      geminiCliAvailable: geminiCli.available ?? null,
-      openPages: (runtime.llm as Record<string, unknown> | null)?.openPages ?? 0,
-      busyOpenTabs: (runtime.llm as Record<string, unknown> | null)?.busyOpenTabs ?? 0,
-      respondedOpenTabs: (runtime.llm as Record<string, unknown> | null)?.respondedOpenTabs ?? 0,
-      unresolvedOpenTabs: (runtime.llm as Record<string, unknown> | null)?.unresolvedOpenTabs ?? 0,
+      geminiApiAvailable: geminiApi.available ?? null,
     },
     compatibility: {
       defaultSurface: compatibility.get().defaultSurface,
@@ -1107,15 +943,7 @@ function buildGuestSummary() {
     },
     provider: {
       configuredModel: provider.configuredModel ?? null,
-      geminiApi: {
-        enabled: providerGeminiApi.enabled ?? false,
-        configuredKeyCount: providerGeminiApi.configuredKeyCount ?? publicApiKeys.length,
-        usableKeyCount: providerGeminiApi.usableKeyCount ?? publicApiKeys.filter((key) => key.enabled).length,
-        defaultTier: providerGeminiApi.defaultTier ?? null,
-        lastResolvedModel: providerGeminiApi.lastResolvedModel ?? null,
-      },
-      lastDirectRequestState: provider.lastDirectRequestState ?? null,
-      directModelCount,
+      directModelCount: providerModels.length,
       quota: {
         apiKeys: publicApiKeys,
         quotaGroups: publicQuotaGroups,
@@ -1145,38 +973,22 @@ function getRuntimeSnapshot(
   request?: FastifyRequest,
   options?: { includeSensitiveLlm?: boolean },
 ): Record<string, unknown> {
-  const profileDir = path.join(config.llm.baseProfileDir, config.llm.profileNamespace);
-  const cookiesFile = path.join(profileDir, '_shared', 'Default', 'Cookies');
-  const executableExists = config.llm.browserExecutablePath ? existsSync(config.llm.browserExecutablePath) : false;
-  const profileExists = existsSync(profileDir);
-  const cookiesExists = existsSync(cookiesFile);
   const rawLlmDiagnostics = typeof llm.getDiagnostics === 'function' ? llm.getDiagnostics() : null;
   const sanitizedLlmDiagnostics = sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm });
   const geminiApiDiagnostics = ((sanitizedLlmDiagnostics?.geminiApi as Record<string, unknown> | undefined) ?? {});
-  const geminiCliDiagnostics = ((sanitizedLlmDiagnostics?.geminiCli as Record<string, unknown> | undefined) ?? {});
-  const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? config.llmRouting.backendOrder[0] ?? 'gemini-cli');
-  const geminiApiAvailable = Boolean(geminiApiDiagnostics.enabled) && Boolean(geminiApiDiagnostics.available);
-  const geminiCliAvailable =
-    Boolean(geminiCliDiagnostics.enabled) &&
-    Boolean(geminiCliDiagnostics.authReady) &&
-    !isDirectRoutingBlocked(geminiCliDiagnostics);
-  const playwrightReady = executableExists && profileExists && cookiesExists;
-  const activeDefaultBackend: LLMBackendId =
-    configuredDefaultBackend === 'gemini-api'
-      ? (geminiApiAvailable ? 'gemini-api' : playwrightReady ? 'playwright' : 'gemini-api')
-      : configuredDefaultBackend === 'gemini-cli'
-        ? (geminiCliAvailable ? 'gemini-cli' : playwrightReady ? 'playwright' : 'gemini-cli')
-        : (playwrightReady ? 'playwright' : geminiApiAvailable ? 'gemini-api' : 'playwright');
   const backendOrder = (sanitizedLlmDiagnostics?.backendOrder as LLMBackendId[] | undefined) ?? config.llmRouting.backendOrder;
-  const provider = buildProviderSnapshot(geminiApiDiagnostics, geminiCliDiagnostics, playwrightReady);
+  const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? backendOrder[0] ?? 'gemini-api');
+  const geminiApiAvailable = Boolean(geminiApiDiagnostics.enabled) && Boolean(geminiApiDiagnostics.available);
+  const activeDefaultBackend = resolveActiveDefaultBackend(backendOrder, geminiApiAvailable);
+  const provider = buildProviderSnapshot(geminiApiDiagnostics);
+
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
     ts: new Date().toISOString(),
-    models: config.modelIds,
     backendOrder,
-    fallbackEnabled: config.llmRouting.allowPlaywrightFallback,
+    fallbackEnabled: backendOrder.length > 1,
     routing: {
       configuredDefaultBackend,
       activeDefaultBackend,
@@ -1186,35 +998,12 @@ function getRuntimeSnapshot(
       lastResolutionAt: sanitizedLlmDiagnostics?.lastResolutionAt ?? null,
     },
     runtime: {
-      display: process.env.DISPLAY ? 'attached' : null,
-      headed: !config.llm.headless,
-      profileReady: playwrightReady,
+      backendOnly: true,
     },
     provider,
+    models: buildCompatibleSurfaceModelIds(geminiApiDiagnostics, 'chat-or-image'),
     backends: {
-      geminiCli: geminiCliDiagnostics,
       geminiApi: geminiApiDiagnostics,
-      playwright: {
-        enabled: true,
-        executablePath: config.llm.browserExecutablePath ?? null,
-        executableExists,
-        profileDir,
-        profileExists,
-        cookiesExists,
-        profileNamespace: config.llm.profileNamespace,
-        headless: config.llm.headless,
-        profileReady: playwrightReady,
-      },
-    },
-    playwright: {
-      executablePath: config.llm.browserExecutablePath ?? null,
-      executableExists,
-      profileDir,
-      profileExists,
-      cookiesExists,
-      profileNamespace: config.llm.profileNamespace,
-      headless: config.llm.headless,
-      profileReady: playwrightReady,
     },
     compatibility: request ? getCompatibilitySnapshot(request) : compatibility.get(),
     llm: sanitizedLlmDiagnostics,
@@ -1229,10 +1018,10 @@ function normalizeAllowedModels(values: unknown): string[] {
 function listPublicEndpoints(): string[] {
   const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
   if (isSurfaceEnabled('openai')) {
-    endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses');
+    endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses', '/v1/images/generations');
   }
-  if (isSurfaceEnabled('deepseek')) {
-    endpoints.push('/models', '/chat/completions');
+  if (isAnySurfaceEnabled(['gemrouter', 'deepseek'])) {
+    endpoints.push('/models', '/chat/completions', '/images/generations');
   }
   if (isSurfaceEnabled('ollama')) {
     endpoints.push('/api/version', '/api/tags', '/api/chat', '/api/generate', '/api/show');
@@ -1243,15 +1032,23 @@ function listPublicEndpoints(): string[] {
 async function handleModelsRequest(
   request: FastifyRequest,
   reply: FastifyReply,
-  surface: 'openai' | 'deepseek',
+  surface: 'openai' | 'gemrouter',
 ): Promise<FastifyReply | Record<string, unknown>> {
-  if (!ensureOpenAiSurfaceEnabled(surface, reply)) return reply;
+  if (surface === 'openai') {
+    if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
+  } else if (!ensureAnySurfaceEnabled(['gemrouter', 'deepseek'], reply, 'gemrouter/deepseek')) {
+    return reply;
+  }
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
+    const runtime = getRuntimeSnapshot();
+    const models = Array.isArray(runtime.models)
+      ? runtime.models.map((model) => String(model).trim()).filter(Boolean)
+      : config.modelIds;
     return {
       object: 'list',
-      data: config.modelIds
+      data: models
         .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
         .map((modelId) => ({
           id: modelId,
@@ -1292,9 +1089,13 @@ function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: Authe
 async function handleChatCompletionsRequest(
   request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
   reply: FastifyReply,
-  surface: 'openai' | 'deepseek',
+  surface: 'openai' | 'gemrouter',
 ): Promise<FastifyReply | Record<string, unknown>> {
-  if (!ensureOpenAiSurfaceEnabled(surface, reply)) return reply;
+  if (surface === 'openai') {
+    if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
+  } else if (!ensureAnySurfaceEnabled(['gemrouter', 'deepseek'], reply, 'gemrouter/deepseek')) {
+    return reply;
+  }
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
 
@@ -1814,6 +1615,135 @@ async function handleResponsesRequest(
   }
 }
 
+async function handleImageGenerationsRequest(
+  request: FastifyRequest<{ Body: ImageGenerationsRequest }>,
+  reply: FastifyReply,
+  surface: 'openai' | 'gemrouter',
+): Promise<FastifyReply | Record<string, unknown>> {
+  if (surface === 'openai') {
+    if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
+  } else if (!ensureAnySurfaceEnabled(['gemrouter', 'deepseek'], reply, 'gemrouter/deepseek')) {
+    return reply;
+  }
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+
+  let parsed: ReturnType<typeof parseImageGenerationsRequest>;
+  try {
+    parsed = parseImageGenerationsRequest(request.body ?? {});
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit.write({
+      type: 'images.generate.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      statusCode: 400,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: message },
+    });
+    return sendError(reply, 400, {
+      message,
+      type: 'invalid_request_error',
+      code: 'invalid_request',
+    });
+  }
+
+  try {
+    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    if (!isGeminiImageGenerationModelId(parsed.model)) {
+      return sendError(reply, 400, {
+        message: `Model ${parsed.model} is not configured as an image generation model`,
+        type: 'invalid_request_error',
+        code: 'image_model_required',
+        param: 'model',
+      });
+    }
+
+    const messages: LLMMessage[] = [{ role: 'user', content: parsed.prompt }];
+    const options = buildSessionOptions({
+      model: parsed.model,
+      sessionNamespace: access.app.sessionNamespace,
+      sessionHint: parsed.user,
+      fingerprintFallback: createRequestFingerprint(messages),
+    });
+    options.imageConfig = {
+      responseModalities: parsed.responseFormat === 'url' ? ['IMAGE'] : ['IMAGE'],
+    };
+
+    const response = await llm.chat(messages, options);
+    applyBackendHeaders(reply, response);
+    const image = response.images?.[0];
+    if (!image) {
+      return sendError(reply, 502, {
+        message: `Model ${parsed.model} did not return an image`,
+        type: 'server_error',
+        code: 'image_not_returned',
+      });
+    }
+
+    const responseText = response.content || '[generated image]';
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages,
+      responseText,
+      usage: estimateUsage(messages, responseText),
+      status: 'succeeded',
+      statusCode: 200,
+      provider: response.provider,
+    });
+    audit.write({
+      type: 'images.generate',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      model: parsed.model,
+      statusCode: 200,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: buildAuditDetailsFromResponse(response),
+    });
+    return buildImageGenerationResponse({
+      mimeType: image.mimeType,
+      data: image.data,
+      responseFormat: parsed.responseFormat,
+      revisedPrompt: response.content || undefined,
+    });
+  } catch (error) {
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages: [{ role: 'user', content: parsed.prompt }],
+      status: 'failed',
+      statusCode: http.statusCode,
+      error: http.message,
+    });
+    audit.write({
+      type: 'images.generate.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      model: parsed.model,
+      statusCode: http.statusCode,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { error: http.message, code: http.code },
+    });
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code,
+    });
+  } finally {
+    access.release();
+  }
+}
+
 async function handleOllamaChatRequest(
   request: FastifyRequest<{ Body: OllamaChatRequest }>,
   reply: FastifyReply,
@@ -2225,7 +2155,6 @@ app.get('/', async (request, reply) => {
           projectName: PROJECT_NAME,
           modelIds: config.modelIds,
           publicBaseUrl: inferPublicBaseUrl(request),
-          socialPreviewUrl: buildSocialPreviewUrl(request),
         }),
       );
   }
@@ -2246,20 +2175,9 @@ app.get('/admin', async (request, reply) =>
         projectName: PROJECT_NAME,
         modelIds: config.modelIds,
         publicBaseUrl: inferPublicBaseUrl(request),
-        socialPreviewUrl: buildSocialPreviewUrl(request),
       }),
     ),
 );
-
-app.get(SOCIAL_PREVIEW_PATH, async (_request, reply) => {
-  if (!SOCIAL_PREVIEW_IMAGE) {
-    return reply.code(404).send('social preview not available');
-  }
-  return reply
-    .header('cache-control', 'public, max-age=3600')
-    .type('image/png')
-    .send(SOCIAL_PREVIEW_IMAGE.buffer);
-});
 
 app.get('/health', async (request) => getRuntimeSnapshot(request));
 
@@ -2355,34 +2273,42 @@ app.get('/admin/me', async (request, reply) => {
 
 app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+  let runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+  const initialBackends = (runtime.backends as Record<string, unknown> | null) ?? null;
+  const initialGeminiApi = (initialBackends?.geminiApi as Record<string, unknown> | null) ?? null;
+  const lastRefreshAt = typeof initialGeminiApi?.modelDiscovery === 'object'
+    ? Date.parse(String((initialGeminiApi.modelDiscovery as Record<string, unknown>).lastRefreshAt ?? ''))
+    : Number.NaN;
+  const shouldRefreshModels = !Number.isFinite(lastRefreshAt) || (Date.now() - lastRefreshAt) >= config.geminiApi.discoveryRefreshMs;
+  if (shouldRefreshModels) {
+    const client = geminiApiLlm as typeof geminiApiLlm & {
+      listModels?: () => Promise<Record<string, unknown>>;
+    };
+    if (typeof client.listModels === 'function') {
+      await client.listModels();
+      runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+    }
+  }
   const llmSnapshot = (runtime.llm as Record<string, unknown> | null) ?? null;
   const routingSnapshot = (runtime.routing as Record<string, unknown> | null) ?? null;
   const backendSnapshot = (runtime.backends as Record<string, unknown> | null) ?? null;
   const providerSnapshot = (runtime.provider as Record<string, unknown> | null) ?? null;
+  const geminiApiSnapshot = (backendSnapshot?.geminiApi as Record<string, unknown> | null) ?? {};
   return {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
-    vncUrl: inferVncUrl(request),
     compatibility: getCompatibilitySnapshot(request),
     runtime: {
-      displayAttached: process.env.DISPLAY ? true : false,
-      headed: !config.llm.headless,
-      executableExists: (runtime.playwright as Record<string, unknown>).executableExists,
-      profileExists: (runtime.playwright as Record<string, unknown>).profileExists,
-      cookiesExists: (runtime.playwright as Record<string, unknown>).cookiesExists,
-      profileReady:
-        Boolean((runtime.playwright as Record<string, unknown>).executableExists) &&
-        Boolean((runtime.playwright as Record<string, unknown>).profileExists) &&
-        Boolean((runtime.playwright as Record<string, unknown>).cookiesExists),
+      backendOnly: true,
       apps: appStore.list().length,
     },
     routing: routingSnapshot,
     provider: providerSnapshot,
     backends: backendSnapshot,
     llm: llmSnapshot,
-    models: config.modelIds,
+    models: buildCompatibleSurfaceModelIds(geminiApiSnapshot, 'chat-or-image'),
+    modelCatalog: buildAdminModelCatalog(geminiApiSnapshot),
     apps: appStore.list().map(sanitizeAdminApp),
     stats: interactions.summary(60),
   };
@@ -2555,6 +2481,11 @@ app.post<{
       stateful: body.stateful === true,
       fingerprintFallback: createRequestFingerprint(messages),
     });
+    if (isGeminiImageGenerationModelId(model)) {
+      options.imageConfig = {
+        responseModalities: ['TEXT', 'IMAGE'],
+      };
+    }
     const response = await llm.chat(messages, options);
     applyBackendHeaders(reply, response);
     const usage = estimateUsage(messages, response.content);
@@ -2575,6 +2506,7 @@ app.post<{
       app: sanitizeAdminApp(selectedApp),
       model,
       text: response.content,
+      images: response.images ?? [],
       usage,
       provider: response.provider,
       backend: response.backend ?? null,
@@ -2613,7 +2545,7 @@ app.post<{
 });
 
 app.get('/v1/models', async (request, reply) => handleModelsRequest(request, reply, 'openai'));
-app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'deepseek'));
+app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'gemrouter'));
 app.get('/v1/provider/runtime', async (request, reply) => {
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
@@ -2675,9 +2607,15 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
   handleChatCompletionsRequest(request, reply, 'openai'),
 );
 app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', async (request, reply) =>
-  handleChatCompletionsRequest(request, reply, 'deepseek'),
+  handleChatCompletionsRequest(request, reply, 'gemrouter'),
 );
 app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => handleResponsesRequest(request, reply));
+app.post<{ Body: ImageGenerationsRequest }>('/v1/images/generations', async (request, reply) =>
+  handleImageGenerationsRequest(request, reply, 'openai'),
+);
+app.post<{ Body: ImageGenerationsRequest }>('/images/generations', async (request, reply) =>
+  handleImageGenerationsRequest(request, reply, 'gemrouter'),
+);
 
 app.get('/api/version', async (request, reply) => {
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
@@ -2697,7 +2635,12 @@ app.get('/api/tags', async (request, reply) => {
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
-    const allowedModels = config.modelIds.filter((modelId) => appStore.isModelAllowed(access.app, modelId));
+    const runtime = getRuntimeSnapshot();
+    const backends = (runtime.backends as Record<string, unknown> | null) ?? {};
+    const geminiApi = (backends.geminiApi as Record<string, unknown> | null) ?? {};
+    const allowedModels = buildCompatibleSurfaceModelIds(geminiApi, 'chat').filter((modelId) =>
+      appStore.isModelAllowed(access.app, modelId),
+    );
     return buildOllamaTagsResponse(allowedModels);
   } finally {
     access.release();
@@ -2750,10 +2693,10 @@ app.post<{
   if (!ensureAdmin(request, reply)) return reply;
   const body = request.body ?? {};
   const created = appStore.create({
-    name: String(body.name ?? '').trim() || 'frontend-app',
+    name: String(body.name ?? '').trim() || 'local-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
     allowedModels: normalizeAllowedModels(body.allowedModels),
-    sessionNamespace: String(body.sessionNamespace ?? body.name ?? 'frontend-app'),
+    sessionNamespace: String(body.sessionNamespace ?? body.name ?? 'local-app'),
     rateLimitPerMinute:
       typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
     maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : config.bootstrapApp.maxConcurrency,
@@ -2871,15 +2814,11 @@ app.get('/admin/runtime', async (request, reply) => {
     ok: true,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
-    profileDir: (runtime.playwright as Record<string, unknown>).profileDir,
-    executablePath: (runtime.playwright as Record<string, unknown>).executablePath,
-    executableExists: (runtime.playwright as Record<string, unknown>).executableExists,
-    display: process.env.DISPLAY ?? null,
-    headless: config.llm.headless,
+    backendOrder: runtime.backendOrder,
+    backendOnly: true,
     apps: appStore.list().length,
     auditLogPath: config.auditLogPath,
     publicBaseUrl: inferPublicBaseUrl(request),
-    vncUrl: inferVncUrl(request),
     compatibility: getCompatibilitySnapshot(request),
   };
 });
