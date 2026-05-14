@@ -385,16 +385,18 @@ export function renderAppShell(input: {
       .heartbeat-line {
         position: absolute;
         inset: 0;
-        width: 125%;
+        width: 200%;
         height: 100%;
         background: none;
+        display: flex;
         filter: drop-shadow(0 0 7px rgba(24, 240, 208, 0.85));
-        animation: ecg-block-drift calc(var(--heartbeat-speed, 7.2s) * 4) linear infinite;
+        animation: ecg-block-drift calc(var(--heartbeat-speed, 7.2s) * 2) linear infinite;
       }
       .heartbeat-line svg {
         display: block;
-        width: 100%;
+        width: 50%;
         height: 100%;
+        flex: 0 0 50%;
       }
       .heartbeat-line path {
         fill: none;
@@ -433,7 +435,7 @@ export function renderAppShell(input: {
         100% { transform: translateX(-100%); opacity: 0; }
       }
       @keyframes ecg-block-drift {
-        from { transform: translateX(-20%); }
+        from { transform: translateX(-50%); }
         to { transform: translateX(0); }
       }
       .nav-menu {
@@ -867,8 +869,12 @@ export function renderAppShell(input: {
                   <path class="ecg-persistence" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
                   <path class="ecg-trace" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
                 </svg>
-                <div class="ecg-sweep"></div>
+                <svg viewBox="0 0 960 86" preserveAspectRatio="none">
+                  <path class="ecg-persistence" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
+                  <path class="ecg-trace" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
+                </svg>
               </div>
+              <div class="ecg-sweep"></div>
             </div>
           </div>
         </div>
