@@ -125,8 +125,8 @@ export function renderAppShell(input: {
         --warn: #ffd166;
         --bad: #ff5f8f;
         --shadow: 0 28px 90px rgba(0, 0, 0, 0.48), 0 0 60px rgba(24, 240, 208, 0.06);
-        --radius: 22px;
-        --radius-sm: 16px;
+        --radius: 8px;
+        --radius-sm: 5px;
       }
       [data-theme="light"] {
         color-scheme: light;
@@ -176,7 +176,7 @@ export function renderAppShell(input: {
         box-shadow: var(--shadow);
         backdrop-filter: blur(18px);
         position: relative;
-        overflow: hidden;
+        overflow: visible;
       }
       .panel::before {
         content: "";
@@ -194,6 +194,7 @@ export function renderAppShell(input: {
         gap: 16px;
         padding: 16px 18px;
         margin-bottom: 16px;
+        z-index: 40;
       }
       .brand {
         display: flex;
@@ -203,7 +204,7 @@ export function renderAppShell(input: {
       .brand-mark {
         width: 44px;
         height: 44px;
-        border-radius: 12px;
+        border-radius: 4px;
         display: grid;
         place-items: center;
         overflow: hidden;
@@ -256,7 +257,7 @@ export function renderAppShell(input: {
         align-items: center;
         gap: 8px;
         padding: 9px 12px;
-        border-radius: 999px;
+        border-radius: 4px;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.03);
         color: var(--muted);
@@ -267,10 +268,11 @@ export function renderAppShell(input: {
       .chip.bad { color: var(--bad); }
       .hero {
         display: grid;
-        grid-template-columns: minmax(0, 0.9fr) minmax(360px, 1.1fr);
+        grid-template-columns: minmax(280px, 0.62fr) minmax(500px, 1.38fr);
         gap: 18px;
         padding: 18px;
         margin-bottom: 16px;
+        overflow: visible;
       }
       .eyebrow {
         display: inline-flex;
@@ -278,7 +280,7 @@ export function renderAppShell(input: {
         gap: 8px;
         margin-bottom: 14px;
         padding: 7px 11px;
-        border-radius: 999px;
+        border-radius: 4px;
         border: 1px solid rgba(16, 163, 127, 0.24);
         background: rgba(16, 163, 127, 0.1);
         color: var(--accent);
@@ -287,10 +289,10 @@ export function renderAppShell(input: {
         text-transform: uppercase;
       }
       .hero h1 {
-        font-size: clamp(28px, 4.5vw, 46px);
-        line-height: 0.98;
+        font-size: clamp(22px, 3.2vw, 34px);
+        line-height: 1.02;
         letter-spacing: -0.045em;
-        max-width: 14ch;
+        max-width: 12ch;
         text-shadow: 0 0 24px rgba(24, 240, 208, 0.12);
       }
       .hero-copy p {
@@ -312,26 +314,92 @@ export function renderAppShell(input: {
         grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .source-card {
-        min-height: 172px;
-        padding: 16px;
-        border-radius: 18px;
+        min-height: 154px;
+        padding: 0;
+        border-radius: 5px;
         background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.015)),
-          radial-gradient(circle at 20% 0%, rgba(24, 240, 208, 0.16), transparent 48%);
+          linear-gradient(180deg, rgba(255, 223, 145, 0.07), rgba(255, 255, 255, 0.012)),
+          linear-gradient(135deg, rgba(255, 62, 201, 0.1), transparent 44%, rgba(24, 240, 208, 0.1));
         border: 1px solid var(--line);
+        overflow: hidden;
+      }
+      .source-card::before {
+        content: "Browser";
+        display: block;
+        height: 22px;
+        padding: 4px 8px;
+        color: #0b0b13;
+        font: 700 10px/1 "IBM Plex Mono", monospace;
+        background: linear-gradient(90deg, #f1d37a, #d68ac6);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.8);
       }
       .source-card strong {
         display: flex;
         align-items: center;
         gap: 8px;
+        margin: 14px 14px 0;
         font-size: 16px;
         letter-spacing: -0.02em;
       }
       .source-card p {
-        margin-top: 10px;
+        margin: 10px 14px 0;
         color: var(--muted);
         font-size: 12px;
         line-height: 1.55;
+      }
+      .activity-strip {
+        margin-top: 16px;
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background:
+          linear-gradient(90deg, rgba(255, 62, 201, 0.1), rgba(24, 240, 208, 0.08)),
+          rgba(0, 0, 0, 0.12);
+      }
+      .activity-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+        font: 700 10px/1.2 "IBM Plex Mono", monospace;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .heartbeat {
+        position: relative;
+        height: 38px;
+        margin-top: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(24, 240, 208, 0.18);
+        border-radius: 3px;
+        background:
+          linear-gradient(rgba(24, 240, 208, 0.08) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(24, 240, 208, 0.08) 1px, transparent 1px),
+          rgba(2, 5, 12, 0.44);
+        background-size: 18px 18px;
+      }
+      .heartbeat-line {
+        position: absolute;
+        inset: 0;
+        width: 200%;
+        background:
+          linear-gradient(90deg,
+            transparent 0 5%,
+            var(--accent) 5% 6%,
+            transparent 6% 14%,
+            transparent 14% 18%,
+            var(--accent-soft) 18% 19%,
+            transparent 19% 23%,
+            transparent 23% 35%,
+            var(--accent) 35% 36%,
+            transparent 36% 100%);
+        clip-path: polygon(0 56%, 6% 56%, 8% 18%, 11% 82%, 14% 46%, 22% 46%, 24% 64%, 27% 40%, 31% 56%, 100% 56%);
+        filter: drop-shadow(0 0 8px rgba(24, 240, 208, 0.8));
+        animation: heartbeat-scroll 2.8s linear infinite;
+      }
+      @keyframes heartbeat-scroll {
+        from { transform: translateX(0); }
+        to { transform: translateX(-50%); }
       }
       .nav-menu {
         position: relative;
@@ -342,11 +410,11 @@ export function renderAppShell(input: {
         right: 0;
         width: min(440px, calc(100vw - 32px));
         padding: 16px;
-        border-radius: 20px;
+        border-radius: 6px;
         background: var(--surface-strong);
         border: 1px solid var(--line-strong);
         box-shadow: var(--shadow);
-        z-index: 20;
+        z-index: 999;
       }
       .menu-links {
         display: flex;
@@ -383,7 +451,7 @@ export function renderAppShell(input: {
         color: var(--text);
         background: var(--surface-muted);
         border: 1px solid var(--line);
-        border-radius: 16px;
+        border-radius: 4px;
       }
       textarea {
         min-height: 126px;
@@ -391,7 +459,7 @@ export function renderAppShell(input: {
       }
       button {
         border: 1px solid var(--line-strong);
-        border-radius: 16px;
+        border-radius: 4px;
         padding: 11px 14px;
         color: var(--text);
         background: linear-gradient(135deg, rgba(16, 163, 127, 0.22), rgba(62, 169, 255, 0.22));
@@ -473,7 +541,7 @@ export function renderAppShell(input: {
         position: relative;
         min-height: 220px;
         padding: 14px;
-        border-radius: 18px;
+        border-radius: 5px;
         background: var(--surface-muted);
         border: 1px solid var(--line);
       }
@@ -500,7 +568,7 @@ export function renderAppShell(input: {
       .bar {
         width: 100%;
         min-height: 4px;
-        border-radius: 999px 999px 10px 10px;
+        border-radius: 2px 2px 0 0;
         background: linear-gradient(180deg, rgba(62, 169, 255, 0.92), rgba(16, 163, 127, 0.8));
       }
       .bar.fail {
@@ -531,7 +599,7 @@ export function renderAppShell(input: {
       .route-track {
         overflow: hidden;
         height: 10px;
-        border-radius: 999px;
+        border-radius: 2px;
         background: rgba(255, 255, 255, 0.06);
       }
       .route-fill {
@@ -546,7 +614,7 @@ export function renderAppShell(input: {
         gap: 12px;
         margin-bottom: 16px;
         padding: 14px 16px;
-        border-radius: 18px;
+        border-radius: 5px;
         background: linear-gradient(135deg, rgba(16, 163, 127, 0.14), rgba(62, 169, 255, 0.12));
         border: 1px solid rgba(16, 163, 127, 0.18);
       }
@@ -557,7 +625,7 @@ export function renderAppShell(input: {
       .response-box, .mono-box {
         min-height: 220px;
         padding: 14px;
-        border-radius: 18px;
+        border-radius: 5px;
         background: var(--surface-muted);
         border: 1px solid var(--line);
         white-space: pre-wrap;
@@ -574,7 +642,7 @@ export function renderAppShell(input: {
       }
       .table-wrap {
         overflow: auto;
-        border-radius: 18px;
+        border-radius: 5px;
         border: 1px solid var(--line);
       }
       .table {
@@ -599,7 +667,7 @@ export function renderAppShell(input: {
         width: 100%;
         min-height: 520px;
         border: 0;
-        border-radius: 18px;
+        border-radius: 5px;
         background: #030508;
       }
       .auth-grid {
@@ -654,7 +722,7 @@ export function renderAppShell(input: {
           </div>
         </div>
         <div class="nav-actions nav-menu">
-          <button id="menu-toggle" type="button" class="secondary">${svgIcon('menu')} Menu</button>
+          <button id="menu-toggle" type="button" class="secondary" aria-label="Open dashboard menu" title="Open dashboard menu">${svgIcon('menu')}</button>
           <div id="top-menu" class="menu-popover hidden">
             <div class="menu-links">
               <button id="theme-toggle" type="button" class="secondary">${svgIcon('moon')} Toggle theme</button>
@@ -691,12 +759,14 @@ export function renderAppShell(input: {
       <section class="panel hero">
         <div class="hero-copy">
           <span class="eyebrow">Gemini Local Router</span>
-          <h1>Gemini routing with API keys, direct auth, and web fallback.</h1>
-          <p>
-            One local router chooses between Gemini API accounts, Gemini direct auth, and a headed Playwright
-            Gemini Web session. It keeps OpenAI, DeepSeek, and Ollama clients happy while preserving the browser
-            path for web-only Gemini tools such as music, video, and other UI capabilities outside the API.
-          </p>
+          <h1>Gemini routing station.</h1>
+          <div class="activity-strip">
+            <div class="activity-head">
+              <span>Live router pulse</span>
+              <span id="activity-label">waiting for traffic</span>
+            </div>
+            <div class="heartbeat" aria-hidden="true"><div class="heartbeat-line"></div></div>
+          </div>
           <div class="chip-row" style="margin-top:18px">
             ${input.modelIds.map((modelId) => `<span class="chip">${escapeHtml(modelId)}</span>`).join('')}
             <span class="chip">OpenAI / DeepSeek / Ollama</span>
@@ -1053,6 +1123,7 @@ export function renderAppShell(input: {
       const authSummary = document.getElementById('auth-summary');
       const authStatus = document.getElementById('auth-status');
       const loginForm = document.getElementById('login-form');
+      const activityLabel = document.getElementById('activity-label');
       const publicRuntimePills = document.getElementById('public-runtime-pills');
       const publicStats = document.getElementById('public-stats');
       const hourlyChart = document.getElementById('hourly-chart');
@@ -1167,6 +1238,9 @@ export function renderAppShell(input: {
 
       function renderPublicStats(summary) {
         const stats = summary.stats || {};
+        if (activityLabel) {
+          activityLabel.textContent = fmtNumber(stats.requests) + ' req / 24h · ' + escapeHtml(String(stats.successRatePct || 0)) + '% ok';
+        }
         publicStats.innerHTML = [
           ['Requests', fmtNumber(stats.requests), 'Successful and failed requests'],
           ['Success Rate', escapeHtml(String(stats.successRatePct || 0)) + '%', 'Calculated from logged requests'],
