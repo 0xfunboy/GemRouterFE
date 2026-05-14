@@ -1283,7 +1283,7 @@ export function renderAppShell(input: {
           </div>
           <div class="source-card">
             <strong>${svgIcon('route')} Fallback Routing</strong>
-            <p>Automatic backend-only fallback across configured API keys when an upstream key is exhausted, rate-limited, or temporarily unavailable.</p>
+            <p>Automatic fallback across configured Gemini API keys and allowed text models when an upstream path is exhausted, rate-limited, or temporarily unavailable.</p>
           </div>
           <div class="source-card">
             <strong>${svgIcon('chart')} Operator Surface</strong>
