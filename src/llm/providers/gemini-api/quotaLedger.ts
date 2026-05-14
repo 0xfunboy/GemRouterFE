@@ -157,7 +157,7 @@ export class GeminiApiQuotaLedger {
   }
 
   private pruneCounter(counter: WindowCounter, windowMs: number, now: number): void {
-    const cutoff = now - windowMs - 5 * 60_000;
+    const cutoff = now - windowMs;
     counter.events = counter.events.filter((event) => event.ts >= cutoff);
   }
 
@@ -304,4 +304,3 @@ export class GeminiApiQuotaLedger {
     };
   }
 }
-

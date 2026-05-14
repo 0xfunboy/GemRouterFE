@@ -1,62 +1,39 @@
 # Deployment
 
-GemRouterFE is typically deployed as a long-running Node.js service with a persistent Playwright profile and a separately protected browser-recovery path.
+GemRouter deploys as a normal long-running Node.js service.
 
-## Core Deployment Requirements
+## Expected runtime
 
-- Node.js runtime
-- browser executable available to Playwright
-- persistent filesystem for the profile and local stores
-- headed display path when running with a visible browser
-- protected external access for API, dashboard, and noVNC
+- Node `23.3.0`
+- `pnpm`
+- writable `data/` directory
+- configured `.env`
 
-## Headed Browser Stack
+## Start options
 
-Version the non-secret headed-browser settings with the repo:
+Local:
 
-- Xvfb display and screen geometry
-- Playwright viewport size
-- noVNC web root redirect behavior
-- x11vnc and noVNC service units
+```bash
+pnpm start
+```
 
-The only value that should stay out of the repo is the actual VNC password file content.
-Authenticated Gemini browser cookies and OAuth/session artifacts also stay out of git.
+Service helper:
 
-## Service Shape
+```bash
+./scripts/start-gemrouter.sh
+```
 
-A typical deployment includes:
+Systemd templates:
 
-- the GemRouterFE process
-- the Playwright-controlled browser
-- optional tunnel or reverse proxy
-- optional noVNC surface for manual recovery
+- `ops/systemd/gemrouter.service`
+- `ops/systemd/gemrouter-nightly-restart.service`
+- `ops/systemd/gemrouter-nightly-restart.timer`
+- `ops/systemd/cloudflared-gemrouter.service`
 
-## What Must Persist
+Systemd installer:
 
-Do not treat these as disposable between normal restarts:
+```bash
+bash ./ops/systemd/install-gemrouter-services.sh
+```
 
-- browser profile
-- app store
-- compatibility store
-- interaction store
-- audit log
-
-## Deployment Checklist
-
-1. confirm the browser executable path
-2. confirm profile availability
-3. confirm admin credentials are set
-4. confirm bootstrap API key is set
-5. confirm enabled compatibility surfaces
-6. confirm dashboard and noVNC are separately protected
-7. run `pnpm smoke`
-
-## After Deployment
-
-After the service is live, verify:
-
-- health endpoint
-- one request on each compatibility surface
-- dashboard guest view
-- dashboard admin login
-- browser recovery path
+The restart schedule is handled with `systemd` timers at `03:30`, matching the service-oriented style used by the other local packages.

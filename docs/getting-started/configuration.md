@@ -1,66 +1,69 @@
 # Configuration
 
-Use `.env.example` as the canonical reference.
+GemRouter reads configuration from `.env`.
 
-The configuration is easier to reason about if you treat it in groups.
+## Core
 
-## Core Service
+- `HOST`
+- `PORT`
+- `GEMROUTER_ROOT_DIR`
+- `GEMROUTER_DATA_DIR`
+- `GEMROUTER_PUBLIC_BASE_URL`
 
-These values define the basic router process:
+## Admin and bootstrap auth
 
-- port
-- public base URL
-- dashboard enablement
+- `GEMROUTER_ADMIN_TOKEN`
+- `GEMROUTER_DASHBOARD_ENABLED`
+- `GEMROUTER_DASHBOARD_ADMIN_USERS`
+- `GEMROUTER_BOOTSTRAP_API_KEY`
+- `GEMROUTER_BOOTSTRAP_APP_NAME`
+- `GEMROUTER_BOOTSTRAP_ALLOWED_ORIGINS`
+- `GEMROUTER_BOOTSTRAP_ALLOWED_MODELS`
+- `GEMROUTER_BOOTSTRAP_SESSION_NAMESPACE`
+- `GEMROUTER_BOOTSTRAP_RATE_LIMIT_PER_MINUTE`
+- `GEMROUTER_BOOTSTRAP_MAX_CONCURRENCY`
 
-## Admin Access
+## Backend routing
 
-These values control dashboard authentication and session lifetime:
+- `GEMROUTER_BACKEND_ORDER`
 
-- admin token
-- dashboard credential list
-- admin session TTL
+Recommended default:
 
-## Provider Access
+```env
+GEMROUTER_BACKEND_ORDER=gemini-api
+```
 
-These values define the bootstrap application and API access defaults:
+## Gemini API backend
 
-- bootstrap API key
-- bootstrap app name
-- allowed origins
-- allowed models
-- rate limit
-- concurrency limit
+- `GEMROUTER_GEMINI_API_ENABLED`
+- `GEMROUTER_GEMINI_API_KEYS`
+- `GEMROUTER_GEMINI_API_KEYS_JSON`
+- `GEMROUTER_GEMINI_API_BASE_URL`
+- `GEMROUTER_GEMINI_API_VERSION`
+- `GEMROUTER_GEMINI_API_DEFAULT_TIER`
+- `GEMROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE`
+- `GEMROUTER_GEMINI_API_LIMITS_JSON`
+- `GEMROUTER_GEMINI_API_LIMITS_PATH`
+- `GEMROUTER_GEMINI_API_LEDGER_PATH`
+- `GEMROUTER_GEMINI_API_DISCOVERY_CACHE_PATH`
+- `GEMROUTER_GEMINI_API_DISCOVERY_REFRESH_MS`
+- `GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS`
+- `GEMROUTER_GEMINI_API_RPD_WINDOW_MS`
+- `GEMROUTER_GEMINI_API_RPM_WINDOW_MS`
+- `GEMROUTER_GEMINI_API_TPM_WINDOW_MS`
+- `GEMROUTER_GEMINI_API_COUNT_TOKENS_PREFLIGHT`
+- `GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE`
+- `GEMROUTER_GEMINI_API_TIMEOUT_MS`
+- `GEMROUTER_GEMINI_API_STREAM_TIMEOUT_MS`
 
-## Compatibility Surfaces
+## Model selection
 
-These values define the API shapes the router exposes:
+- `GEMINI_DIRECT_MODEL`
+- `GEMINI_DIRECT_MODELS`
+- `GEMROUTER_DEFAULT_MODEL`
+- `GEMROUTER_DIRECT_MODELS`
 
-- default compatibility surface
-- enabled compatibility surfaces
+`GEMROUTER_DIRECT_MODELS` controls the model IDs exposed by the compatibility surfaces.
+Keep this list limited to models that the current HTTP router can actually serve via `generateContent`.
 
-## Browser Runtime
-
-These values control the Playwright-backed Gemini session:
-
-- browser executable path
-- base profile directory
-- profile namespace
-- profile import path
-- headless or headed mode
-
-## Session Lifecycle
-
-These values control browser tab and conversation retention:
-
-- max tabs
-- conversation TTL
-- responded-tab TTL
-- orphan-tab TTL
-- concurrency wait window
-
-## Practical Guidance
-
-- Keep secrets out of the repo.
-- Keep noVNC credentials separate from dashboard credentials.
-- Use the smallest app policy that still satisfies the client.
-- Treat browser-profile paths as deployment details, not product-facing constants.
+The default discovery refresh is 6 hours (`21600000` ms). The admin UI uses the cached discovery list to populate the allowed-model picker with official Gemini model IDs.

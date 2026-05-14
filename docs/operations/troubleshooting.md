@@ -1,48 +1,29 @@
 # Troubleshooting
 
-## Dashboard Loads but Generation Fails
+## `/health` shows no usable Gemini API backend
 
 Check:
 
-- profile readiness
-- Gemini sign-in state
-- open tab count
-- busy tab count
-- recent interaction errors
+- `GEMROUTER_GEMINI_API_ENABLED`
+- `GEMROUTER_GEMINI_API_KEYS`
+- `GEMROUTER_GEMINI_API_KEYS_JSON`
 
-## API Surface Responds but Output Looks Wrong
+## Requests fail after key exhaustion
 
-Check:
+Check the Gemini API quota state in:
 
-- selected compatibility surface
-- prompt-lab reproduction
-- recent interaction records
-- router-side normalization behavior for the relevant surface
+- `/health`
+- `/v1/provider/quota`
 
-## noVNC Opens but Browser Is Not Usable
+Look for cooldowns, rate limits, disabled keys, or auth failures.
 
-Check:
+## Startup fails immediately
 
-- headed display availability
-- browser launch status
-- upstream Gemini session state
+The usual causes are missing required values:
 
-## Requests Stall Under Load
+- `GEMROUTER_ADMIN_TOKEN`
+- `GEMROUTER_BOOTSTRAP_API_KEY`
 
-Check:
+## The admin UI loads but data looks stale
 
-- app concurrency limits
-- browser tab counts
-- responded-tab TTL
-- orphan-tab cleanup
-- whether a long-running request is holding a session lock
-
-## Gemini Session Was Signed Out
-
-Recovery flow:
-
-1. open noVNC
-2. restore Gemini login in the browser
-3. confirm profile readiness
-4. re-run prompt lab
-5. re-run `pnpm smoke`
+Refresh `/health` and `/admin/summary` after sending a live request. Some backend state only updates after real traffic or explicit model discovery/quota refresh actions.

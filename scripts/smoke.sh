@@ -13,8 +13,8 @@ fi
 API_KEY="${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
 ADMIN_TOKEN="${GEMROUTER_ADMIN_TOKEN:-}"
 SMOKE_BACKEND="${SMOKE_BACKEND:-auto}"
-SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_CLI_MODEL:-gemini-2.5-flash-lite}}"
-SMOKE_PLAYWRIGHT_MODEL="${SMOKE_PLAYWRIGHT_MODEL:-gemini-web}"
+SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_DIRECT_MODEL:-gemini-2.5-flash-lite}}"
+SMOKE_IMAGE_MODEL="${SMOKE_IMAGE_MODEL:-gemini-2.5-flash-image}"
 SMOKE_WAIT_SECONDS="${SMOKE_WAIT_SECONDS:-60}"
 
 declare -a API_CANDIDATES=()
@@ -75,11 +75,6 @@ wait_for_api_base() {
 }
 
 resolve_primary_model() {
-  if [[ "${SMOKE_BACKEND}" == "playwright" ]]; then
-    printf '%s\n' "${SMOKE_PLAYWRIGHT_MODEL}"
-    return 0
-  fi
-
   printf '%s\n' "${SMOKE_MODEL}"
 }
 
@@ -169,6 +164,53 @@ request_json_basic() {
   echo "[smoke] ${label}"
   print_backend_meta "${header_file}"
   cat "${body_file}"
+  printf '\n\n'
+
+  if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
+    echo "[smoke] ${label} failed with HTTP ${status}" >&2
+    rm -f "${body_file}" "${header_file}"
+    exit 1
+  fi
+
+  rm -f "${body_file}" "${header_file}"
+}
+
+request_json_preview() {
+  local label="$1"
+  local method="$2"
+  local url="$3"
+  local body="${4:-}"
+  local preview_bytes="${5:-1200}"
+  local body_file
+  local header_file
+  body_file="$(mktemp)"
+  header_file="$(mktemp)"
+
+  local status
+  if [[ -n "${body}" ]]; then
+    status="$(
+      curl -sS --max-time 180 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
+        -H "Authorization: Bearer ${API_KEY}" \
+        -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
+        -H 'Content-Type: application/json' \
+        -d "${body}"
+    )"
+  else
+    status="$(
+      curl -sS --max-time 180 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
+        -H "Authorization: Bearer ${API_KEY}" \
+        -H "x-gemrouter-backend: ${SMOKE_BACKEND}"
+    )"
+  fi
+
+  echo "[smoke] ${label}"
+  print_backend_meta "${header_file}"
+  local body_bytes
+  body_bytes="$(wc -c < "${body_file}" | tr -d ' ')"
+  head -c "${preview_bytes}" "${body_file}"
+  if [[ "${body_bytes}" -gt "${preview_bytes}" ]]; then
+    printf '\n[smoke] ... truncated, total body bytes: %s' "${body_bytes}"
+  fi
   printf '\n\n'
 
   if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
@@ -284,7 +326,7 @@ wait_for_api_base
 echo "[smoke] API base: ${API_BASE}"
 echo "[smoke] backend preference: ${SMOKE_BACKEND}"
 echo "[smoke] primary model: ${SMOKE_PRIMARY_MODEL}"
-echo "[smoke] playwright model: ${SMOKE_PLAYWRIGHT_MODEL}"
+echo "[smoke] image model: ${SMOKE_IMAGE_MODEL}"
 printf '\n'
 
 echo "[smoke] health"
@@ -323,11 +365,11 @@ request_json \
   "${API_BASE}/v1/responses" \
   "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Reply only with PONG.\"}]}]}"
 
-request_json \
-  "chat-playwright" \
+request_json_preview \
+  "images-primary" \
   "POST" \
-  "${API_BASE}/v1/chat/completions" \
-  "{\"model\":\"${SMOKE_PLAYWRIGHT_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with WEB-OK.\"}]}"
+  "${API_BASE}/v1/images/generations" \
+  "{\"model\":\"${SMOKE_IMAGE_MODEL}\",\"prompt\":\"Create a minimal black circle centered on a white background.\",\"size\":\"1024x1024\",\"response_format\":\"url\"}"
 
 request_json \
   "deepseek-models" \
@@ -339,6 +381,12 @@ request_json \
   "POST" \
   "${API_BASE}/chat/completions" \
   "{\"model\":\"${SMOKE_PRIMARY_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply only with DEEPSEEK-OK.\"}]}"
+
+request_json_preview \
+  "deepseek-images-primary" \
+  "POST" \
+  "${API_BASE}/images/generations" \
+  "{\"model\":\"${SMOKE_IMAGE_MODEL}\",\"prompt\":\"Create a minimal black circle centered on a white background.\",\"size\":\"1024x1024\",\"response_format\":\"url\"}"
 
 request_json_basic \
   "ollama-version" \

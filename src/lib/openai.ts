@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { LLMMessage } from '../llm/types.js';
 import type { SemanticActionPolicy } from './semantics.js';
-import { normalizePublicModelId } from './models.js';
+import { DEFAULT_DIRECT_MODEL_IDS, normalizePublicModelId } from './models.js';
 
 export interface ChatCompletionsRequest {
   model?: string;
@@ -31,10 +31,25 @@ export interface ResponsesRequest {
   tools?: unknown[];
 }
 
+export interface ImageGenerationsRequest {
+  model?: string;
+  prompt?: string;
+  n?: number;
+  size?: string;
+  response_format?: 'url' | 'b64_json' | string;
+  user?: string;
+}
+
 export interface UsageSummary {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+}
+
+export interface NormalizedImageSize {
+  raw: string;
+  aspectRatio?: string;
+  imageSize?: string;
 }
 
 function prefersJsonMarkdownBlock(messages: LLMMessage[]): boolean {
@@ -145,7 +160,7 @@ function prependSystemInstruction(messages: LLMMessage[], instruction: string | 
 }
 
 export function normalizeModelId(input: string | undefined): string {
-  return normalizePublicModelId(input ?? 'gemini-web');
+  return normalizePublicModelId(input ?? DEFAULT_DIRECT_MODEL_IDS[0]);
 }
 
 export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
@@ -275,6 +290,67 @@ export function parseResponsesRequest(body: ResponsesRequest): {
   };
 }
 
+function gcd(left: number, right: number): number {
+  let a = Math.abs(left);
+  let b = Math.abs(right);
+  while (b !== 0) {
+    const next = a % b;
+    a = b;
+    b = next;
+  }
+  return a || 1;
+}
+
+export function normalizeImageSize(size: string | undefined): NormalizedImageSize {
+  const raw = String(size ?? '').trim().toLowerCase() || '1024x1024';
+  const match = raw.match(/^(\d+)\s*x\s*(\d+)$/);
+  if (!match) {
+    return { raw };
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return { raw };
+  }
+  const divisor = gcd(width, height);
+  const aspectRatio = `${Math.round(width / divisor)}:${Math.round(height / divisor)}`;
+  const maxDimension = Math.max(width, height);
+  const imageSize = maxDimension >= 3072 ? '4K' : maxDimension >= 1536 ? '2K' : '1K';
+  return {
+    raw,
+    aspectRatio,
+    imageSize,
+  };
+}
+
+export function parseImageGenerationsRequest(body: ImageGenerationsRequest): {
+  model: string;
+  prompt: string;
+  user?: string;
+  responseFormat: 'url' | 'b64_json';
+  size: NormalizedImageSize;
+} {
+  const prompt = String(body.prompt ?? '').trim();
+  if (!prompt) {
+    throw new Error('prompt is required');
+  }
+  if (body.n !== undefined && body.n !== 1) {
+    throw new Error('Only n=1 is supported');
+  }
+  const responseFormat = String(body.response_format ?? 'b64_json').trim().toLowerCase();
+  if (responseFormat !== 'url' && responseFormat !== 'b64_json') {
+    throw new Error('response_format must be "url" or "b64_json"');
+  }
+
+  return {
+    model: normalizeModelId(body.model),
+    prompt,
+    user: typeof body.user === 'string' ? body.user.trim() : undefined,
+    responseFormat,
+    size: normalizeImageSize(body.size),
+  };
+}
+
 export function estimateUsage(messages: LLMMessage[], outputText: string): UsageSummary {
   const promptText = messages.map((message) => message.content).join('\n');
   const promptTokens = Math.max(1, Math.ceil(promptText.length / 4));
@@ -351,6 +427,25 @@ export function buildResponsesApiResponse(input: {
       output_tokens: input.usage.completion_tokens,
       total_tokens: input.usage.total_tokens,
     },
+  };
+}
+
+export function buildImageGenerationResponse(input: {
+  created?: number;
+  mimeType: string;
+  data: string;
+  responseFormat: 'url' | 'b64_json';
+  revisedPrompt?: string;
+}): Record<string, unknown> {
+  const dataUrl = `data:${input.mimeType};base64,${input.data}`;
+  return {
+    created: input.created ?? Math.floor(Date.now() / 1000),
+    data: [
+      {
+        ...(input.responseFormat === 'url' ? { url: dataUrl } : { b64_json: input.data }),
+        revised_prompt: input.revisedPrompt ?? null,
+      },
+    ],
   };
 }
 

@@ -12,23 +12,7 @@ export type LLMProviderErrorCode =
   | 'gemini_api_model_not_found'
   | 'gemini_api_upstream_error'
   | 'gemini_api_timeout'
-  | 'gemini_api_stream_error'
-  | 'cli_not_installed'
-  | 'cli_auth_missing'
-  | 'cli_auth_expired'
-  | 'cli_validation_required'
-  | 'cli_permission_denied'
-  | 'cli_rate_limited'
-  | 'cli_quota_exhausted'
-  | 'cli_timeout'
-  | 'cli_bad_output'
-  | 'cli_process_error'
-  | 'cli_policy_blocked'
-  | 'cli_model_unsupported'
-  | 'playwright_not_ready'
-  | 'playwright_quota'
-  | 'playwright_timeout'
-  | 'playwright_process_error';
+  | 'gemini_api_stream_error';
 
 export class LLMProviderError extends Error {
   constructor(

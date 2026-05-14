@@ -1,226 +1,119 @@
-# GemRouterFE
+# GemRouter
 
-<p align="center">
-  <img src="./docs/assets/GemRouterFE_Docs_header.png" alt="GemRouterFE" width="960" />
-</p>
+GemRouter is a lightweight Gemini routing backend. It exposes GemRouter-native, OpenAI-compatible, DeepSeek-compatible, and Ollama-compatible HTTP surfaces while routing requests across configured Gemini API keys.
 
-<p align="center">
-  <strong>OpenAI-compatible local Gemini router with embedded Gemini Code Assist auth/runtime and Playwright Gemini Web fallback.</strong>
-</p>
+This repo is the backend-only fork of the previous browser-automation codebase. The legacy browser runtime, remote desktop tooling, and web-scraping paths have been removed.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Node.js-24-43853D?logo=node.js" alt="Node.js"/>
-  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript" alt="TypeScript"/>
-  <img src="https://img.shields.io/badge/Fastify-4-000000?logo=fastify" alt="Fastify"/>
-  <img src="https://img.shields.io/badge/Playwright-Browser%20Runtime-2EAD33?logo=playwright" alt="Playwright"/>
-  <img src="https://img.shields.io/badge/Gemini-Web%20Session-0B1220" alt="Gemini Web"/>
-  <img src="https://img.shields.io/badge/OpenAI-Compatible-10A37F" alt="OpenAI surface"/>
-  <img src="https://img.shields.io/badge/DeepSeek-Compatible-2563EB" alt="DeepSeek surface"/>
-  <img src="https://img.shields.io/badge/Ollama-Compatible-111827" alt="Ollama surface"/>
-  <img src="https://img.shields.io/badge/noVNC-Recovery%20Surface-7C3AED" alt="noVNC"/>
-</p>
+## What It Does
 
-## Overview
+- Routes requests across multiple Gemini API keys.
+- Falls back across configured backends in `GEMROUTER_BACKEND_ORDER`.
+- Tracks local quota and cooldown state for Gemini API keys.
+- Exposes operator APIs and a small admin UI for runtime inspection.
+- Preserves chat, responses, and image-generation surfaces where supported by the Gemini model.
 
-`GemRouterFE` exposes provider-style HTTP APIs that existing clients already know how to call, while routing inference through:
+## What It No Longer Does
 
-1. Official Gemini API calls through AI Studio / Gemini Developer API keys
-2. Playwright-managed Gemini Web fallback with the existing authenticated browser profile
-3. Embedded Gemini Code Assist calls authenticated with the same cached Google login files used by Gemini CLI, kept as a diagnostic backend
+- No browser automation.
+- No browser runtime.
+- No Gemini Web scraping.
+- No remote desktop tooling.
+- No display-service dependencies.
 
-This repository is the product workspace for:
+## Requirements
 
-- the compatibility router
-- the official Gemini API multi-key runtime
-- the browser-backed Gemini fallback runtime
-- the embedded Gemini CLI diagnostic runtime
-- app and API-key policy management
-- the operator dashboard
-- recovery access through noVNC
+- Node `23.3.0`
+- `pnpm` `10.26.1`
 
-Router auth for clients stays separate from backend Gemini auth. Gemini API keys can create billable upstream usage, so keep Google-side budgets and project limits in place.
+The repo already targets Node `23.3.0` in [`.nvmrc`](./.nvmrc).
 
-## Core Product Capabilities
-
-- OpenAI-compatible `models`, `chat/completions`, and `responses`
-- DeepSeek-compatible `models` and `chat/completions`
-- Ollama-compatible `version`, `tags`, `show`, `chat`, and `generate`
-- official Gemini API routing with multiple API keys and local RPM/TPM/RPD quota tracking
-- Playwright-managed Gemini Web session reuse
-- automatic fallback from the API backend to Playwright for auth/runtime/quota failures
-- app-scoped API keys with model, origin, rate, and concurrency controls
-- guest telemetry and admin controls in one dashboard
-- prompt lab routed through the live browser session
-- interaction logging with token estimates, latency, and feedback labels
-- browser recovery path through noVNC
-
-## Repository Layout
-
-| Path | Role |
-| --- | --- |
-| [`src/`](./src) | router, dashboard, compatibility layers, runtime wiring |
-| [`docs/`](./docs) | operator and product documentation |
-| [`docs/assets/`](./docs/assets) | product branding and documentation images |
-| [`ops/systemd/`](./ops/systemd) | user-systemd unit files |
-| [`scripts/`](./scripts) | helper and smoke scripts |
-| [`data/`](./data) | local runtime state, stores, and interaction logs |
-
-## Quick Start
+## Install
 
 ```bash
-corepack enable
-pnpm install
-pnpm setup:browser
+pnpm install --frozen-lockfile
+cp .env.example .env
 pnpm check
 pnpm build
-pnpm setup:gemini-cli
-pnpm login:gemini-cli
-pnpm dev
 ```
 
-Useful validation command:
+Fill the required values in `.env` before starting:
+
+- `GEMROUTER_ADMIN_TOKEN`
+- `GEMROUTER_BOOTSTRAP_API_KEY`
+- `GEMROUTER_GEMINI_API_KEYS` or `GEMROUTER_GEMINI_API_KEYS_JSON`
+- `GEMROUTER_DIRECT_MODELS`
+
+Recommended `GEMROUTER_DIRECT_MODELS` for the current HTTP router:
+
+- `gemini-3.1-pro-preview`
+- `gemini-3.1-flash-lite`
+- `gemini-3-flash-preview`
+- `gemini-2.5-pro`
+- `gemini-2.5-flash-lite`
+- `gemini-2.5-flash-image`
+- `gemini-3-pro-image-preview`
+- `gemini-3.1-flash-image-preview`
+- `nano-banana-pro-preview`
+
+Chat and image-generation models are exposed by `/v1/models` and `/models`.
+Live audio, embeddings, and video generation models still need dedicated APIs and are not exposed by default.
+
+## Start
 
 ```bash
-pnpm smoke
+pnpm start
 ```
 
-The smoke flow waits for the router to answer `/health`, validates the OpenAI, DeepSeek, and Ollama surfaces, prints the backend used for inference, and exercises admin login plus `admin/test-chat` when admin credentials are available.
-
-Use the backend-specific variants when you want to validate one path intentionally:
+The service start helper for deployment is:
 
 ```bash
-pnpm smoke:gemini-cli
-pnpm smoke:gemini-api
-pnpm smoke:playwright
+./scripts/start-gemrouter.sh
 ```
 
-`smoke:playwright` drives the user-facing inference surfaces with `model=gemini-web`, so it verifies the real Playwright/Gemini Web path instead of failing on direct-model quota exhaustion.
-
-When running the headed browser stack through user `systemd`, install the repo-provided units with:
+## Health Check
 
 ```bash
-pnpm setup:systemd
+curl -fsS http://127.0.0.1:4024/health
 ```
 
-That installer writes user units pointing at the current clone path.
-
-## Auth Model
-
-- Client apps must still send the local router bearer API key.
-- Gemini API auth uses upstream AI Studio / Gemini Developer API keys from `.env`.
-- Gemini CLI diagnostic auth is Google-login based and reuses cached local credentials.
-- Playwright fallback reuses the already authenticated browser profile under `.playwright/`.
-- The Gemini Web browser profile itself is sensitive session state and is not committed.
-
-## First-Time Google Login Setup
+## OpenAI-Compatible Example
 
 ```bash
-pnpm setup:gemini-cli
-pnpm login:gemini-cli
+curl -sS http://127.0.0.1:4024/v1/chat/completions \
+  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash-lite",
+    "messages": [
+      { "role": "user", "content": "Reply only with OK." }
+    ]
+  }'
 ```
 
-`setup:gemini-cli` fills safe missing `.env` defaults without overwriting existing values. Before `login:gemini-cli`, set `GEMINI_AUTH_CLIENT_ID` and `GEMINI_AUTH_CLIENT_SECRET` in `.env` with your Google installed-app OAuth client values. `login:gemini-cli` then runs the repo-local browser OAuth helper and stores credentials in the same `.gemini` cache layout that Gemini CLI uses.
+## OpenAI-Compatible Images Example
 
-If API keys are missing, rate-limited, or unusable, the router keeps serving through Playwright when possible and exposes the status in `/health`, `/v1/provider/runtime`, and the admin dashboard.
-
-## Backend Selection
-
-- Default backend order is `gemini-api,playwright,gemini-cli`.
-- Direct model IDs such as `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` are exposed directly through `/v1/models`.
-- `gemini-web` and `google/gemini-web` remain the explicit Playwright-backed model aliases.
-- Health output reports API key count, local quota state, model discovery, Playwright profile readiness, and the active default backend.
-- Requests can be forced to `gemini-api`, `gemini-cli`, `playwright`, or `auto` with `x-gemrouter-backend` for smoke and operator testing.
-- Playwright remains the real fallback backend and is not removed from the stack.
-
-## Provider Runtime API
-
-Authenticated clients can inspect the live backend state without using the admin dashboard:
-
-- `GET /v1/provider/runtime`
-- `GET /v1/provider/models`
-- `GET /v1/provider/quota`
-
-These endpoints expose:
-
-- direct auth readiness
-- selected Google account
-- current tier and project
-- configured direct models
-- the last resolved direct model
-- quota buckets when the upstream service returns them
-- quota errors when the upstream service refuses to disclose or serve quota
-
-## Dashboard Model
-
-The dashboard has two clearly separated views.
-
-### Guest View
-
-Guest mode shows only aggregate telemetry:
-
-- request volume
-- success rate
-- latency
-- token volume
-- compatibility-surface mix
-- generic runtime health
-
-Guest mode hides prompts, app names, API keys, and operator-only controls.
-
-### Admin View
-
-Admin mode exposes the operator console:
-
-- apps and API keys
-- compatibility surfaces
-- prompt lab
-- recent interactions
-- runtime diagnostics
-- browser session access
-- recovery controls
-
-noVNC stays separately protected.
-
-## Documentation
-
-The documentation set is split into topical pages under [`docs/`](./docs).
-
-### Docs Index
-
-- [Documentation Index](./docs/README.md)
-
-### Getting Started
-
-- [Product Overview](./docs/getting-started/overview.md)
-- [First Install](./docs/getting-started/first-install.md)
-- [Quickstart](./docs/getting-started/quickstart.md)
-- [Configuration](./docs/getting-started/configuration.md)
-
-### Architecture
-
-- [System Overview](./docs/architecture/overview.md)
-- [Browser Runtime](./docs/architecture/browser-runtime.md)
-- [Dashboard Model](./docs/architecture/dashboard.md)
-
-### Operations
-
-- [Deployment](./docs/operations/deployment.md)
-- [Security](./docs/operations/security.md)
-- [Troubleshooting](./docs/operations/troubleshooting.md)
-- [Gemini API Multi-Key Routing](./docs/implementation/gemini-api-multikey-routing.md)
-- [Gemini CLI Fallback Integration](./docs/implementation/gemini-cli-fallback.md)
-
-### Reference
-
-- [API Surfaces](./docs/reference/api-surfaces.md)
-- [Environment Map](./docs/reference/environment.md)
-- [ElizaOS Client Configuration](./docs/reference/elizaos-client.md)
-- [Repository Map](./docs/reference/repository-map.md)
+```bash
+curl -sS http://127.0.0.1:4024/v1/images/generations \
+  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini-2.5-flash-image",
+    "prompt": "Create a minimal black circle centered on a white background.",
+    "response_format": "b64_json"
+  }'
+```
 
 ## Notes
 
-- `gemini-web` and `google/gemini-web` remain the explicit Playwright aliases exposed to clients
-- the direct backend no longer shells out to the `gemini` executable for inference; it reuses the same `.gemini` auth cache directly from Node
-- if the upstream direct service reports quota exhaustion, the router falls back to Playwright when that browser path is ready
-- Ollama compatibility is route and envelope compatibility over the router, not a local Ollama engine
-- dashboard and API access are intentionally separate from noVNC access
+- Default port is `4024`.
+- Default backend order is `gemini-api`.
+- Default primary compatibility surface is `gemrouter`.
+- The admin UI is served at `/` and `/admin`.
+- Systemd unit templates live in `ops/systemd/`.
+- `ops/systemd/install-gemrouter-services.sh` installs the system units when root access is available.
+- Nightly restarts are handled by `ops/systemd/gemrouter-nightly-restart.timer` at `03:30`.
+- The Cloudflare tunnel template lives in `ops/cloudflared/gemrouter.yml`.
+
+## Docs
+
+- [Documentation Index](./docs/README.md)

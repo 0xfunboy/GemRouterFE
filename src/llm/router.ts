@@ -1,5 +1,3 @@
-import { GeminiNotReadyError, GeminiQuotaError, GeminiTimeoutError } from './providers/tegem/errors.js';
-import { isGeminiApiModelId, isPlaywrightModelId } from '../lib/models.js';
 import { LLMProviderError } from './errors.js';
 import type { LLMBackendId, LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from './types.js';
 
@@ -9,8 +7,6 @@ interface BackendClient extends LLMClient {
 
 export interface LLMRouterConfig {
   backendOrder: LLMBackendId[];
-  allowPlaywrightFallback: boolean;
-  retryOnCliAuthFailure: boolean;
 }
 
 interface RouterState {
@@ -21,45 +17,12 @@ interface RouterState {
   lastError: string | null;
 }
 
-function normalizePlaywrightError(error: unknown): LLMProviderError {
-  if (error instanceof LLMProviderError) return error;
-  if (error instanceof GeminiQuotaError) {
-    return new LLMProviderError('playwright_quota', 'playwright', error.message, {
-      statusCode: 429,
-      fallbackEligible: false,
-      cause: error,
-    });
-  }
-  if (error instanceof GeminiTimeoutError) {
-    return new LLMProviderError('playwright_timeout', 'playwright', error.message, {
-      statusCode: 504,
-      fallbackEligible: false,
-      cause: error,
-    });
-  }
-  if (error instanceof GeminiNotReadyError) {
-    return new LLMProviderError('playwright_not_ready', 'playwright', error.message, {
-      statusCode: 503,
-      fallbackEligible: false,
-      cause: error,
-    });
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  return new LLMProviderError('playwright_process_error', 'playwright', message, {
-    statusCode: 502,
-    fallbackEligible: false,
-    cause: error,
-  });
-}
-
 function normalizeBackendError(backend: LLMBackendId, error: unknown): LLMProviderError {
-  if (backend === 'playwright') return normalizePlaywrightError(error);
   if (error instanceof LLMProviderError) return error;
   const message = error instanceof Error ? error.message : String(error);
   return new LLMProviderError('backend_unavailable', backend, message, {
     statusCode: 502,
-    fallbackEligible: backend === 'gemini-cli' || backend === 'gemini-api',
+    fallbackEligible: true,
     cause: error,
   });
 }
@@ -70,12 +33,9 @@ function annotateResponse(
   fallbackFrom?: LLMBackendId,
   fallbackReason?: string,
 ): LLMResponse {
-  const provider = fallbackFrom === 'gemini-cli' && backend === 'playwright'
-    ? 'playwright-after-cli-failure'
-    : (response.provider || backend);
   return {
     ...response,
-    provider,
+    provider: response.provider || backend,
     backend,
     fallbackFrom,
     fallbackReason,
@@ -83,32 +43,20 @@ function annotateResponse(
 }
 
 function shouldFallback(
-  config: LLMRouterConfig,
   backend: LLMBackendId,
   error: LLMProviderError,
   remainingBackends: LLMBackendId[],
   opts?: LLMOptions,
 ): boolean {
   if (opts?.backendPreference && opts.backendPreference !== 'auto') return false;
-  if (!config.allowPlaywrightFallback) return false;
-  if (!remainingBackends.includes('playwright')) return false;
+  if (remainingBackends.length === 0) return false;
   if (error.options.fallbackEligible !== true) return false;
-  if (backend === 'gemini-api') return true;
-  if (backend !== 'gemini-cli') return false;
-  if ((error.code === 'cli_auth_missing' || error.code === 'cli_auth_expired') && !config.retryOnCliAuthFailure) {
-    return false;
-  }
-  return true;
+  return backend === 'gemini-api';
 }
 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
-  if (opts?.model && isPlaywrightModelId(opts.model)) return ['playwright'];
   const preference = opts?.backendPreference ?? 'auto';
-  if (preference === 'gemini-api' || preference === 'gemini-cli' || preference === 'playwright') return [preference];
-  if (opts?.model && isGeminiApiModelId(opts.model)) {
-    const apiSequence = config.backendOrder.filter((backend) => backend === 'gemini-api' || backend === 'playwright');
-    return apiSequence.length > 0 ? [...new Set(apiSequence)] : ['gemini-api', 'playwright'];
-  }
+  if (preference === 'gemini-api') return [preference];
   return [...new Set(config.backendOrder)];
 }
 
@@ -128,8 +76,6 @@ export function createLlmRouter(
   config: LLMRouterConfig,
   backends: {
     geminiApi: BackendClient;
-    geminiCli: BackendClient;
-    playwright: BackendClient;
   },
 ): LLMClient {
   const state: RouterState = {
@@ -146,15 +92,9 @@ export function createLlmRouter(
 
     for (let index = 0; index < sequence.length; index++) {
       const backend = sequence[index];
-      const remaining = sequence.slice(index + 1);
-      try {
-        const rawResponse = await (
-          backend === 'gemini-api'
-            ? backends.geminiApi.chat(messages, opts)
-            : backend === 'gemini-cli'
-              ? backends.geminiCli.chat(messages, opts)
-              : backends.playwright.chat(messages, opts)
-        );
+        const remaining = sequence.slice(index + 1);
+        try {
+        const rawResponse = await backends.geminiApi.chat(messages, opts);
         const response = annotateResponse(rawResponse, backend, lastError?.backend, lastError?.code);
         state.lastBackendUsed = response.backend ?? backend;
         state.lastFallbackFrom = response.fallbackFrom ?? null;
@@ -164,7 +104,7 @@ export function createLlmRouter(
         return response;
       } catch (error) {
         const normalized = normalizeBackendError(backend, error);
-        if (shouldFallback(config, backend, normalized, remaining, opts)) {
+        if (shouldFallback(backend, normalized, remaining, opts)) {
           state.lastFallbackFrom = normalized.backend;
           state.lastFallbackReason = normalized.code;
           lastError = normalized;
@@ -188,7 +128,7 @@ export function createLlmRouter(
 
     const error = lastError ?? new LLMProviderError(
       'backend_unavailable',
-      sequence[0] ?? 'gemini-cli',
+      sequence[0] ?? 'gemini-api',
       'No backend could satisfy the request.',
       { statusCode: 503 },
     );
@@ -216,11 +156,7 @@ export function createLlmRouter(
         const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
-          const client = backend === 'gemini-api'
-            ? backends.geminiApi
-            : backend === 'gemini-cli'
-              ? backends.geminiCli
-              : backends.playwright;
+          const client = backends.geminiApi;
           const stream = client.streamChat ? client.streamChat(messages, opts) : singleResponseStream(client, messages, opts);
           let finalResponse: LLMResponse | null = null;
           while (true) {
@@ -236,7 +172,7 @@ export function createLlmRouter(
             finalResponse ?? {
               content: '',
               provider: backend,
-              model: opts?.model ?? 'gemini-web',
+              model: opts?.model ?? backends.geminiApi.model,
             },
             backend,
             lastError?.backend,
@@ -250,7 +186,7 @@ export function createLlmRouter(
           return response;
         } catch (error) {
           const normalized = normalizeBackendError(backend, error);
-          if (shouldFallback(config, backend, normalized, remaining, opts)) {
+          if (shouldFallback(backend, normalized, remaining, opts)) {
             state.lastFallbackFrom = normalized.backend;
             state.lastFallbackReason = normalized.code;
             lastError = normalized;
@@ -274,7 +210,7 @@ export function createLlmRouter(
 
       const error = lastError ?? new LLMProviderError(
         'backend_unavailable',
-        sequence[0] ?? 'gemini-cli',
+        sequence[0] ?? 'gemini-api',
         'No backend could satisfy the request.',
         { statusCode: 503 },
       );
@@ -286,75 +222,21 @@ export function createLlmRouter(
       throw error;
     },
 
-    async prewarmSessions(sessions: LLMOptions[]): Promise<void> {
-      if (typeof backends.playwright.prewarmSessions === 'function') {
-        await backends.playwright.prewarmSessions(sessions);
-      }
-    },
-
     getDiagnostics(): Record<string, unknown> {
-      const geminiCli = backends.geminiCli.health
-        ? (backends.geminiCli.health() as Record<string, unknown>)
-        : backends.geminiCli.getDiagnostics?.() ?? null;
       const geminiApi = backends.geminiApi.health
         ? (backends.geminiApi.health() as Record<string, unknown>)
         : backends.geminiApi.getDiagnostics?.() ?? null;
-      const playwright = backends.playwright.getDiagnostics?.() ?? null;
       return {
         provider: 'router',
         model: 'gemini-router',
         backendOrder: config.backendOrder,
-        fallbackEnabled: config.allowPlaywrightFallback,
-        retryOnCliAuthFailure: config.retryOnCliAuthFailure,
-        configuredDefaultBackend: config.backendOrder[0] ?? 'gemini-cli',
+        configuredDefaultBackend: config.backendOrder[0] ?? 'gemini-api',
         lastBackendUsed: state.lastBackendUsed,
         lastFallbackFrom: state.lastFallbackFrom,
         lastFallbackReason: state.lastFallbackReason,
         lastResolutionAt: state.lastResolutionAt,
         lastError: state.lastError,
         geminiApi,
-        geminiCli,
-        playwright,
-        promptPackingStyle:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).promptPackingStyle ?? null
-            : null,
-        contextAlive:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).contextAlive ?? null
-            : null,
-        openPages:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).openPages ?? null
-            : null,
-        storedSessions:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).storedSessions ?? null
-            : null,
-        respondedOpenTabs:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).respondedOpenTabs ?? null
-            : null,
-        unresolvedOpenTabs:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).unresolvedOpenTabs ?? null
-            : null,
-        busyOpenTabs:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).busyOpenTabs ?? null
-            : null,
-        lastLaunchAt:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).lastLaunchAt ?? null
-            : null,
-        lastLaunchOkAt:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).lastLaunchOkAt ?? null
-            : null,
-        lastLaunchError:
-          playwright && typeof playwright === 'object'
-            ? (playwright as Record<string, unknown>).lastLaunchError ?? null
-            : null,
       };
     },
   };

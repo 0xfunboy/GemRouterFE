@@ -1,4 +1,4 @@
-export const API_SURFACES = ['openai', 'deepseek', 'ollama'] as const;
+export const API_SURFACES = ['gemrouter', 'openai', 'deepseek', 'ollama'] as const;
 
 export type ApiSurface = (typeof API_SURFACES)[number];
 
@@ -7,6 +7,7 @@ export interface CompatibilityRoutes {
   apiBaseUrl?: string;
   models: string;
   chat: string;
+  images?: string;
   responses?: string;
   tags?: string;
   generate?: string;
@@ -62,16 +63,24 @@ function withoutTrailingSlash(value: string): string {
 export function buildCompatibilityRoutes(baseUrl: string): Record<ApiSurface, CompatibilityRoutes> {
   const root = withoutTrailingSlash(baseUrl);
   return {
+    gemrouter: {
+      baseUrl: root,
+      models: `${root}/models`,
+      chat: `${root}/chat/completions`,
+      images: `${root}/images/generations`,
+    },
     openai: {
       baseUrl: `${root}/v1`,
       models: `${root}/v1/models`,
       chat: `${root}/v1/chat/completions`,
+      images: `${root}/v1/images/generations`,
       responses: `${root}/v1/responses`,
     },
     deepseek: {
       baseUrl: root,
       models: `${root}/models`,
       chat: `${root}/chat/completions`,
+      images: `${root}/images/generations`,
     },
     ollama: {
       baseUrl: root,

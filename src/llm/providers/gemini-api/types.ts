@@ -1,4 +1,4 @@
-export type GeminiApiQuotaSource = 'static-config' | 'local-ledger' | 'aistudio-scrape' | 'upstream-error';
+export type GeminiApiQuotaSource = 'static-config' | 'local-ledger' | 'upstream-error';
 
 export interface GeminiApiRateLimit {
   rpm: number | null;
@@ -63,4 +63,3 @@ export interface GeminiApiUpstreamErrorSnapshot {
   quotaGroup: string | null;
   at: string;
 }
-

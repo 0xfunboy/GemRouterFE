@@ -1,6 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export interface ApiAppRecord {
@@ -81,7 +80,6 @@ function stableCompare(left: string, right: string): boolean {
 
 export class AppStore {
   private state: PersistedState = { apps: [] };
-  private saveQueue: Promise<void> = Promise.resolve();
   private readonly rateWindows = new Map<string, { startedAt: number; count: number }>();
   private readonly inFlight = new Map<string, number>();
 
@@ -252,10 +250,10 @@ export class AppStore {
 
   private save(): void {
     const payload = JSON.stringify(this.state, null, 2);
-    this.saveQueue = this.saveQueue
-      .then(() => writeFile(this.filePath, payload, 'utf8'))
-      .catch((error) => {
-        console.error('[app-store] save failed:', error);
-      });
+    try {
+      writeFileSync(this.filePath, payload, 'utf8');
+    } catch (error) {
+      console.error('[app-store] save failed:', error);
+    }
   }
 }

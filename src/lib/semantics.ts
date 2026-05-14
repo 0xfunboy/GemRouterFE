@@ -19,17 +19,18 @@ function buildBaseInstruction(profile: SemanticProfile): string {
   const common = [
     'You are producing the final user-visible assistant payload for a compatibility router.',
     'Return only the payload content that the target API client should receive.',
-    'Do not mention Gemini, Playwright, routing, translation, simulation, or provider internals.',
+    'Do not mention Gemini, routing, translation, simulation, or provider internals.',
     'Do not prepend role labels such as "assistant:" or "response:".',
     'If the user asks for an exact literal reply, output that literal and nothing else.',
     'Never expose hidden reasoning, chain-of-thought, or <think> blocks in the final answer.',
   ];
 
   switch (profile.surface) {
+    case 'gemrouter':
     case 'deepseek':
       common.unshift(
-        'Simulate the final assistant content of a DeepSeek chat model.',
-        'Behave like a DeepSeek-compatible assistant message, not like an OpenAI wrapper.',
+        'Simulate the final assistant content of a DeepSeek-style compatible chat model.',
+        'Behave like a root-path compatibility assistant message, not like an OpenAI wrapper.',
       );
       break;
     case 'ollama':

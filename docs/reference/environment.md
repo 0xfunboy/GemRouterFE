@@ -1,77 +1,19 @@
-# Environment Map
+# Environment Reference
 
-Use `.env.example` as the authoritative reference.
+Use [`.env.example`](../../.env.example) as the authoritative starting point.
 
-This page groups the environment surface by role.
+Important groups:
 
-## Dashboard and Admin
-
-- dashboard enablement
-- admin token
-- dashboard user list
-- admin session TTL
-
-## Provider Access
-
-- bootstrap API key
-- bootstrap app name
-- allowed origins
-- allowed models
-- rate limit
-- concurrency limit
-
-## Compatibility
-
-- default surface
-- enabled surfaces
+- core server settings
+- admin and bootstrap auth
 - backend order
-- fallback enablement
+- Gemini API key pool settings
+- optional Gemini CLI backend settings
 
-## Gemini API Runtime
+Removed from the product:
 
-- official Gemini API enablement
-- comma-separated API keys or advanced JSON key config
-- base URL and API version
-- default quota tier
-- quota group mode
-- ledger path
-- model discovery cache path
-- RPM/TPM/RPD window settings
-- quota cooldown
-- request and stream timeouts
-
-## Gemini CLI Diagnostic Runtime
-
-- direct backend enablement
-- default direct model and direct model list
-- request timeout
-- quota refresh cadence
-- cached auth expectations
-- user home and `.gemini` auth directory
-- login bootstrap visibility flags
-- optional OAuth callback and client overrides
-
-## Playwright Runtime
-
-- browser executable path
-- base profile directory
-- profile namespace
-- viewport width and height
-- profile import path
-- headed or headless mode
-
-## Session Lifecycle
-
-- max tabs
-- conversation TTL
-- responded-tab TTL
-- orphan-tab TTL
-- concurrency wait time
-
-## Public URLs
-
-- public base URL
-- noVNC public URL
-
-Keep environment values deployment-specific. Avoid baking real deployment addresses into reusable documentation.
-Keep the non-secret browser runtime settings versioned with the repo so reinstalling the stack does not silently change display size, profile location, or the noVNC surface.
+- browser profile paths
+- browser-runtime flags
+- remote desktop settings
+- display-service settings
+- Gemini Web scraping settings

@@ -1,0 +1,6 @@
+[Unit]
+Description=Nightly restart of GemRouter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart gemrouter.service

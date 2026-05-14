@@ -14,8 +14,8 @@ function loadPngDataUri(fileName: string): string {
   }
 }
 
-const UI_ICON_DATA_URI = loadPngDataUri('GemRouterFE_Icon_logo256.png');
-const UI_WORDMARK_DATA_URI = loadPngDataUri('GemRouterFE_Trasp_horiz_Logo_textonly.png');
+const UI_ICON_DATA_URI = loadPngDataUri('GemRouter_Icon_logo256.png');
+const UI_WORDMARK_DATA_URI = loadPngDataUri('GemRouter_Wordmark.png');
 
 function svgIcon(name: 'activity' | 'admin' | 'api' | 'bolt' | 'browser' | 'chart' | 'health' | 'menu' | 'moon' | 'plug' | 'route' | 'sun'): string {
   const paths: Record<typeof name, string> = {
@@ -51,8 +51,8 @@ export function renderAppShell(input: {
   socialPreviewUrl?: string;
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
-  const pageTitle = `${input.projectName} — Gemini Direct + Playwright Compatibility Router`;
-  const pageDescription = 'GemRouterFE routes across Gemini API keys, Gemini direct auth, and Playwright Gemini Web while exposing OpenAI, DeepSeek, and Ollama compatible APIs.';
+  const pageTitle = `${input.projectName} — Gemini API Compatibility Router`;
+  const pageDescription = 'GemRouter routes across Gemini API keys while exposing OpenAI, DeepSeek, and Ollama compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
     : '';
@@ -494,6 +494,12 @@ export function renderAppShell(input: {
         min-height: 126px;
         resize: vertical;
       }
+      .compact-textarea {
+        min-height: 46px;
+        max-height: 180px;
+        overflow: auto;
+        resize: vertical;
+      }
       button {
         border: 1px solid var(--line-strong);
         border-radius: 4px;
@@ -569,6 +575,10 @@ export function renderAppShell(input: {
         display: grid;
         gap: 16px;
         grid-template-columns: 1.15fr 0.85fr;
+      }
+      .apps-shell {
+        grid-template-columns: minmax(240px, 0.58fr) minmax(620px, 1.42fr);
+        align-items: start;
       }
       .chart-card {
         display: grid;
@@ -668,6 +678,53 @@ export function renderAppShell(input: {
         white-space: pre-wrap;
         line-height: 1.65;
         overflow: auto;
+      }
+      .response-box.markdown-body {
+        white-space: normal;
+      }
+      .response-box.markdown-body > :first-child {
+        margin-top: 0;
+      }
+      .response-box.markdown-body > :last-child {
+        margin-bottom: 0;
+      }
+      .response-box.markdown-body h1,
+      .response-box.markdown-body h2,
+      .response-box.markdown-body h3 {
+        margin: 1.1em 0 0.45em;
+        line-height: 1.2;
+        letter-spacing: -0.03em;
+      }
+      .response-box.markdown-body p,
+      .response-box.markdown-body ul,
+      .response-box.markdown-body ol,
+      .response-box.markdown-body blockquote,
+      .response-box.markdown-body pre {
+        margin: 0.75em 0;
+      }
+      .response-box.markdown-body ul,
+      .response-box.markdown-body ol {
+        padding-left: 1.35em;
+      }
+      .response-box.markdown-body blockquote {
+        padding-left: 12px;
+        border-left: 2px solid var(--line-strong);
+        color: var(--muted);
+      }
+      .response-box.markdown-body code {
+        padding: 0.1em 0.35em;
+        border-radius: 3px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .response-box.markdown-body pre code {
+        display: block;
+        padding: 12px;
+        overflow: auto;
+        background: rgba(3, 5, 8, 0.68);
+        border: 1px solid var(--line);
+      }
+      .response-box.markdown-body a {
+        color: var(--accent);
       }
       .mono-box, .footer-note, .mono {
         font-family: "IBM Plex Mono", "SFMono-Regular", "Consolas", monospace;
@@ -774,6 +831,196 @@ export function renderAppShell(input: {
       .muted {
         color: var(--muted);
       }
+      .field-inline {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .field-help {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        font: 700 10px/1 "IBM Plex Mono", monospace;
+        cursor: help;
+      }
+      .model-picker {
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--surface-muted);
+      }
+      .model-picker summary {
+        padding: 12px 14px;
+        cursor: pointer;
+        color: var(--text);
+        list-style: none;
+      }
+      .model-picker summary::-webkit-details-marker {
+        display: none;
+      }
+      .model-picker-panel {
+        max-height: 280px;
+        overflow: auto;
+        border-top: 1px solid var(--line);
+      }
+      .model-picker-option {
+        display: grid;
+        gap: 2px;
+        padding: 10px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .model-picker-option.is-disabled {
+        opacity: 0.6;
+      }
+      .model-picker-option:last-child {
+        border-bottom: 0;
+      }
+      .model-picker-option input {
+        width: auto;
+        margin-right: 8px;
+      }
+      .model-picker-title {
+        color: var(--text);
+        font-size: 12px;
+      }
+      .apps-table {
+        min-width: 640px;
+      }
+      .apps-table th,
+      .apps-table td {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+      .image-preview-box {
+        min-height: 220px;
+        padding: 14px;
+        border-radius: 5px;
+        background: var(--surface-muted);
+        border: 1px solid var(--line);
+      }
+      .image-preview-grid {
+        display: grid;
+        gap: 12px;
+      }
+      .image-preview-card {
+        display: grid;
+        gap: 10px;
+      }
+      .image-preview-card img {
+        width: 100%;
+        border-radius: 5px;
+        border: 1px solid var(--line);
+        background: rgba(3, 5, 8, 0.68);
+      }
+      .app-footer {
+        margin-top: 16px;
+        padding: 18px;
+      }
+      .footer-grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: minmax(240px, 1.05fr) minmax(0, 1.95fr);
+        align-items: start;
+      }
+      .footer-brand {
+        display: grid;
+        gap: 12px;
+      }
+      .footer-brand-top {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.04em;
+      }
+      .footer-brand-mark {
+        width: 40px;
+        height: 40px;
+        color: var(--accent-soft);
+        flex: 0 0 auto;
+      }
+      .footer-brand-copy {
+        max-width: 26ch;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.7;
+      }
+      .footer-blog-link {
+        color: var(--text);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .footer-blog-link:hover {
+        color: var(--accent);
+      }
+      .footer-columns {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+      .footer-column {
+        display: grid;
+        gap: 8px;
+      }
+      .footer-column h4 {
+        color: var(--accent-soft);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .footer-column a {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .footer-column a:hover {
+        color: var(--accent);
+      }
+      .footer-bottom {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 16px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+      .footer-legal {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.7;
+      }
+      .footer-socials {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+      }
+      .footer-social-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 38px;
+        height: 38px;
+        border-radius: 4px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+      }
+      .footer-social-link:hover {
+        color: var(--accent);
+        border-color: var(--line-strong);
+      }
+      .footer-social-link svg {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+      }
       @media (max-width: 1120px) {
         .hero, .chart-grid, .shell-grid {
           grid-template-columns: 1fr;
@@ -786,6 +1033,12 @@ export function renderAppShell(input: {
         }
         .quota-shell {
           grid-template-columns: 1fr;
+        }
+        .footer-grid {
+          grid-template-columns: 1fr;
+        }
+        .footer-columns {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
       @media (max-width: 760px) {
@@ -807,6 +1060,13 @@ export function renderAppShell(input: {
           max-width: none;
           font-size: clamp(28px, 9vw, 44px);
         }
+        .footer-columns {
+          grid-template-columns: 1fr 1fr;
+        }
+        .footer-bottom {
+          flex-direction: column;
+          align-items: flex-start;
+        }
       }
     </style>
   </head>
@@ -818,7 +1078,7 @@ export function renderAppShell(input: {
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
             ${brandTitle}
-            <span>Three-source Gemini router with compatible API surfaces</span>
+            <span>Gemini API router with compatible API surfaces</span>
           </div>
         </div>
         <div class="nav-actions nav-menu">
@@ -848,9 +1108,7 @@ export function renderAppShell(input: {
                 </div>
               </form>
               <div id="auth-status" class="status" style="margin-top:10px"></div>
-              <div class="footer-note" style="margin-top:12px">
-                noVNC stays separately protected. This dashboard never injects the VNC password into the browser.
-              </div>
+              <div class="footer-note" style="margin-top:12px">Admin actions stay in this browser session and use the same backend APIs exposed by GemRouter.</div>
             </div>
           </div>
         </div>
@@ -881,15 +1139,15 @@ export function renderAppShell(input: {
         <div class="source-grid">
           <div class="source-card">
             <strong>${svgIcon('api')} Gemini API</strong>
-            <p>Multi-key pool with account aliases, local RPM/TPM/RPD ledger, model discovery, and quota-aware routing.</p>
+            <p>Multi-key pool with real account metadata in admin, local RPM/TPM/RPD ledger, model discovery, and quota-aware routing.</p>
           </div>
           <div class="source-card">
-            <strong>${svgIcon('bolt')} Direct Auth</strong>
-            <p>Uses cached Google/Gemini direct auth when available, useful for account-level access without browser automation.</p>
+            <strong>${svgIcon('route')} Fallback Routing</strong>
+            <p>Automatic backend-only fallback across configured API keys when an upstream key is exhausted, rate-limited, or temporarily unavailable.</p>
           </div>
           <div class="source-card">
-            <strong>${svgIcon('browser')} Playwright Web</strong>
-            <p>Headed Gemini Web fallback for logged-in sessions and UI-only tasks that the official API does not cover.</p>
+            <strong>${svgIcon('chart')} Operator Surface</strong>
+            <p>Compatibility controls, prompt testing, quota visibility, app management, and interaction telemetry in one admin UI.</p>
           </div>
         </div>
       </section>
@@ -898,7 +1156,7 @@ export function renderAppShell(input: {
         <div class="section-head">
           <div>
             <h2 class="section-title">${svgIcon('activity')} Guest Overview</h2>
-            <p class="section-copy">Guest view hides prompts, app names and API keys. It shows aggregate usage plus safe Gemini API quota aliases.</p>
+            <p class="section-copy">Guest view hides prompts, app names and raw key metadata. It shows aggregate usage plus sanitized Gemini API quota state.</p>
           </div>
           <div id="public-runtime-pills" class="meta-row"></div>
         </div>
@@ -994,7 +1252,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h2 class="section-title">Runtime Diagnostics</h2>
-              <p class="section-copy">Router counters, backend routing state, browser runtime, token volume and operator feedback.</p>
+              <p class="section-copy">Router counters, backend routing state, token volume, and operator feedback.</p>
             </div>
             <div id="runtime-pills" class="meta-row"></div>
           </div>
@@ -1005,7 +1263,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">Backend Routing</h3>
-              <p class="section-copy">Embedded Gemini direct auth is preferred when cached Google auth is available. Playwright remains the authenticated fallback path.</p>
+              <p class="section-copy">Requests stay on official Gemini API keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
             </div>
             <div id="backend-pills" class="meta-row"></div>
           </div>
@@ -1017,10 +1275,10 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Provider Diagnostics</h3>
-              <p class="section-copy">Admin-only raw backend state for Gemini API, direct auth and fallback investigation.</p>
+              <p class="section-copy">Admin-only raw backend state for the Gemini API key pool and fallback investigation.</p>
             </div>
           </div>
-          <div id="provider-output" class="mono-box">Loading direct model and quota snapshot…</div>
+          <div id="provider-output" class="mono-box">Loading model and quota snapshot…</div>
         </section>
 
 
@@ -1037,12 +1295,14 @@ export function renderAppShell(input: {
                 <label>
                   Primary surface
                   <select name="defaultSurface">
+                    <option value="gemrouter">gemrouter</option>
                     <option value="openai">openai</option>
                     <option value="deepseek">deepseek</option>
                     <option value="ollama">ollama</option>
                   </select>
                 </label>
                 <div class="button-row">
+                  <label class="chip"><input type="checkbox" name="enabledSurfaces" value="gemrouter" style="margin-right:8px" />gemrouter</label>
                   <label class="chip"><input type="checkbox" name="enabledSurfaces" value="openai" style="margin-right:8px" />openai</label>
                   <label class="chip"><input type="checkbox" name="enabledSurfaces" value="deepseek" style="margin-right:8px" />deepseek</label>
                   <label class="chip"><input type="checkbox" name="enabledSurfaces" value="ollama" style="margin-right:8px" />ollama</label>
@@ -1052,6 +1312,39 @@ export function renderAppShell(input: {
                 </div>
                 <div id="compatibility-status" class="status"></div>
               </form>
+              <div class="section-head" style="margin-top:24px">
+                <div>
+                  <h3 class="section-title">Prompt Lab</h3>
+                  <p class="section-copy">Test prompts against the live router with the selected app policy and current backend selection rules.</p>
+                </div>
+              </div>
+              <form id="prompt-form">
+                <label>
+                  App
+                  <select name="appId" id="prompt-app"></select>
+                </label>
+                <label>
+                  Model
+                  <select name="model" id="prompt-model"></select>
+                </label>
+                <label>
+                  System prompt
+                  <textarea class="compact-textarea" rows="1" name="systemPrompt" placeholder="Optional system instruction"></textarea>
+                </label>
+                <label>
+                  User prompt
+                  <textarea class="compact-textarea" rows="1" name="prompt" placeholder="Write a prompt to test" required></textarea>
+                </label>
+                <label>
+                  Session hint
+                  <input type="text" name="sessionHint" placeholder="Optional session hint" />
+                </label>
+                <div class="button-row">
+                  <button type="submit">Run prompt</button>
+                </div>
+                <div id="prompt-status" class="status"></div>
+              </form>
+              <div id="prompt-response" class="response-box markdown-body"><div class="muted">No prompt run yet.</div></div>
             </div>
             <div>
               <div id="compatibility-output" class="mono-box">Loading compatibility surface snapshot…</div>
@@ -1059,98 +1352,54 @@ export function renderAppShell(input: {
                 For Eliza with <span class="mono">modelProvider=ollama</span>, use <span class="mono">OLLAMA_SERVER_URL</span>
                 without <span class="mono">/api</span>.
               </div>
+              <div class="section-head" style="margin-top:18px">
+                <div>
+                  <h3 class="section-title" style="font-size:15px">${svgIcon('api')} Generated Image</h3>
+                  <p class="section-copy">Shown here when the selected model returns inline image output.</p>
+                </div>
+              </div>
+              <div id="prompt-image-output" class="image-preview-box"><div class="muted">No generated image yet.</div></div>
             </div>
           </div>
         </section>
-
-        <div class="shell-grid">
-          <section class="panel section">
-            <div class="section-head">
-              <div>
-                <h3 class="section-title">Prompt Lab</h3>
-                <p class="section-copy">Test prompts against the live router with the selected app policy and current backend selection rules.</p>
-              </div>
-            </div>
-            <form id="prompt-form">
-              <label>
-                App
-                <select name="appId" id="prompt-app"></select>
-              </label>
-              <label>
-                Model
-                <select name="model" id="prompt-model"></select>
-              </label>
-              <label>
-                System prompt
-                <textarea name="systemPrompt" placeholder="Optional system instruction"></textarea>
-              </label>
-              <label>
-                User prompt
-                <textarea name="prompt" placeholder="Write a prompt to test" required></textarea>
-              </label>
-              <label>
-                Session hint
-                <input type="text" name="sessionHint" placeholder="Optional session hint" />
-              </label>
-              <div class="button-row">
-                <label class="chip">
-                  <input type="checkbox" name="stateful" style="margin-right:8px" />
-                  Reuse stateful session
-                </label>
-              </div>
-              <div class="button-row">
-                <button type="submit">Run prompt</button>
-              </div>
-              <div id="prompt-status" class="status"></div>
-            </form>
-            <div id="prompt-response" class="response-box">No prompt run yet.</div>
-          </section>
-
-          <section class="panel section">
-            <div class="section-head">
-              <div>
-                <h3 class="section-title">Browser Session</h3>
-                <p class="section-copy">Visual access to the headed Gemini browser for recovery and inspection through noVNC.</p>
-              </div>
-              <a id="open-vnc-link" class="chip good" href="#" target="_blank" rel="noreferrer">Open noVNC</a>
-            </div>
-            <iframe id="vnc-frame" src="about:blank" title="Gemini noVNC"></iframe>
-          </section>
-        </div>
 
         <section class="panel section">
           <div class="section-head">
             <div>
               <h3 class="section-title">Apps and API Keys</h3>
-              <p class="section-copy">Create apps, rotate API keys, and manage browser-facing limits from one console.</p>
+              <p class="section-copy">Create apps, rotate API keys, and manage client-facing limits from one console.</p>
             </div>
           </div>
-          <div class="shell-grid">
+          <div class="shell-grid apps-shell">
             <div>
               <form id="app-form">
                 <input type="hidden" name="id" />
                 <label>
                   App name
-                  <input type="text" name="name" placeholder="frontend-app" required />
+                  <input type="text" name="name" placeholder="client-app" required />
                 </label>
                 <label>
                   Allowed origins
-                  <textarea name="allowedOrigins" placeholder="https://app.example.com, http://localhost:*"></textarea>
+                  <textarea class="compact-textarea" rows="1" name="allowedOrigins" placeholder="https://app.example.com, http://localhost:*"></textarea>
                 </label>
                 <label>
                   Allowed models
-                  <input type="text" name="allowedModels" placeholder="${escapeHtml(input.modelIds.join(', '))}" />
+                  <details id="allowed-models-picker" class="model-picker">
+                    <summary>Select allowed models</summary>
+                    <div id="allowed-models-options" class="model-picker-panel"></div>
+                  </details>
+                  <div id="allowed-models-summary" class="footer-note">Empty selection uses the bootstrap defaults.</div>
                 </label>
                 <label>
                   Session namespace
-                  <input type="text" name="sessionNamespace" placeholder="frontend-app" />
+                  <input type="text" name="sessionNamespace" placeholder="client-app" />
                 </label>
                 <label>
-                  Rate limit per minute
+                  <span class="field-inline">Rate limit per minute <span class="field-help" title="Zero for no limits">?</span></span>
                   <input type="number" min="0" step="1" name="rateLimitPerMinute" value="30" />
                 </label>
                 <label>
-                  Max concurrency
+                  <span class="field-inline">Max concurrency <span class="field-help" title="Zero for no limits">?</span></span>
                   <input type="number" min="0" step="1" name="maxConcurrency" value="2" />
                 </label>
                 <div class="button-row">
@@ -1161,7 +1410,7 @@ export function renderAppShell(input: {
               </form>
             </div>
             <div class="table-wrap">
-              <table class="table">
+              <table class="table apps-table">
                 <thead>
                   <tr>
                     <th>App</th>
@@ -1189,6 +1438,7 @@ export function renderAppShell(input: {
                 <tr>
                   <th>When</th>
                   <th>App</th>
+                  <th>Model</th>
                   <th>Prompt</th>
                   <th>Output</th>
                   <th>Usage</th>
@@ -1200,6 +1450,72 @@ export function renderAppShell(input: {
           </div>
         </section>
       </section>
+      <footer class="panel app-footer">
+        <div class="footer-grid">
+          <div class="footer-brand">
+            <div class="footer-brand-top">
+              <svg class="footer-brand-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M20 4L6 36H14L20 22L26 36H34L20 4Z" fill="currentColor" />
+                <path d="M20 12V22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+              <span>AIRewardrop</span>
+            </div>
+            <p class="footer-brand-copy">Autonomous agent infrastructure for crypto.</p>
+            <a class="footer-blog-link" href="https://airewardrop.xyz/blog" target="_blank" rel="noreferrer">Our Blog →</a>
+          </div>
+          <div class="footer-columns">
+            <div class="footer-column">
+              <h4>Navigate</h4>
+              <a href="https://airewardrop.xyz/products" target="_blank" rel="noreferrer">Products</a>
+              <a href="https://airewardrop.xyz/agents" target="_blank" rel="noreferrer">Agents</a>
+              <a href="https://airewardrop.xyz/roadmap" target="_blank" rel="noreferrer">Roadmap</a>
+              <a href="https://airewardrop.xyz/clients" target="_blank" rel="noreferrer">Clients</a>
+            </div>
+            <div class="footer-column">
+              <h4>Resources</h4>
+              <a href="https://airewardrop.xyz/commands" target="_blank" rel="noreferrer">User Manual</a>
+              <a href="https://airewardrop.xyz/tokenomics" target="_blank" rel="noreferrer">Tokenomics</a>
+              <a href="https://airewardrop.xyz/api-plugins" target="_blank" rel="noreferrer">API &amp; Plugins</a>
+              <a href="https://airewardrop.xyz/faq" target="_blank" rel="noreferrer">FAQ</a>
+            </div>
+            <div class="footer-column">
+              <h4>Community</h4>
+              <a href="https://t.me/AIRewardrop" target="_blank" rel="noreferrer">Telegram Channel</a>
+              <a href="https://t.me/AIR3Community" target="_blank" rel="noreferrer">Telegram Community</a>
+              <a href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer">Discord</a>
+            </div>
+            <div class="footer-column">
+              <h4>Legal</h4>
+              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Terms of Service</a>
+              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Privacy Policy</a>
+              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Cookie Policy</a>
+            </div>
+          </div>
+        </div>
+        <div class="footer-bottom">
+          <div class="footer-legal">
+            <div>© 2025 AIRewardrop. All rights reserved.</div>
+            <div>Disclaimer: Not financial advice. Always do your own research.</div>
+          </div>
+          <div class="footer-socials">
+            <a class="footer-social-link" href="https://x.com/AIRewardrop" target="_blank" rel="noreferrer" aria-label="X / Twitter">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+              </svg>
+            </a>
+            <a class="footer-social-link" href="https://t.me/AIR3Community" target="_blank" rel="noreferrer" aria-label="Telegram">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.043 7.924c-.234-.94-.83-1.21-1.42.21L11.79 12.2l-3.26-1.026c-1.154-.384-1.153-1.144.24-1.523l8.693-2.9c.9-.3 1.623.192 1.348 1.487l-1.9 8.54c-.23 1.053-1.002 1.3-1.802.82l-3.514-2.58-1.7 1.64c-.19.19-.35.35-.69.35-.46 0-.62-.16-.69-.77l.25-2.22 5.02-4.52c.46-.43-.1-.68-.69-.26l-6.3 3.97-3.34-1.04c-1.02-.31-1.05-.98.24-1.42l1.33-.45z" />
+              </svg>
+            </a>
+            <a class="footer-social-link" href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer" aria-label="Discord">
+              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M20.317 4.369A19.791 19.791 0 0016.556 3c-.215.39-.463.917-.636 1.333a18.626 18.626 0 00-3.848 0A12.64 12.64 0 0011.436 3a19.736 19.736 0 00-3.762 1.385c-2.381 3.49-3.025 6.892-2.701 10.24a19.903 19.903 0 003.996 2.02c.33-.452.624-.934.873-1.442a12.815 12.815 0 001.696.136c.6.021 1.2-.02 1.794-.123.253.5.546.98.872 1.432a19.758 19.758 0 004.003-2.03c.332-3.348-.321-6.75-2.703-10.239zM9.845 14.9c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.636 1.606-1.43 1.606zm4.31 0c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.627 1.606-1.43 1.606z" />
+              </svg>
+            </a>
+          </div>
+        </div>
+      </footer>
     </main>
 
     <script>
@@ -1210,8 +1526,8 @@ export function renderAppShell(input: {
       const state = {
         apps: [],
         compatibility: null,
-        vncUrl: '',
         authenticated: false,
+        modelCatalog: [],
         username: '',
         publicSummary: null,
         publicRefreshInFlight: false,
@@ -1257,13 +1573,15 @@ export function renderAppShell(input: {
       const promptModel = document.getElementById('prompt-model');
       const promptStatus = document.getElementById('prompt-status');
       const promptResponse = document.getElementById('prompt-response');
-      const openVncLink = document.getElementById('open-vnc-link');
-      const vncFrame = document.getElementById('vnc-frame');
+      const promptImageOutput = document.getElementById('prompt-image-output');
       const appForm = document.getElementById('app-form');
       const appStatus = document.getElementById('app-status');
       const appReset = document.getElementById('app-reset');
       const appsTable = document.getElementById('apps-table');
       const interactionsTable = document.getElementById('interactions-table');
+      const allowedModelsPicker = document.getElementById('allowed-models-picker');
+      const allowedModelsOptions = document.getElementById('allowed-models-options');
+      const allowedModelsSummary = document.getElementById('allowed-models-summary');
 
       function fmtNumber(value) {
         return new Intl.NumberFormat().format(value || 0);
@@ -1296,6 +1614,12 @@ export function renderAppShell(input: {
         setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
       });
       setTheme(savedTheme);
+      Array.from(document.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
+        autosizeTextarea(textarea);
+        textarea.addEventListener('input', function() {
+          autosizeTextarea(textarea);
+        });
+      });
 
       async function request(url, options = {}) {
         const response = await fetch(url, {
@@ -1315,6 +1639,140 @@ export function renderAppShell(input: {
         return body;
       }
 
+      function autosizeTextarea(textarea) {
+        if (!textarea || !textarea.classList || !textarea.classList.contains('compact-textarea')) return;
+        textarea.style.height = '46px';
+        const nextHeight = Math.max(46, Math.min(textarea.scrollHeight, 180));
+        textarea.style.height = nextHeight + 'px';
+      }
+
+      function normalizeMarkdownInline(value) {
+        return value
+          .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+      }
+
+      function renderMarkdown(markdown) {
+        const source = String(markdown || '').trim();
+        if (!source) return '<div class="muted">No text response returned.</div>';
+        const escaped = escapeHtml(source).replace(/\r\n/g, '\n');
+        const blocks = [];
+        const lines = escaped.split('\n');
+        let paragraph = [];
+        let listType = '';
+        let listItems = [];
+        let inCodeBlock = false;
+        let codeLines = [];
+
+        function flushParagraph() {
+          if (paragraph.length === 0) return;
+          blocks.push('<p>' + normalizeMarkdownInline(paragraph.join(' ')) + '</p>');
+          paragraph = [];
+        }
+
+        function flushList() {
+          if (!listType || listItems.length === 0) return;
+          blocks.push('<' + listType + '>' + listItems.map(function(item) {
+            return '<li>' + normalizeMarkdownInline(item) + '</li>';
+          }).join('') + '</' + listType + '>');
+          listType = '';
+          listItems = [];
+        }
+
+        function flushCodeBlock() {
+          if (!inCodeBlock) return;
+          blocks.push('<pre><code>' + codeLines.join('\n') + '</code></pre>');
+          inCodeBlock = false;
+          codeLines = [];
+        }
+
+        lines.forEach(function(line) {
+          if (line.trim().startsWith('\`\`\`')) {
+            flushParagraph();
+            flushList();
+            if (inCodeBlock) {
+              flushCodeBlock();
+            } else {
+              inCodeBlock = true;
+              codeLines = [];
+            }
+            return;
+          }
+
+          if (inCodeBlock) {
+            codeLines.push(line);
+            return;
+          }
+
+          if (!line.trim()) {
+            flushParagraph();
+            flushList();
+            return;
+          }
+
+          const heading = line.match(/^(#{1,3})\s+(.+)$/);
+          if (heading) {
+            flushParagraph();
+            flushList();
+            const level = String(heading[1]).length;
+            blocks.push('<h' + level + '>' + normalizeMarkdownInline(heading[2]) + '</h' + level + '>');
+            return;
+          }
+
+          const quote = line.match(/^&gt;\s?(.*)$/);
+          if (quote) {
+            flushParagraph();
+            flushList();
+            blocks.push('<blockquote>' + normalizeMarkdownInline(quote[1]) + '</blockquote>');
+            return;
+          }
+
+          const unordered = line.match(/^[-*]\s+(.+)$/);
+          if (unordered) {
+            flushParagraph();
+            if (listType && listType !== 'ul') flushList();
+            listType = 'ul';
+            listItems.push(unordered[1]);
+            return;
+          }
+
+          const ordered = line.match(/^\d+\.\s+(.+)$/);
+          if (ordered) {
+            flushParagraph();
+            if (listType && listType !== 'ol') flushList();
+            listType = 'ol';
+            listItems.push(ordered[1]);
+            return;
+          }
+
+          flushList();
+          paragraph.push(line);
+        });
+
+        flushParagraph();
+        flushList();
+        flushCodeBlock();
+        return blocks.join('') || '<div class="muted">No text response returned.</div>';
+      }
+
+      function renderPromptImages(images) {
+        if (!Array.isArray(images) || images.length === 0) {
+          promptImageOutput.innerHTML = '<div class="muted">No generated image yet.</div>';
+          return;
+        }
+        promptImageOutput.innerHTML = '<div class="image-preview-grid">' + images.map(function(image, index) {
+          const mimeType = typeof image.mimeType === 'string' && image.mimeType.trim() ? image.mimeType.trim() : 'image/png';
+          const data = typeof image.data === 'string' ? image.data.trim() : '';
+          const src = 'data:' + mimeType + ';base64,' + data;
+          return '<div class="image-preview-card">' +
+            '<img src="' + src + '" alt="Generated image ' + escapeHtml(String(index + 1)) + '" />' +
+            '<div class="footer-note mono">' + escapeHtml(mimeType) + '</div>' +
+          '</div>';
+        }).join('') + '</div>';
+      }
+
       function setAdminVisible(enabled) {
         adminDashboard.classList.toggle('hidden', !enabled);
       }
@@ -1323,7 +1781,7 @@ export function renderAppShell(input: {
         const pills = [];
         const runtime = summary.runtime || {};
         const compatibility = summary.compatibility || {};
-        pills.push('<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'openai') + '</span>');
+        pills.push('<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'gemrouter') + '</span>');
         pills.push('<span class="chip">API surfaces ' + escapeHtml((compatibility.enabledSurfaces || []).join(', ') || 'n/a') + '</span>');
         if (runtime.activeDefaultBackend) {
           pills.push('<span class="chip">Default backend ' + escapeHtml(runtime.activeDefaultBackend) + '</span>');
@@ -1331,15 +1789,9 @@ export function renderAppShell(input: {
         if (runtime.lastBackendUsed) {
           pills.push('<span class="chip">Last backend ' + escapeHtml(runtime.lastBackendUsed) + '</span>');
         }
-        if (runtime.geminiCliAvailable !== undefined) {
-          pills.push('<span class="chip ' + (runtime.geminiCliAvailable ? 'good' : 'warn') + '">' + (runtime.geminiCliAvailable ? 'Direct backend available' : 'Direct backend attention') + '</span>');
+        if (runtime.geminiApiAvailable !== undefined) {
+          pills.push('<span class="chip ' + (runtime.geminiApiAvailable ? 'good' : 'warn') + '">' + (runtime.geminiApiAvailable ? 'Gemini API available' : 'Gemini API attention') + '</span>');
         }
-        if (runtime.geminiCliReady !== undefined) {
-          pills.push('<span class="chip ' + (runtime.geminiCliReady ? 'good' : 'warn') + '">' + (runtime.geminiCliReady ? 'Google auth ready' : 'Google auth attention') + '</span>');
-        }
-        pills.push('<span class="chip ' + (runtime.profileReady ? 'good' : 'warn') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile attention') + '</span>');
-        pills.push('<span class="chip">Open tabs ' + escapeHtml(String(runtime.openPages || 0)) + '</span>');
-        pills.push('<span class="chip">Busy ' + escapeHtml(String(runtime.busyOpenTabs || 0)) + '</span>');
         publicRuntimePills.innerHTML = pills.join('');
       }
 
@@ -1391,36 +1843,185 @@ export function renderAppShell(input: {
         }).join('') || '<div class="muted">No compatibility traffic logged yet.</div>';
       }
 
-      function fillModelOptions(models) {
-        promptModel.innerHTML = models
-          .map(function(model) { return '<option value="' + escapeHtml(model) + '">' + escapeHtml(model) + '</option>'; })
+      function modelId(entry) {
+        return entry && typeof entry.id === 'string' ? entry.id.trim() : '';
+      }
+
+      function modelDisplayName(entry) {
+        const displayName = entry && typeof entry.displayName === 'string' ? entry.displayName.trim() : '';
+        return displayName || modelId(entry);
+      }
+
+      function modelCapabilities(entry) {
+        return entry && entry.capabilities && typeof entry.capabilities === 'object' ? entry.capabilities : {};
+      }
+
+      function modelSupportsChat(entry) {
+        return modelCapabilities(entry).chat === true;
+      }
+
+      function modelSupportsImage(entry) {
+        return modelCapabilities(entry).imageGeneration === true;
+      }
+
+      function modelSupportsRouter(entry) {
+        return modelSupportsChat(entry) || modelSupportsImage(entry);
+      }
+
+      function modelCapabilityTags(entry) {
+        const capabilities = modelCapabilities(entry);
+        return [
+          capabilities.chat ? 'chat' : '',
+          capabilities.imageGeneration ? 'image' : '',
+          capabilities.live ? 'live' : '',
+          capabilities.nativeAudio ? 'native-audio' : '',
+          capabilities.tts ? 'tts' : '',
+          capabilities.embeddings ? 'embeddings' : '',
+          capabilities.longRunning ? 'long-running' : '',
+        ].filter(Boolean);
+      }
+
+      function getModelCatalog() {
+        const entries = Array.isArray(state.modelCatalog) ? state.modelCatalog : [];
+        if (entries.length > 0) return entries;
+        return (bootstrap.modelIds || []).map(function(id) {
+          return {
+            id: id,
+            displayName: id,
+            label: id,
+            capabilities: {
+              chat: true,
+              imageGeneration: /image|nano-banana/i.test(String(id)),
+            },
+          };
+        });
+      }
+
+      function getAllowedModelSelection() {
+        return Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"]:checked'))
+          .map(function(input) { return String(input.value || '').trim(); })
+          .filter(Boolean);
+      }
+
+      function setAllowedModelSelection(models) {
+        const selected = new Set((Array.isArray(models) ? models : []).map(function(model) { return String(model || '').trim(); }).filter(Boolean));
+        Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"]')).forEach(function(input) {
+          if (!input.disabled) {
+            input.checked = selected.has(String(input.value || '').trim());
+          }
+        });
+        updateAllowedModelsSummary();
+      }
+
+      function updateAllowedModelsSummary() {
+        const selected = getAllowedModelSelection();
+        const preview = selected.length > 3
+          ? selected.slice(0, 3).join(', ') + ', +' + String(selected.length - 3) + ' more'
+          : selected.join(', ');
+        const summary = allowedModelsPicker ? allowedModelsPicker.querySelector('summary') : null;
+        if (summary) {
+          summary.textContent = selected.length > 0
+            ? ('Select allowed models (' + selected.length + ' selected)')
+            : 'Select allowed models';
+        }
+        allowedModelsSummary.textContent = selected.length > 0
+          ? (selected.length + ' selected: ' + preview)
+          : 'Empty selection uses the bootstrap defaults.';
+      }
+
+      function renderAllowedModelsPicker(modelCatalog, selectedModels) {
+        const selected = new Set((Array.isArray(selectedModels) ? selectedModels : []).map(function(model) { return String(model || '').trim(); }).filter(Boolean));
+        const sourceEntries = Array.isArray(modelCatalog) && modelCatalog.length > 0 ? modelCatalog : getModelCatalog();
+        const entries = sourceEntries
+          .slice()
+          .sort(function(left, right) {
+            const leftCompatible = modelSupportsRouter(left) ? 0 : 1;
+            const rightCompatible = modelSupportsRouter(right) ? 0 : 1;
+            if (leftCompatible !== rightCompatible) return leftCompatible - rightCompatible;
+            return modelId(left).localeCompare(modelId(right));
+          });
+
+        allowedModelsOptions.innerHTML = entries.map(function(entry) {
+          const id = modelId(entry);
+          const compatible = modelSupportsRouter(entry);
+          const capabilityTags = modelCapabilityTags(entry);
+          const notes = [];
+          if (modelDisplayName(entry) && modelDisplayName(entry) !== id) notes.push(modelDisplayName(entry));
+          if (capabilityTags.length > 0) notes.push(capabilityTags.join(', '));
+          if (!compatible) notes.push('not exposed by the current router');
+          return '<label class="model-picker-option' + (compatible ? '' : ' is-disabled') + '">' +
+            '<div><input type="checkbox" name="allowedModels" value="' + escapeHtml(id) + '"' + (selected.has(id) ? ' checked' : '') + (compatible ? '' : ' disabled') + ' />' +
+              '<span class="model-picker-title">' + escapeHtml(id) + '</span></div>' +
+            '<div class="footer-note">' + escapeHtml(notes.join(' · ') || 'Gemini API model') + '</div>' +
+          '</label>';
+        }).join('') || '<div class="footer-note" style="padding:12px 14px">No Gemini model catalog available yet.</div>';
+
+        updateAllowedModelsSummary();
+      }
+
+      function findActiveAppById(appId) {
+        return state.apps.find(function(app) {
+          return !app.revokedAt && app.id === appId;
+        }) || null;
+      }
+
+      function fillModelOptions(selectedModel) {
+        const app = findActiveAppById(promptApp.value);
+        const allowed = new Set(app && Array.isArray(app.allowedModels) ? app.allowedModels : []);
+        const options = getModelCatalog().filter(function(entry) {
+          const id = modelId(entry);
+          return modelSupportsRouter(entry) && id && (allowed.size === 0 || allowed.has(id));
+        });
+        const nextSelected = typeof selectedModel === 'string' && selectedModel.trim() ? selectedModel.trim() : promptModel.value;
+        promptModel.innerHTML = options
+          .map(function(entry) {
+            const id = modelId(entry);
+            const label = modelSupportsImage(entry)
+              ? id + ' [image]'
+              : id;
+            return '<option value="' + escapeHtml(id) + '">' + escapeHtml(label) + '</option>';
+          })
           .join('');
+        if (options.length === 0) {
+          promptModel.innerHTML = '<option value="">No compatible models enabled for this app</option>';
+          promptModel.disabled = true;
+          return;
+        }
+        promptModel.disabled = false;
+        if (nextSelected && options.some(function(entry) { return modelId(entry) === nextSelected; })) {
+          promptModel.value = nextSelected;
+        } else {
+          promptModel.value = modelId(options[0]);
+        }
       }
 
       function fillAppOptions(apps) {
-        promptApp.innerHTML = apps
-          .filter(function(app) { return !app.revokedAt; })
+        const previous = promptApp.value;
+        const activeApps = apps.filter(function(app) { return !app.revokedAt; });
+        promptApp.innerHTML = activeApps
           .map(function(app) { return '<option value="' + escapeHtml(app.id) + '">' + escapeHtml(app.name) + '</option>'; })
           .join('');
+        if (previous && activeApps.some(function(app) { return app.id === previous; })) {
+          promptApp.value = previous;
+        } else if (activeApps[0]) {
+          promptApp.value = activeApps[0].id;
+        }
+        fillModelOptions();
       }
 
       function renderRuntimePills(data) {
         const runtime = data.runtime || {};
-        const llm = data.llm || {};
         const compatibility = data.compatibility || {};
         const routing = data.routing || {};
         const backends = data.backends || {};
-        const geminiCli = backends.geminiCli || {};
+        const geminiApi = backends.geminiApi || {};
         runtimePills.innerHTML = [
           '<span class="chip good">Admin session</span>',
-          '<span class="chip ' + (runtime.profileReady ? 'good' : 'bad') + '">' + (runtime.profileReady ? 'Profile ready' : 'Profile missing') + '</span>',
-          '<span class="chip ' + (geminiCli.available ? 'good' : 'warn') + '">' + (geminiCli.available ? 'Direct backend available' : 'Direct backend attention') + '</span>',
-          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'Google auth ready' : 'Google auth missing') + '</span>',
+          '<span class="chip">Backend-only</span>',
+          '<span class="chip ' + (geminiApi.available ? 'good' : 'warn') + '">' + (geminiApi.available ? 'Gemini API available' : 'Gemini API attention') + '</span>',
           '<span class="chip">Default backend ' + escapeHtml(routing.activeDefaultBackend || routing.configuredDefaultBackend || 'auto') + '</span>',
           '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
-          '<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'openai') + '</span>',
-          '<span class="chip">Open tabs ' + escapeHtml(String(llm.openPages || 0)) + '</span>',
-          '<span class="chip">Busy ' + escapeHtml(String(llm.busyOpenTabs || 0)) + '</span>',
+          '<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'gemrouter') + '</span>',
           '<span class="chip">Apps ' + escapeHtml(String(runtime.apps || 0)) + '</span>',
         ].join('');
       }
@@ -1428,12 +2029,10 @@ export function renderAppShell(input: {
       function renderBackendDiagnostics(data) {
         const routing = data.routing || {};
         const backends = data.backends || {};
-        const geminiCli = backends.geminiCli || {};
-        const playwright = backends.playwright || {};
+        const geminiApi = backends.geminiApi || {};
         backendPills.innerHTML = [
-          '<span class="chip ' + (geminiCli.available ? 'good' : 'warn') + '">' + (geminiCli.available ? 'Direct backend available' : 'Direct backend attention') + '</span>',
-          '<span class="chip ' + (geminiCli.authReady ? 'good' : 'warn') + '">' + (geminiCli.authReady ? 'Google auth ready' : 'Google auth missing') + '</span>',
-          '<span class="chip ' + (playwright.profileReady ? 'good' : 'warn') + '">' + (playwright.profileReady ? 'Playwright ready' : 'Playwright attention') + '</span>',
+          '<span class="chip ' + (geminiApi.available ? 'good' : 'warn') + '">' + (geminiApi.available ? 'Gemini API available' : 'Gemini API attention') + '</span>',
+          '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
           '<span class="chip">Order ' + escapeHtml((data.backendOrder || []).join(' -> ') || 'n/a') + '</span>',
           '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
         ].join('');
@@ -1446,44 +2045,25 @@ export function renderAppShell(input: {
           'last_fallback_reason=' + String(routing.lastFallbackReason || ''),
           'last_resolution_at=' + String(routing.lastResolutionAt || ''),
           '',
-          '[gemini_direct]',
-          'enabled=' + String(Boolean(geminiCli.enabled)),
-          'available=' + String(Boolean(geminiCli.available)),
-          'runtime=' + String(geminiCli.runtime || ''),
-          'auth_cache_detected=' + String(Boolean(geminiCli.authCacheDetected)),
-          'auth_ready=' + String(Boolean(geminiCli.authReady)),
-          'auth_verified_at=' + String(geminiCli.authVerifiedAt || ''),
-          'active_account=' + String(geminiCli.activeAccount || ''),
-          'model=' + String(geminiCli.model || ''),
-          'models=' + String((geminiCli.models || []).join(',')),
-          'project_id=' + String(geminiCli.projectId || ''),
-          'user_tier=' + String(geminiCli.userTier || ''),
-          'user_tier_name=' + String(geminiCli.userTierName || ''),
-          'timeout_ms=' + String(geminiCli.timeoutMs || ''),
-          'quota_refresh_ms=' + String(geminiCli.quotaRefreshMs || ''),
-          'quota_authoritative=' + String(Boolean(geminiCli.quotaAuthoritative)),
-          'quota_updated_at=' + String(geminiCli.quotaUpdatedAt || ''),
-          'quota_last_error=' + String(geminiCli.quotaLastError || ''),
-          'last_mapped_error_code=' + String(geminiCli.lastMappedErrorCode || ''),
-          'last_failure_at=' + String(geminiCli.lastFailureAt || ''),
-          'last_resolved_model=' + String(geminiCli.lastResolvedModel || ''),
-          '',
-          '[direct_upstream]',
-          'method=' + String((geminiCli.lastUpstreamError && geminiCli.lastUpstreamError.method) || ''),
-          'status_code=' + String((geminiCli.lastUpstreamError && geminiCli.lastUpstreamError.statusCode) || ''),
-          'google_status=' + String((geminiCli.lastUpstreamError && geminiCli.lastUpstreamError.googleStatus) || ''),
-          'google_reason=' + String((geminiCli.lastUpstreamError && geminiCli.lastUpstreamError.googleReason) || ''),
-          'message=' + String((geminiCli.lastUpstreamError && geminiCli.lastUpstreamError.message) || ''),
-          '',
-          '[playwright]',
-          'profile_ready=' + String(Boolean(playwright.profileReady)),
-          'profile_namespace=' + String(playwright.profileNamespace || ''),
-          'headless=' + String(Boolean(playwright.headless)),
-          'profile_dir=' + String(playwright.profileDir || ''),
+          '[gemini_api]',
+          'enabled=' + String(Boolean(geminiApi.enabled)),
+          'available=' + String(Boolean(geminiApi.available)),
+          'configured_accounts=' + String(geminiApi.configuredKeyCount || 0),
+          'usable_accounts=' + String(geminiApi.usableKeyCount || 0),
+          'default_tier=' + String(geminiApi.defaultTier || ''),
+          'base_url=' + String(geminiApi.baseUrl || ''),
+          'version=' + String(geminiApi.version || ''),
+          'last_account=' + String(geminiApi.lastSelectedKeyId || ''),
+          'last_quota_group=' + String(geminiApi.lastSelectedQuotaGroup || ''),
+          'last_model=' + String(geminiApi.lastResolvedModel || ''),
+          'last_error=' + String(geminiApi.lastError || ''),
+          'last_failure_at=' + String(geminiApi.lastFailureAt || ''),
+          'last_success_at=' + String(geminiApi.lastSuccessAt || ''),
+          'last_latency_ms=' + String(geminiApi.lastLatencyMs || ''),
         ].join('\\n');
-        backendHint.textContent = geminiCli.loginHint
-          ? 'Bootstrap Google auth with: ' + geminiCli.loginHint
-          : 'Google login helper unavailable.';
+        backendHint.textContent = geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.message
+          ? 'Last upstream error: ' + geminiApi.lastUpstreamError.message
+          : 'Fallback stays on the Gemini API key pool; there is no browser or CLI backend.';
       }
 
       function renderProviderState(data) {
@@ -1493,6 +2073,9 @@ export function renderAppShell(input: {
         const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
         const quotaGroups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
         const models = Array.isArray(provider.models) ? provider.models : [];
+        const supportedModelIds = models
+          .map(function(model) { return model && typeof model.id === 'string' ? model.id.trim() : ''; })
+          .filter(Boolean);
         const directModels = models.filter(function(model) { return model && model.kind === 'gemini-api'; });
         const directModelCount = directModels.length || provider.directModelCount || 0;
         providerPills.innerHTML = [
@@ -1500,13 +2083,12 @@ export function renderAppShell(input: {
           '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
           '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
           '<span class="chip">Last API model ' + escapeHtml(String(geminiApi.lastResolvedModel || 'n/a')) + '</span>',
-          '<span class="chip">Direct state ' + escapeHtml(String(provider.lastDirectRequestState || 'unknown')) + '</span>',
-          '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || provider.userTierName || provider.userTier || 'n/a')) + '</span>',
-          '<span class="chip">Direct models ' + escapeHtml(String(directModelCount)) + '</span>',
+          '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || 'n/a')) + '</span>',
+          '<span class="chip">Public models ' + escapeHtml(String(directModelCount)) + '</span>',
         ].join('');
 
         renderGeminiApiKeyTable(apiKeys);
-        renderGeminiApiQuotaTable(quotaGroups);
+        renderGeminiApiQuotaTable(quotaGroups, supportedModelIds);
 
         providerOutput.textContent = [
           '[gemini_api]',
@@ -1521,65 +2103,33 @@ export function renderAppShell(input: {
           'model_discovery_last_refresh=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastRefreshAt) || ''),
           'model_discovery_last_error=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastError) || ''),
           '',
-          '[gemini_cli_diagnostic]',
-          'runtime=' + String(provider.runtime || ''),
-          'auth_ready=' + String(Boolean(provider.authReady)),
-          'auth_cache_detected=' + String(Boolean(provider.authCacheDetected)),
-          'active_account=' + String(provider.activeAccount || ''),
-          'selected_auth_type=' + String(provider.selectedAuthType || ''),
-          'project_id=' + String(provider.projectId || ''),
-          'configured_model=' + String(provider.configuredModel || ''),
-          'last_resolved_model=' + String(provider.lastResolvedModel || ''),
-          'last_direct_request_state=' + String(provider.lastDirectRequestState || ''),
-          'user_tier=' + String(provider.userTier || ''),
-          'user_tier_name=' + String(provider.userTierName || ''),
-          'quota_authoritative=' + String(Boolean(provider.quotaAuthoritative)),
-          'quota_updated_at=' + String(provider.quotaUpdatedAt || ''),
-          'quota_last_error=' + String(provider.quotaLastError || ''),
-          'last_mapped_error_code=' + String(provider.lastMappedErrorCode || ''),
-          'last_failure_at=' + String(provider.lastFailureAt || ''),
-          '',
-          '[credits]',
-          ...(Array.isArray(provider.availableCredits) && provider.availableCredits.length > 0
-            ? provider.availableCredits.map(function(credit) {
-              return String(credit.creditType || 'unknown') + '=' + String(credit.creditAmount || '');
-            })
-            : ['none']),
-          '',
           '[upstream]',
-          'method=' + String((provider.lastUpstreamError && provider.lastUpstreamError.method) || ''),
-          'status_code=' + String((provider.lastUpstreamError && provider.lastUpstreamError.statusCode) || ''),
-          'google_status=' + String((provider.lastUpstreamError && provider.lastUpstreamError.googleStatus) || ''),
-          'google_reason=' + String((provider.lastUpstreamError && provider.lastUpstreamError.googleReason) || ''),
-          'message=' + String((provider.lastUpstreamError && provider.lastUpstreamError.message) || ''),
+          'status=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.status) || ''),
+          'code=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.code) || ''),
+          'google_status=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.googleStatus) || ''),
+          'google_reason=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.googleReason) || ''),
+          'message=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.message) || ''),
           '',
           '[models]',
           ...(models.length > 0
             ? models.map(function(model) {
-              const quota = model.quota || {};
               return [
                 String(model.id || ''),
-                'backend=' + String(model.backend || ''),
+                'backend=gemini-api',
                 'kind=' + String(model.kind || ''),
-                'selected=' + String(Boolean(model.selected)),
                 'available=' + String(Boolean(model.available)),
-                'remaining_amount=' + String(quota.remainingAmount || ''),
-                'remaining_fraction=' + String(
-                  typeof quota.remainingFraction === 'number' ? quota.remainingFraction : ''
-                ),
-                'reset_time=' + String(quota.resetTime || ''),
               ].join(' ');
             })
             : ['none']),
         ].join('\\n');
       }
 
-      function accountAlias(index) {
-        return 'account' + String(index + 1);
+      function quotaMetricUsed(metric) {
+        return Boolean(metric && typeof metric.used === 'number' && metric.used > 0);
       }
 
-      function groupAlias(index) {
-        return 'quotaGroup' + String(index + 1);
+      function hasQuotaActivity(model) {
+        return quotaMetricUsed(model && model.rpm) || quotaMetricUsed(model && model.tpm) || quotaMetricUsed(model && model.rpd);
       }
 
       function formatQuotaMetric(metric) {
@@ -1597,35 +2147,55 @@ export function renderAppShell(input: {
         return date.toISOString().replace(/\\.\\d{3}Z$/, 'Z');
       }
 
+      function renderHiddenLabel(label) {
+        return '<span class="muted">' + escapeHtml(label) + '</span>';
+      }
+
       function renderGeminiApiKeyTable(apiKeys) {
-        geminiApiKeysTable.innerHTML = apiKeys.map(function(key, index) {
+        geminiApiKeysTable.innerHTML = apiKeys.map(function(key) {
           const enabled = key.enabled !== false;
+          const accountId = typeof key.id === 'string' && key.id.trim() ? key.id.trim() : '';
+          const owner = typeof key.owner === 'string' && key.owner.trim() ? key.owner.trim() : '';
+          const quotaGroup = typeof key.quotaGroup === 'string' && key.quotaGroup.trim() ? key.quotaGroup.trim() : '';
+          const accountLabel = accountId ? '<strong>' + escapeHtml(accountId) + '</strong>' : renderHiddenLabel('hidden in guest view');
+          const accountMeta = owner ? escapeHtml(owner) : 'API key hidden';
+          const quotaLabel = quotaGroup ? escapeHtml(quotaGroup) : renderHiddenLabel('hidden in guest view');
           return '<tr>' +
-            '<td data-label="Account"><strong>' + accountAlias(index) + '</strong><div class="footer-note">API key hidden</div></td>' +
-            '<td data-label="Quota Group">' + groupAlias(index) + '<div class="footer-note">' + escapeHtml(formatTimestamp(key.lastUsedAt)) + '</div></td>' +
+            '<td data-label="Account">' + accountLabel + '<div class="footer-note">' + accountMeta + '</div></td>' +
+            '<td data-label="Quota Group">' + quotaLabel + '<div class="footer-note">' + escapeHtml(formatTimestamp(key.lastUsedAt)) + '</div></td>' +
             '<td data-label="Priority">' + escapeHtml(String(key.priority || 0)) + '</td>' +
             '<td data-label="Health"><span class="chip ' + (enabled ? 'good' : 'warn') + '">' + (enabled ? 'enabled' : 'disabled') + '</span></td>' +
           '</tr>';
         }).join('') || '<tr><td colspan="4" class="muted">No Gemini API accounts configured.</td></tr>';
       }
 
-      function renderGeminiApiQuotaTable(quotaGroups) {
+      function renderGeminiApiQuotaTable(quotaGroups, supportedModelIds) {
         const rows = [];
-        quotaGroups.forEach(function(group, groupIndex) {
-          const models = Array.isArray(group.models) ? group.models : [];
+        const supported = Array.isArray(supportedModelIds) && supportedModelIds.length > 0
+          ? new Set(supportedModelIds)
+          : null;
+        quotaGroups.forEach(function(group) {
+          const models = Array.isArray(group.models)
+            ? group.models.filter(function(model) {
+              const modelId = typeof model.model === 'string' ? model.model.trim() : '';
+              return (!supported || supported.has(modelId)) && hasQuotaActivity(model);
+            })
+            : [];
+          const groupId = typeof group.id === 'string' && group.id.trim() ? group.id.trim() : '';
+          const groupLabel = groupId ? escapeHtml(groupId) : renderHiddenLabel('hidden in guest view');
           models.slice(0, 12).forEach(function(model) {
             const cooldown = model.cooldownUntil ? 'cooldown until ' + model.cooldownUntil : 'ready';
             rows.push('<tr>' +
-              '<td data-label="Group">' + groupAlias(groupIndex) + '</td>' +
+              '<td data-label="Group">' + groupLabel + '</td>' +
               '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">source: ' + escapeHtml(String(model.source || 'local-ledger')) + '</div></td>' +
               '<td data-label="RPM">' + formatQuotaMetric(model.rpm) + '</td>' +
               '<td data-label="TPM">' + formatQuotaMetric(model.tpm) + '</td>' +
               '<td data-label="RPD">' + formatQuotaMetric(model.rpd) + '</td>' +
-              '<td data-label="State"><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span><div class="footer-note">auth: estimated local ledger</div></td>' +
+              '<td data-label="State"><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span></td>' +
             '</tr>');
           });
         });
-        geminiApiQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No quota groups available yet.</td></tr>';
+        geminiApiQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No quota activity recorded yet.</td></tr>';
       }
 
       function renderStats(summary) {
@@ -1648,11 +2218,12 @@ export function renderAppShell(input: {
           return;
         }
         const endpoints = compatibility.endpoints || {};
-        compatibilityForm.elements.defaultSurface.value = compatibility.defaultSurface || 'openai';
+        compatibilityForm.elements.defaultSurface.value = compatibility.defaultSurface || 'gemrouter';
         Array.from(compatibilityForm.querySelectorAll('input[name="enabledSurfaces"]')).forEach(function(input) {
           input.checked = (compatibility.enabledSurfaces || []).includes(input.value);
         });
 
+        const gemrouter = endpoints.gemrouter || { enabled: false, routes: {} };
         const openai = endpoints.openai || { enabled: false, routes: {} };
         const deepseek = endpoints.deepseek || { enabled: false, routes: {} };
         const ollama = endpoints.ollama || { enabled: false, routes: {} };
@@ -1660,14 +2231,22 @@ export function renderAppShell(input: {
         const ollamaAuthExample = ollamaServerUrl ? ollamaServerUrl.replace(/^https?:\\/\\//, function(prefix) { return prefix + '<API_KEY>@'; }) : '';
 
         compatibilityOutput.textContent = [
-          'default_surface=' + (compatibility.defaultSurface || 'openai'),
+          'default_surface=' + (compatibility.defaultSurface || 'gemrouter'),
           'enabled_surfaces=' + (compatibility.enabledSurfaces || []).join(','),
+          '',
+          '[gemrouter]',
+          'enabled=' + String(Boolean(gemrouter.enabled)),
+          'GEMROUTER_API_URL=' + String(gemrouter.routes && gemrouter.routes.baseUrl || ''),
+          'models=' + String(gemrouter.routes && gemrouter.routes.models || ''),
+          'chat=' + String(gemrouter.routes && gemrouter.routes.chat || ''),
+          'images=' + String(gemrouter.routes && gemrouter.routes.images || ''),
           '',
           '[openai]',
           'enabled=' + String(Boolean(openai.enabled)),
           'OPENAI_API_URL=' + String(openai.routes && openai.routes.baseUrl || ''),
           'models=' + String(openai.routes && openai.routes.models || ''),
           'chat=' + String(openai.routes && openai.routes.chat || ''),
+          'images=' + String(openai.routes && openai.routes.images || ''),
           'responses=' + String(openai.routes && openai.routes.responses || ''),
           '',
           '[deepseek]',
@@ -1675,6 +2254,7 @@ export function renderAppShell(input: {
           'DEEPSEEK_API_URL=' + String(deepseek.routes && deepseek.routes.baseUrl || ''),
           'models=' + String(deepseek.routes && deepseek.routes.models || ''),
           'chat=' + String(deepseek.routes && deepseek.routes.chat || ''),
+          'images=' + String(deepseek.routes && deepseek.routes.images || ''),
           '',
           '[ollama]',
           'enabled=' + String(Boolean(ollama.enabled)),
@@ -1692,6 +2272,13 @@ export function renderAppShell(input: {
       function resetAppForm() {
         appForm.reset();
         appForm.elements.id.value = '';
+        setAllowedModelSelection([]);
+        if (allowedModelsPicker) {
+          allowedModelsPicker.open = false;
+        }
+        Array.from(appForm.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
+          autosizeTextarea(textarea);
+        });
         appStatus.textContent = '';
       }
 
@@ -1699,19 +2286,25 @@ export function renderAppShell(input: {
         appForm.elements.id.value = app.id;
         appForm.elements.name.value = app.name;
         appForm.elements.allowedOrigins.value = app.allowedOrigins.join(', ');
-        appForm.elements.allowedModels.value = app.allowedModels.join(', ');
         appForm.elements.sessionNamespace.value = app.sessionNamespace;
         appForm.elements.rateLimitPerMinute.value = app.rateLimitPerMinute;
         appForm.elements.maxConcurrency.value = app.maxConcurrency;
+        setAllowedModelSelection(app.allowedModels);
+        Array.from(appForm.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
+          autosizeTextarea(textarea);
+        });
         appStatus.textContent = 'Editing ' + app.name + '.';
       }
 
       function renderApps(apps) {
         appsTable.innerHTML = apps.map(function(app) {
           const badge = app.revokedAt ? '<span class="chip bad">revoked</span>' : '<span class="chip good">active</span>';
+          const modelSummary = app.allowedModels.length > 0
+            ? (app.allowedModels.length + ' models')
+            : 'bootstrap defaults';
           return '<tr>' +
             '<td><strong>' + escapeHtml(app.name) + '</strong><div class="footer-note">' + badge + '</div></td>' +
-            '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">models: ' + escapeHtml(app.allowedModels.join(', ')) + '</div></td>' +
+            '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">' + escapeHtml(modelSummary) + ': ' + escapeHtml(app.allowedModels.join(', ') || 'inherit bootstrap') + '</div></td>' +
             '<td><div>rpm: ' + escapeHtml(String(app.rateLimitPerMinute)) + '</div><div>conc: ' + escapeHtml(String(app.maxConcurrency)) + '</div><div class="footer-note mono">' + escapeHtml(app.keyPreview) + '</div></td>' +
             '<td><div class="button-row">' +
               '<button type="button" class="secondary" data-action="edit" data-id="' + escapeHtml(app.id) + '">Edit</button>' +
@@ -1729,6 +2322,7 @@ export function renderAppShell(input: {
           return '<tr>' +
             '<td>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route) + '</div></td>' +
             '<td><strong>' + escapeHtml(item.appName) + '</strong></td>' +
+            '<td><strong>' + escapeHtml(item.model || 'n/a') + '</strong><div class="footer-note">' + escapeHtml(item.provider || '') + '</div></td>' +
             '<td>' + escapeHtml(item.promptExcerpt || '(empty)') + '</td>' +
             '<td>' + escapeHtml(item.responseExcerpt || item.error || '(empty)') + '</td>' +
             '<td>' + escapeHtml(usage) + '<div class="footer-note">' + escapeHtml(String(item.latencyMs || 0)) + ' ms</div></td>' +
@@ -1752,7 +2346,9 @@ export function renderAppShell(input: {
           state.publicSummary = data;
           renderPublicPills(data);
           renderPublicStats(data);
-          renderProviderState(data);
+          if (!state.authenticated) {
+            renderProviderState(data);
+          }
           renderHourlyChart(data);
           renderRouteChart(data);
         } finally {
@@ -1761,12 +2357,16 @@ export function renderAppShell(input: {
       }
 
       async function loadAdminSummary() {
+        const editingAppId = String(appForm.elements.id.value || '').trim();
+        const selectedModels = getAllowedModelSelection();
+        const selectedPromptModel = promptModel.value;
         const data = await request('/admin/summary');
         state.apps = data.apps;
+        state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
         state.compatibility = data.compatibility || null;
-        state.vncUrl = data.vncUrl || '';
-        fillModelOptions(data.models);
+        renderAllowedModelsPicker(state.modelCatalog, selectedModels);
         fillAppOptions(data.apps);
+        fillModelOptions(selectedPromptModel);
         renderRuntimePills(data);
         renderBackendDiagnostics(data);
         renderProviderState(data);
@@ -1774,8 +2374,12 @@ export function renderAppShell(input: {
         renderCompatibility(data.compatibility);
         renderApps(data.apps);
         renderInteractions(data.stats);
-        openVncLink.href = state.vncUrl || '#';
-        vncFrame.src = state.vncUrl || 'about:blank';
+        if (editingAppId) {
+          const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
+          if (editingApp) {
+            populateAppForm(editingApp);
+          }
+        }
         setAdminVisible(true);
         adminBannerTitle.textContent = 'Operator console active';
         adminBannerCopy.textContent = state.username ? 'Signed in as ' + state.username + '.' : 'Signed in as admin.';
@@ -1791,7 +2395,6 @@ export function renderAppShell(input: {
           await loadAdminSummary();
         } else {
           setAdminVisible(false);
-          vncFrame.src = 'about:blank';
           authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
           authStatus.textContent = '';
         }
@@ -1843,7 +2446,6 @@ export function renderAppShell(input: {
           setAdminVisible(false);
           authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
           authStatus.textContent = '';
-          vncFrame.src = 'about:blank';
         }
       }
 
@@ -1873,7 +2475,8 @@ export function renderAppShell(input: {
       promptForm.addEventListener('submit', async function(event) {
         event.preventDefault();
         promptStatus.textContent = 'Sending prompt through the active router backend…';
-        promptResponse.textContent = '';
+        promptResponse.innerHTML = '<div class="muted">Waiting for model response…</div>';
+        promptImageOutput.innerHTML = '<div class="muted">No generated image yet.</div>';
         const form = new FormData(promptForm);
         try {
           const response = await request('/admin/test-chat', {
@@ -1884,15 +2487,17 @@ export function renderAppShell(input: {
               prompt: form.get('prompt'),
               systemPrompt: form.get('systemPrompt'),
               sessionHint: form.get('sessionHint'),
-              stateful: form.get('stateful') === 'on',
             }),
           });
           promptStatus.textContent = 'Completed in ' + response.latencyMs + ' ms.';
-          promptResponse.textContent = response.text || '';
+          promptResponse.innerHTML = renderMarkdown(response.text || '');
+          renderPromptImages(response.images || []);
           await loadPublicSummary();
           await loadAdminSummary();
         } catch (error) {
           promptStatus.textContent = error.message;
+          promptResponse.innerHTML = '<div class="muted">' + escapeHtml(error.message) + '</div>';
+          promptImageOutput.innerHTML = '<div class="muted">No generated image yet.</div>';
         }
       });
 
@@ -1904,7 +2509,7 @@ export function renderAppShell(input: {
         const payload = {
           name: form.get('name'),
           allowedOrigins: String(form.get('allowedOrigins') || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean),
-          allowedModels: String(form.get('allowedModels') || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean),
+          allowedModels: getAllowedModelSelection(),
           sessionNamespace: form.get('sessionNamespace'),
           rateLimitPerMinute: Number(form.get('rateLimitPerMinute') || 0),
           maxConcurrency: Number(form.get('maxConcurrency') || 0),
@@ -1923,6 +2528,12 @@ export function renderAppShell(input: {
       });
 
       appReset.addEventListener('click', resetAppForm);
+      promptApp.addEventListener('change', function() {
+        fillModelOptions();
+      });
+      allowedModelsOptions.addEventListener('change', function() {
+        updateAllowedModelsSummary();
+      });
 
       appsTable.addEventListener('click', async function(event) {
         const target = event.target.closest('button');
