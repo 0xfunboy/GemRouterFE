@@ -1024,6 +1024,36 @@ export function renderAppShell(input: {
       .image-lightbox.hidden {
         display: none !important;
       }
+      .key-modal {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 28px;
+        background: rgba(3, 5, 8, 0.84);
+        backdrop-filter: blur(12px);
+        z-index: 1600;
+      }
+      .key-modal.hidden {
+        display: none !important;
+      }
+      .key-modal-card {
+        width: min(680px, 100%);
+        padding: 20px;
+        border-radius: 8px;
+        border: 1px solid var(--line-strong);
+        background: var(--surface-strong);
+        box-shadow: 0 34px 90px rgba(0, 0, 0, 0.55);
+      }
+      .key-modal-card input[readonly] {
+        font-family: "IBM Plex Mono", "SFMono-Regular", "Consolas", monospace;
+        letter-spacing: 0.01em;
+      }
+      .key-modal-warning {
+        margin-bottom: 14px;
+        color: var(--warn);
+        font-size: 12px;
+      }
       .app-footer {
         padding: 18px;
       }
@@ -1335,8 +1365,8 @@ export function renderAppShell(input: {
           <div class="chart-card">
             <div class="section-head">
               <div>
-                <h3 class="section-title">${svgIcon('route')} Compatibility Surface Mix</h3>
-                <p class="section-copy">Traffic grouped by compatibility surface.</p>
+                <h3 class="section-title">${svgIcon('route')} Compatibility Endpoint Mix</h3>
+                <p class="section-copy">Share of logged requests by API endpoint family across the latest 240 interactions.</p>
               </div>
             </div>
             <div class="chart-frame">
@@ -1668,6 +1698,26 @@ export function renderAppShell(input: {
       <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
         <img id="image-lightbox-media" src="" alt="Expanded generated image" />
       </div>
+      <div id="app-key-modal" class="key-modal hidden" aria-hidden="true">
+        <div id="app-key-modal-card" class="key-modal-card" role="dialog" aria-modal="true" aria-labelledby="app-key-modal-title">
+          <div class="section-head" style="margin-bottom:14px">
+            <div>
+              <h3 id="app-key-modal-title" class="section-title" style="font-size:18px">API key ready</h3>
+              <p class="section-copy">This key will be shown only once. Save it now.</p>
+            </div>
+            <button id="app-key-modal-close" type="button" class="secondary">Close</button>
+          </div>
+          <div class="key-modal-warning">This key will be shown only once. Save it now.</div>
+          <label>
+            API key
+            <input id="app-key-modal-input" type="text" readonly value="" />
+          </label>
+          <div class="button-row" style="margin-top:14px">
+            <button id="app-key-modal-copy" type="button">Copy key</button>
+          </div>
+          <div id="app-key-modal-status" class="status" style="margin-top:10px"></div>
+        </div>
+      </div>
     </main>
 
     <script>
@@ -1730,6 +1780,13 @@ export function renderAppShell(input: {
       const promptImageOutput = document.getElementById('prompt-image-output');
       const imageLightbox = document.getElementById('image-lightbox');
       const imageLightboxMedia = document.getElementById('image-lightbox-media');
+      const appKeyModal = document.getElementById('app-key-modal');
+      const appKeyModalCard = document.getElementById('app-key-modal-card');
+      const appKeyModalTitle = document.getElementById('app-key-modal-title');
+      const appKeyModalInput = document.getElementById('app-key-modal-input');
+      const appKeyModalStatus = document.getElementById('app-key-modal-status');
+      const appKeyModalCopyButton = document.getElementById('app-key-modal-copy');
+      const appKeyModalCloseButton = document.getElementById('app-key-modal-close');
       const appForm = document.getElementById('app-form');
       const appStatus = document.getElementById('app-status');
       const appReset = document.getElementById('app-reset');
@@ -1826,12 +1883,18 @@ export function renderAppShell(input: {
         return cleaned || 'png';
       }
 
+      function syncBodyScrollLock() {
+        const hasImageLightbox = imageLightbox && !imageLightbox.classList.contains('hidden');
+        const hasKeyModal = appKeyModal && !appKeyModal.classList.contains('hidden');
+        document.body.style.overflow = (hasImageLightbox || hasKeyModal) ? 'hidden' : '';
+      }
+
       function closeImageLightbox() {
         if (!imageLightbox || !imageLightboxMedia) return;
         imageLightbox.classList.add('hidden');
         imageLightbox.setAttribute('aria-hidden', 'true');
         imageLightboxMedia.setAttribute('src', '');
-        document.body.style.overflow = '';
+        syncBodyScrollLock();
       }
 
       function toggleImageLightbox(src, alt) {
@@ -1846,7 +1909,67 @@ export function renderAppShell(input: {
         imageLightboxMedia.setAttribute('alt', alt || 'Expanded generated image');
         imageLightbox.classList.remove('hidden');
         imageLightbox.setAttribute('aria-hidden', 'false');
-        document.body.style.overflow = 'hidden';
+        syncBodyScrollLock();
+      }
+
+      function closeAppKeyModal() {
+        if (!appKeyModal || !appKeyModalInput || !appKeyModalStatus) return;
+        appKeyModal.classList.add('hidden');
+        appKeyModal.setAttribute('aria-hidden', 'true');
+        appKeyModalInput.value = '';
+        appKeyModalStatus.textContent = '';
+        syncBodyScrollLock();
+      }
+
+      function openAppKeyModal(title, apiKey) {
+        if (!appKeyModal || !appKeyModalTitle || !appKeyModalInput || !appKeyModalStatus) return;
+        appKeyModalTitle.textContent = title || 'API key ready';
+        appKeyModalInput.value = String(apiKey || '');
+        appKeyModalStatus.textContent = '';
+        appKeyModal.classList.remove('hidden');
+        appKeyModal.setAttribute('aria-hidden', 'false');
+        syncBodyScrollLock();
+        appKeyModalInput.focus();
+        appKeyModalInput.select();
+      }
+
+      async function copyAppKeyFromModal() {
+        if (!appKeyModalInput || !appKeyModalStatus) return;
+        const value = String(appKeyModalInput.value || '').trim();
+        if (!value) return;
+        try {
+          if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            await navigator.clipboard.writeText(value);
+          } else {
+            appKeyModalInput.focus();
+            appKeyModalInput.select();
+            document.execCommand('copy');
+          }
+          appKeyModalStatus.textContent = 'API key copied.';
+        } catch {
+          appKeyModalInput.focus();
+          appKeyModalInput.select();
+          appKeyModalStatus.textContent = 'Copy failed. Copy it manually now.';
+        }
+      }
+
+      function describeRouteFamily(label) {
+        switch (String(label || '')) {
+          case 'chat':
+            return { title: 'Chat completions', detail: 'Primary/OpenAI-compatible chat endpoints' };
+          case 'images':
+            return { title: 'Image generation', detail: 'Primary/OpenAI-compatible image endpoints' };
+          case 'responses':
+            return { title: 'Responses API', detail: 'OpenAI responses endpoint traffic' };
+          case 'ollama_chat':
+            return { title: 'Ollama chat', detail: 'Ollama-compatible chat requests' };
+          case 'ollama_generate':
+            return { title: 'Ollama generate', detail: 'Ollama-compatible generate requests' };
+          case 'models':
+            return { title: 'Model discovery', detail: 'Model list, tags, or show requests' };
+          default:
+            return { title: 'Other routes', detail: 'Requests outside the main compatibility families' };
+        }
       }
 
       Array.from(document.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
@@ -2096,12 +2219,16 @@ export function renderAppShell(input: {
       function renderRouteChart(summary) {
         const points = (summary.charts && summary.charts.routes) || [];
         const maxRequests = points.reduce(function(max, item) { return Math.max(max, item.requests || 0); }, 0) || 1;
+        const totalRequests = points.reduce(function(total, item) { return total + (item.requests || 0); }, 0) || 1;
         routeChart.innerHTML = points.map(function(item) {
           const requests = item.requests || 0;
           const width = Math.max(6, Math.round((requests / maxRequests) * 100));
+          const routeInfo = describeRouteFamily(item.label);
+          const share = Math.round((requests / totalRequests) * 1000) / 10;
           return '<div class="route-item">' +
-            '<div class="route-meta"><strong>' + escapeHtml(item.label) + '</strong><span class="muted">' + escapeHtml(String(requests)) + '</span></div>' +
+            '<div class="route-meta"><strong>' + escapeHtml(routeInfo.title) + '</strong><span class="muted">' + escapeHtml(String(requests)) + ' req · ' + escapeHtml(String(share)) + '%</span></div>' +
             '<div class="route-track"><div class="route-fill" style="width:' + width + '%"></div></div>' +
+            '<div class="footer-note">' + escapeHtml(routeInfo.detail) + '</div>' +
           '</div>';
         }).join('') || '<div class="muted">No compatibility traffic logged yet.</div>';
       }
@@ -2787,9 +2914,30 @@ export function renderAppShell(input: {
           closeImageLightbox();
         });
       }
+      if (appKeyModal) {
+        appKeyModal.addEventListener('click', function() {
+          closeAppKeyModal();
+        });
+      }
+      if (appKeyModalCard) {
+        appKeyModalCard.addEventListener('click', function(event) {
+          event.stopPropagation();
+        });
+      }
+      if (appKeyModalCopyButton) {
+        appKeyModalCopyButton.addEventListener('click', function() {
+          void copyAppKeyFromModal();
+        });
+      }
+      if (appKeyModalCloseButton) {
+        appKeyModalCloseButton.addEventListener('click', function() {
+          closeAppKeyModal();
+        });
+      }
       document.addEventListener('keydown', function(event) {
         if (event.key === 'Escape') {
           closeImageLightbox();
+          closeAppKeyModal();
         }
       });
 
@@ -2811,7 +2959,12 @@ export function renderAppShell(input: {
             method: id ? 'PUT' : 'POST',
             body: JSON.stringify(payload),
           });
-          appStatus.textContent = id ? 'App updated.' : ('App created. Save this key now: ' + response.apiKey);
+          if (id) {
+            appStatus.textContent = 'App updated.';
+          } else {
+            appStatus.textContent = 'App created. The new key is shown in the popup.';
+            openAppKeyModal('New API key for ' + String((response.app && response.app.name) || payload.name || 'app'), response.apiKey);
+          }
           resetAppForm();
           await loadAdminSummary();
         } catch (error) {
@@ -2852,7 +3005,8 @@ export function renderAppShell(input: {
               method: 'POST',
               body: JSON.stringify({}),
             });
-            appStatus.textContent = 'Key rotated. New key: ' + response.apiKey;
+            appStatus.textContent = 'Key rotated. The new key is shown in the popup.';
+            openAppKeyModal('Rotated API key for ' + String((response.app && response.app.name) || app.name || 'app'), response.apiKey);
           }
           if (action === 'revoke') {
             await request('/admin/apps/' + encodeURIComponent(id) + '/revoke', {
