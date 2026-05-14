@@ -26,7 +26,7 @@ export const GEMINI_API_TIER1_LIMITS = {
     tpm: 4_000_000,
     rpd: null,
   },
-  'gemini-3-flash': {
+  'gemini-3-flash-preview': {
     rpm: 1000,
     tpm: 2_000_000,
     rpd: 10_000,
@@ -36,7 +36,7 @@ export const GEMINI_API_TIER1_LIMITS = {
     tpm: 4_000_000,
     rpd: 150_000,
   },
-  'gemini-3.1-pro': {
+  'gemini-3.1-pro-preview': {
     rpm: 25,
     tpm: 2_000_000,
     rpd: 250,
@@ -63,4 +63,3 @@ export function getGeminiApiLimit(
     rpd: 1_000,
   };
 }
-

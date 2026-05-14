@@ -1214,7 +1214,9 @@ export function renderAppShell(input: {
         authenticated: false,
         username: '',
         publicSummary: null,
+        publicRefreshInFlight: false,
       };
+      const PUBLIC_REFRESH_MS = 5000;
 
       const root = document.documentElement;
       const savedTheme = localStorage.getItem('gemrouter-theme') || 'dark';
@@ -1743,13 +1745,19 @@ export function renderAppShell(input: {
       }
 
       async function loadPublicSummary() {
-        const data = await request('/dashboard/summary');
-        state.publicSummary = data;
-        renderPublicPills(data);
-        renderPublicStats(data);
-        renderProviderState(data);
-        renderHourlyChart(data);
-        renderRouteChart(data);
+        if (state.publicRefreshInFlight) return;
+        state.publicRefreshInFlight = true;
+        try {
+          const data = await request('/dashboard/summary');
+          state.publicSummary = data;
+          renderPublicPills(data);
+          renderPublicStats(data);
+          renderProviderState(data);
+          renderHourlyChart(data);
+          renderRouteChart(data);
+        } finally {
+          state.publicRefreshInFlight = false;
+        }
       }
 
       async function loadAdminSummary() {
@@ -1976,6 +1984,13 @@ export function renderAppShell(input: {
         .catch(function(error) {
           authStatus.textContent = error.message;
         });
+
+      window.setInterval(function() {
+        if (document.hidden) return;
+        loadPublicSummary().catch(function(error) {
+          authStatus.textContent = error.message;
+        });
+      }, PUBLIC_REFRESH_MS);
     </script>
   </body>
 </html>`;
