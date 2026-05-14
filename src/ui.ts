@@ -384,13 +384,11 @@ export function renderAppShell(input: {
       }
       .heartbeat-line {
         position: absolute;
-        left: 0;
-        top: 0;
-        width: 240%;
+        inset: 0;
+        width: 100%;
         height: 100%;
         background: none;
         filter: drop-shadow(0 0 7px rgba(24, 240, 208, 0.85));
-        animation: heartbeat-scroll var(--heartbeat-speed, 2.8s) linear infinite;
       }
       .heartbeat-line svg {
         display: block;
@@ -404,9 +402,53 @@ export function renderAppShell(input: {
         stroke-linecap: square;
         stroke-linejoin: miter;
       }
-      @keyframes heartbeat-scroll {
-        from { transform: translateX(0); }
-        to { transform: translateX(-48%); }
+      .ecg-persistence {
+        opacity: 0.22;
+        stroke-dasharray: 32 10;
+        filter: blur(0.25px);
+        mask-image: linear-gradient(90deg, transparent 0%, rgba(0,0,0,0.18) 18%, rgba(0,0,0,0.48) 58%, rgba(0,0,0,0.9) 100%);
+      }
+      .ecg-trace {
+        stroke-dasharray: 960;
+        stroke-dashoffset: 960;
+        animation: ecg-draw var(--heartbeat-speed, 7.2s) linear infinite;
+      }
+      .ecg-dot {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 9px;
+        height: 9px;
+        margin: -4.5px 0 0 -4.5px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 10px rgba(24, 240, 208, 0.95), 0 0 22px rgba(24, 240, 208, 0.45);
+        offset-path: path("M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960");
+        offset-distance: 0%;
+        animation: ecg-dot var(--heartbeat-speed, 7.2s) linear infinite;
+      }
+      .ecg-sweep {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 52px;
+        background: linear-gradient(90deg, transparent, rgba(24, 240, 208, 0.05), rgba(24, 240, 208, 0.18), transparent);
+        transform: translateX(-52px);
+        animation: ecg-sweep var(--heartbeat-speed, 7.2s) linear infinite;
+      }
+      @keyframes ecg-draw {
+        0% { stroke-dashoffset: 960; opacity: 0.96; }
+        78% { stroke-dashoffset: 0; opacity: 0.96; }
+        100% { stroke-dashoffset: 0; opacity: 0.18; }
+      }
+      @keyframes ecg-dot {
+        0% { offset-distance: 0%; opacity: 1; }
+        78% { offset-distance: 100%; opacity: 1; }
+        100% { offset-distance: 100%; opacity: 0; }
+      }
+      @keyframes ecg-sweep {
+        0% { transform: translateX(-52px); opacity: 0.35; }
+        78% { transform: translateX(100%); opacity: 0.95; }
+        100% { transform: translateX(100%); opacity: 0; }
       }
       .nav-menu {
         position: relative;
@@ -836,8 +878,11 @@ export function renderAppShell(input: {
             <div class="heartbeat" aria-hidden="true">
               <div class="heartbeat-line">
                 <svg viewBox="0 0 960 86" preserveAspectRatio="none">
-                  <path d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
+                  <path class="ecg-persistence" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
+                  <path class="ecg-trace" d="M0 45 H80 L92 45 L102 37 L112 51 L124 45 H176 L188 45 L198 25 L210 74 L224 10 L240 45 H312 L326 45 L338 34 L350 55 L364 45 H480 L560 45 L572 45 L582 37 L592 51 L604 45 H656 L668 45 L678 25 L690 74 L704 10 L720 45 H792 L806 45 L818 34 L830 55 L844 45 H960" />
                 </svg>
+                <div class="ecg-sweep"></div>
+                <div class="ecg-dot"></div>
               </div>
             </div>
           </div>
@@ -1310,7 +1355,7 @@ export function renderAppShell(input: {
         if (activityLabel) {
           activityLabel.textContent = fmtNumber(stats.requests) + ' req / 24h · ' + escapeHtml(String(stats.successRatePct || 0)) + '% ok';
         }
-        const speed = Math.max(0.72, Math.min(3.2, 3.2 - Math.log10((stats.requests || 0) + 1) * 0.72));
+        const speed = Math.max(4.4, Math.min(9.4, 9.4 - Math.log10((stats.requests || 0) + 1) * 1.15));
         root.style.setProperty('--heartbeat-speed', speed.toFixed(2) + 's');
         publicStats.innerHTML = [
           ['Requests', fmtNumber(stats.requests), 'Successful and failed requests'],
