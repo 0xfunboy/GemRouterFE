@@ -671,10 +671,46 @@ export function renderAppShell(input: {
         <section class="panel section">
           <div class="section-head">
             <div>
-              <h3 class="section-title">Direct Models and Quota</h3>
-              <p class="section-copy">Real Gemini model IDs, active Google account state, and the latest per-model quota snapshot the router can observe.</p>
+              <h3 class="section-title">Gemini API Keys and Quota</h3>
+              <p class="section-copy">Configured upstream accounts, local quota ledger, and per-model RPM/TPM/RPD remaining capacity. API keys are never shown.</p>
             </div>
             <div id="provider-pills" class="meta-row"></div>
+          </div>
+          <div class="shell-grid">
+            <div>
+              <h4 class="section-title" style="font-size:15px;margin-bottom:10px">Configured Accounts</h4>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Account</th>
+                      <th>Quota Group</th>
+                      <th>Priority</th>
+                      <th>Health</th>
+                    </tr>
+                  </thead>
+                  <tbody id="gemini-api-keys-table"></tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h4 class="section-title" style="font-size:15px;margin-bottom:10px">Quota Snapshot</h4>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Group</th>
+                      <th>Model</th>
+                      <th>RPM</th>
+                      <th>TPM</th>
+                      <th>RPD</th>
+                      <th>State</th>
+                    </tr>
+                  </thead>
+                  <tbody id="gemini-api-quota-table"></tbody>
+                </table>
+              </div>
+            </div>
           </div>
           <div id="provider-output" class="mono-box">Loading direct model and quota snapshot…</div>
         </section>
@@ -894,6 +930,8 @@ export function renderAppShell(input: {
       const backendHint = document.getElementById('backend-hint');
       const providerPills = document.getElementById('provider-pills');
       const providerOutput = document.getElementById('provider-output');
+      const geminiApiKeysTable = document.getElementById('gemini-api-keys-table');
+      const geminiApiQuotaTable = document.getElementById('gemini-api-quota-table');
       const statsGrid = document.getElementById('stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
@@ -1121,18 +1159,39 @@ export function renderAppShell(input: {
 
       function renderProviderState(data) {
         const provider = data.provider || {};
+        const geminiApi = provider.geminiApi || {};
+        const quota = provider.quota || {};
+        const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
+        const quotaGroups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
         const models = Array.isArray(provider.models) ? provider.models : [];
-        const directModels = models.filter(function(model) { return model && model.kind === 'direct'; });
+        const directModels = models.filter(function(model) { return model && model.kind === 'gemini-api'; });
         providerPills.innerHTML = [
-          '<span class="chip ' + (provider.authReady ? 'good' : 'warn') + '">' + (provider.authReady ? 'Direct auth ready' : 'Direct auth attention') + '</span>',
+          '<span class="chip ' + (geminiApi.enabled ? 'good' : 'warn') + '">' + (geminiApi.enabled ? 'Gemini API enabled' : 'Gemini API disabled') + '</span>',
+          '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
           '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
-          '<span class="chip">Last resolved ' + escapeHtml(String(provider.lastResolvedModel || 'n/a')) + '</span>',
+          '<span class="chip">Last API model ' + escapeHtml(String(geminiApi.lastResolvedModel || 'n/a')) + '</span>',
           '<span class="chip">Direct state ' + escapeHtml(String(provider.lastDirectRequestState || 'unknown')) + '</span>',
-          '<span class="chip">Tier ' + escapeHtml(String(provider.userTierName || provider.userTier || 'n/a')) + '</span>',
+          '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || provider.userTierName || provider.userTier || 'n/a')) + '</span>',
           '<span class="chip">Direct models ' + escapeHtml(String(directModels.length || 0)) + '</span>',
         ].join('');
 
+        renderGeminiApiKeyTable(apiKeys);
+        renderGeminiApiQuotaTable(quotaGroups);
+
         providerOutput.textContent = [
+          '[gemini_api]',
+          'enabled=' + String(Boolean(geminiApi.enabled)),
+          'configured_accounts=' + String(geminiApi.configuredKeyCount || 0),
+          'usable_accounts=' + String(geminiApi.usableKeyCount || 0),
+          'default_tier=' + String(geminiApi.defaultTier || ''),
+          'last_account=' + String(geminiApi.lastSelectedKeyId || ''),
+          'last_quota_group=' + String(geminiApi.lastSelectedQuotaGroup || ''),
+          'last_model=' + String(geminiApi.lastResolvedModel || ''),
+          'last_error=' + String(geminiApi.lastError || ''),
+          'model_discovery_last_refresh=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastRefreshAt) || ''),
+          'model_discovery_last_error=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastError) || ''),
+          '',
+          '[gemini_cli_diagnostic]',
           'runtime=' + String(provider.runtime || ''),
           'auth_ready=' + String(Boolean(provider.authReady)),
           'auth_cache_detected=' + String(Boolean(provider.authCacheDetected)),
@@ -1183,6 +1242,53 @@ export function renderAppShell(input: {
             })
             : ['none']),
         ].join('\\n');
+      }
+
+      function accountAlias(index) {
+        return 'account' + String(index + 1);
+      }
+
+      function groupAlias(index) {
+        return 'quotaGroup' + String(index + 1);
+      }
+
+      function formatQuotaMetric(metric) {
+        if (!metric) return '0 / n/a';
+        const used = fmtNumber(metric.used || 0);
+        const limit = metric.limit === null || metric.limit === undefined ? 'unlimited' : fmtNumber(metric.limit);
+        const remaining = metric.remaining === null || metric.remaining === undefined ? 'unlimited' : fmtNumber(metric.remaining);
+        return used + ' / ' + limit + '<div class="footer-note">remaining ' + remaining + '</div>';
+      }
+
+      function renderGeminiApiKeyTable(apiKeys) {
+        geminiApiKeysTable.innerHTML = apiKeys.map(function(key, index) {
+          const enabled = key.enabled !== false;
+          return '<tr>' +
+            '<td><strong>' + accountAlias(index) + '</strong><div class="footer-note">API key hidden</div></td>' +
+            '<td>' + groupAlias(index) + '<div class="footer-note">real group hidden</div></td>' +
+            '<td>' + escapeHtml(String(key.priority || 0)) + '</td>' +
+            '<td><span class="chip ' + (enabled ? 'good' : 'warn') + '">' + (enabled ? 'enabled' : 'disabled') + '</span><div class="footer-note">last used: ' + escapeHtml(String(key.lastUsedAt || 'never')) + '</div></td>' +
+          '</tr>';
+        }).join('') || '<tr><td colspan="4" class="muted">No Gemini API accounts configured.</td></tr>';
+      }
+
+      function renderGeminiApiQuotaTable(quotaGroups) {
+        const rows = [];
+        quotaGroups.forEach(function(group, groupIndex) {
+          const models = Array.isArray(group.models) ? group.models : [];
+          models.slice(0, 12).forEach(function(model) {
+            const cooldown = model.cooldownUntil ? 'cooldown until ' + model.cooldownUntil : 'ready';
+            rows.push('<tr>' +
+              '<td>' + groupAlias(groupIndex) + '</td>' +
+              '<td><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">source: ' + escapeHtml(String(model.source || 'local-ledger')) + '</div></td>' +
+              '<td>' + formatQuotaMetric(model.rpm) + '</td>' +
+              '<td>' + formatQuotaMetric(model.tpm) + '</td>' +
+              '<td>' + formatQuotaMetric(model.rpd) + '</td>' +
+              '<td><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span><div class="footer-note">auth: estimated local ledger</div></td>' +
+            '</tr>');
+          });
+        });
+        geminiApiQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No quota groups available yet.</td></tr>';
       }
 
       function renderStats(summary) {

@@ -22,8 +22,9 @@
     "start:vnc": "DISPLAY=${DISPLAY:-:99} PLAYWRIGHT_HEADLESS=false pnpm run start:app",
     "start:xvfb": "PLAYWRIGHT_HEADLESS=false xvfb-run -a pnpm run start:app",
     "smoke": "pnpm build && bash ./scripts/smoke.sh",
-    "smoke:gemini-cli": "SMOKE_BACKEND=gemini-cli pnpm build && bash ./scripts/smoke.sh",
-    "smoke:playwright": "SMOKE_BACKEND=playwright pnpm build && bash ./scripts/smoke.sh"
+    "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh",
+    "smoke:gemini-cli": "pnpm build && SMOKE_BACKEND=gemini-cli bash ./scripts/smoke.sh",
+    "smoke:playwright": "pnpm build && SMOKE_BACKEND=playwright bash ./scripts/smoke.sh"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

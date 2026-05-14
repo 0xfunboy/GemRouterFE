@@ -24,28 +24,30 @@
 
 `GemRouterFE` exposes provider-style HTTP APIs that existing clients already know how to call, while routing inference through:
 
-1. Embedded Gemini Code Assist calls authenticated with the same cached Google login files used by Gemini CLI
+1. Official Gemini API calls through AI Studio / Gemini Developer API keys
 2. Playwright-managed Gemini Web fallback with the existing authenticated browser profile
+3. Embedded Gemini Code Assist calls authenticated with the same cached Google login files used by Gemini CLI, kept as a diagnostic backend
 
 This repository is the product workspace for:
 
 - the compatibility router
-- the embedded Gemini direct runtime
+- the official Gemini API multi-key runtime
 - the browser-backed Gemini fallback runtime
+- the embedded Gemini CLI diagnostic runtime
 - app and API-key policy management
 - the operator dashboard
 - recovery access through noVNC
 
-It is not the paid Gemini API path and it does not require `GEMINI_API_KEY` for the intended flow. Router auth for clients stays separate from backend Gemini auth.
+Router auth for clients stays separate from backend Gemini auth. Gemini API keys can create billable upstream usage, so keep Google-side budgets and project limits in place.
 
 ## Core Product Capabilities
 
 - OpenAI-compatible `models`, `chat/completions`, and `responses`
 - DeepSeek-compatible `models` and `chat/completions`
 - Ollama-compatible `version`, `tags`, `show`, `chat`, and `generate`
-- embedded Gemini direct auth as the preferred backend when cached Google auth is available
+- official Gemini API routing with multiple API keys and local RPM/TPM/RPD quota tracking
 - Playwright-managed Gemini Web session reuse
-- automatic fallback from the direct backend to Playwright for auth/runtime/quota failures
+- automatic fallback from the API backend to Playwright for auth/runtime/quota failures
 - app-scoped API keys with model, origin, rate, and concurrency controls
 - guest telemetry and admin controls in one dashboard
 - prompt lab routed through the live browser session
@@ -88,6 +90,7 @@ Use the backend-specific variants when you want to validate one path intentional
 
 ```bash
 pnpm smoke:gemini-cli
+pnpm smoke:gemini-api
 pnpm smoke:playwright
 ```
 
@@ -104,9 +107,9 @@ That installer writes user units pointing at the current clone path.
 ## Auth Model
 
 - Client apps must still send the local router bearer API key.
-- Gemini direct auth is Google-login based and reuses cached local credentials.
+- Gemini API auth uses upstream AI Studio / Gemini Developer API keys from `.env`.
+- Gemini CLI diagnostic auth is Google-login based and reuses cached local credentials.
 - Playwright fallback reuses the already authenticated browser profile under `.playwright/`.
-- This repo does not require a paid Gemini API key for the intended path.
 - The Gemini Web browser profile itself is sensitive session state and is not committed.
 
 ## First-Time Google Login Setup
@@ -118,15 +121,15 @@ pnpm login:gemini-cli
 
 `setup:gemini-cli` fills safe missing `.env` defaults without overwriting existing values. Before `login:gemini-cli`, set `GEMINI_AUTH_CLIENT_ID` and `GEMINI_AUTH_CLIENT_SECRET` in `.env` with your Google installed-app OAuth client values. `login:gemini-cli` then runs the repo-local browser OAuth helper and stores credentials in the same `.gemini` cache layout that Gemini CLI uses.
 
-If cached Google auth is missing, expires, or the direct quota is exhausted, the router keeps serving through Playwright when possible and exposes the status in `/health`, `/v1/provider/runtime`, and the admin dashboard.
+If API keys are missing, rate-limited, or unusable, the router keeps serving through Playwright when possible and exposes the status in `/health`, `/v1/provider/runtime`, and the admin dashboard.
 
 ## Backend Selection
 
-- Default backend order is `gemini-cli,playwright`.
+- Default backend order is `gemini-api,playwright,gemini-cli`.
 - Direct model IDs such as `gemini-2.5-pro`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite` are exposed directly through `/v1/models`.
 - `gemini-web` and `google/gemini-web` remain the explicit Playwright-backed model aliases.
-- Health output reports cached auth visibility, quota state, Playwright profile readiness, and the active default backend.
-- Requests can be forced to `gemini-cli`, `playwright`, or `auto` with `x-gemrouter-backend` for smoke and operator testing.
+- Health output reports API key count, local quota state, model discovery, Playwright profile readiness, and the active default backend.
+- Requests can be forced to `gemini-api`, `gemini-cli`, `playwright`, or `auto` with `x-gemrouter-backend` for smoke and operator testing.
 - Playwright remains the real fallback backend and is not removed from the stack.
 
 ## Provider Runtime API
@@ -204,6 +207,7 @@ The documentation set is split into topical pages under [`docs/`](./docs).
 - [Deployment](./docs/operations/deployment.md)
 - [Security](./docs/operations/security.md)
 - [Troubleshooting](./docs/operations/troubleshooting.md)
+- [Gemini API Multi-Key Routing](./docs/implementation/gemini-api-multikey-routing.md)
 - [Gemini CLI Fallback Integration](./docs/implementation/gemini-cli-fallback.md)
 
 ### Reference

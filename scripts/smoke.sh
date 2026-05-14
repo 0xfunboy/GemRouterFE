@@ -13,7 +13,7 @@ fi
 API_KEY="${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
 ADMIN_TOKEN="${GEMROUTER_ADMIN_TOKEN:-}"
 SMOKE_BACKEND="${SMOKE_BACKEND:-auto}"
-SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_CLI_MODEL:-gemini-2.5-pro}}"
+SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_CLI_MODEL:-gemini-2.5-flash-lite}}"
 SMOKE_PLAYWRIGHT_MODEL="${SMOKE_PLAYWRIGHT_MODEL:-gemini-web}"
 SMOKE_WAIT_SECONDS="${SMOKE_WAIT_SECONDS:-60}"
 
@@ -86,6 +86,12 @@ resolve_primary_model() {
 build_api_candidates
 API_BASE="$(resolve_api_base)"
 SMOKE_PRIMARY_MODEL="$(resolve_primary_model)"
+
+if [[ "${SMOKE_BACKEND}" == "gemini-api" && -z "${GEMROUTER_GEMINI_API_KEYS:-}" && -z "${GEMROUTER_GEMINI_API_KEYS_JSON:-}" ]]; then
+  echo "[smoke] SMOKE_BACKEND=gemini-api requested, but no Gemini API keys are configured."
+  echo "[smoke] Set GEMROUTER_GEMINI_API_KEYS or GEMROUTER_GEMINI_API_KEYS_JSON to run API-key smoke tests."
+  exit 0
+fi
 
 if [[ -z "${API_KEY}" ]]; then
   echo "[smoke] Missing bootstrap API key in .env" >&2
@@ -196,6 +202,7 @@ print_backend_meta() {
   if [[ -n "${fallback_reason}" ]]; then
     echo "[smoke] fallback reason: ${fallback_reason}"
   fi
+  awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-api-key-id:|^x-gemrouter-quota-group:|^x-gemrouter-quota-source:/{sub(/\r$/,""); print "[smoke] " $0}' "${header_file}"
 }
 
 request_admin() {

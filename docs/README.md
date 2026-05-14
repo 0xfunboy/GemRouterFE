@@ -30,6 +30,7 @@ The root [README](../README.md) is the product landing page. This file is the do
 ## Implementation Notes
 
 - [Gemini CLI Fallback Integration](./implementation/gemini-cli-fallback.md)
+- [Gemini API Multi-Key Routing](./implementation/gemini-api-multikey-routing.md)
 
 ## Reference
 

@@ -27,7 +27,20 @@ This page groups the environment surface by role.
 - backend order
 - fallback enablement
 
-## Gemini Direct Runtime
+## Gemini API Runtime
+
+- official Gemini API enablement
+- comma-separated API keys or advanced JSON key config
+- base URL and API version
+- default quota tier
+- quota group mode
+- ledger path
+- model discovery cache path
+- RPM/TPM/RPD window settings
+- quota cooldown
+- request and stream timeouts
+
+## Gemini CLI Diagnostic Runtime
 
 - direct backend enablement
 - default direct model and direct model list

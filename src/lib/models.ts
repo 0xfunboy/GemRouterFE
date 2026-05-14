@@ -1,14 +1,19 @@
 export const PLAYWRIGHT_MODEL_IDS = ['gemini-web', 'google/gemini-web'] as const;
 
 export const DEFAULT_DIRECT_MODEL_IDS = [
+  'gemini-3.1-pro',
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
 ] as const;
 
 export interface PublicModelDescriptor {
   id: string;
-  kind: 'playwright' | 'direct';
+  kind: 'playwright' | 'gemini-api' | 'gemini-cli';
   family: string;
   label: string;
   experimental: boolean;
@@ -28,8 +33,16 @@ export function isPlaywrightModelId(modelId: string): boolean {
   return PLAYWRIGHT_MODEL_IDS.includes(modelId as (typeof PLAYWRIGHT_MODEL_IDS)[number]);
 }
 
-export function isDirectGeminiModelId(modelId: string): boolean {
+export function isGeminiApiModelId(modelId: string): boolean {
   return !isPlaywrightModelId(modelId) && /^(gemini|gemma)-/i.test(modelId);
+}
+
+export function isGeminiCliModelId(modelId: string): boolean {
+  return isGeminiApiModelId(modelId);
+}
+
+export function isDirectGeminiModelId(modelId: string): boolean {
+  return isGeminiApiModelId(modelId);
 }
 
 export function buildPublicModelIds(directModelIds: string[]): string[] {
@@ -39,7 +52,7 @@ export function buildPublicModelIds(directModelIds: string[]): string[] {
 export function buildDirectModelCatalog(configuredModelIds: string[]): PublicModelDescriptor[] {
   return unique(configuredModelIds).map((modelId) => ({
     id: modelId,
-    kind: 'direct',
+    kind: 'gemini-api',
     family: modelId.startsWith('gemma-') ? 'gemma' : 'gemini',
     label: modelId,
     experimental: /preview|experimental|exp/i.test(modelId),
@@ -59,7 +72,7 @@ export function describePublicModel(modelId: string): PublicModelDescriptor {
 
   return {
     id: modelId,
-    kind: 'direct',
+    kind: 'gemini-api',
     family: modelId.startsWith('gemma-') ? 'gemma' : 'gemini',
     label: modelId,
     experimental: /preview|experimental|exp/i.test(modelId),
