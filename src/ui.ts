@@ -159,6 +159,7 @@ export function renderAppShell(input: {
           radial-gradient(circle at 50% 96%, rgba(255, 209, 102, 0.1), transparent 34%),
           linear-gradient(180deg, var(--bg) 0%, var(--bg-soft) 54%, var(--bg) 100%);
         background-size: 42px 42px, 42px 42px, auto, auto, auto, auto;
+        background-attachment: fixed, fixed, fixed, fixed, fixed, fixed;
         color: var(--text);
       }
       a { color: inherit; text-decoration: none; }
@@ -168,6 +169,8 @@ export function renderAppShell(input: {
       .app-shell {
         width: min(1480px, calc(100vw - 28px));
         margin: 14px auto 28px;
+        display: grid;
+        gap: 16px;
       }
       .panel {
         background: var(--surface);
@@ -193,7 +196,6 @@ export function renderAppShell(input: {
         justify-content: space-between;
         gap: 16px;
         padding: 16px 18px;
-        margin-bottom: 16px;
         z-index: 40;
       }
       .brand {
@@ -271,7 +273,6 @@ export function renderAppShell(input: {
         grid-template-columns: minmax(280px, 0.62fr) minmax(500px, 1.38fr);
         gap: 18px;
         padding: 18px;
-        margin-bottom: 16px;
         overflow: visible;
       }
       .eyebrow {
@@ -521,6 +522,10 @@ export function renderAppShell(input: {
         display: grid;
         gap: 16px;
       }
+      #admin-dashboard {
+        display: grid;
+        gap: 16px;
+      }
       .section {
         padding: 18px;
       }
@@ -530,6 +535,14 @@ export function renderAppShell(input: {
         justify-content: space-between;
         gap: 14px;
         margin-bottom: 16px;
+      }
+      .section-head-actions {
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-left: auto;
       }
       .section-title {
         font-size: 19px;
@@ -659,7 +672,6 @@ export function renderAppShell(input: {
         justify-content: space-between;
         align-items: center;
         gap: 12px;
-        margin-bottom: 16px;
         padding: 14px 16px;
         border-radius: 5px;
         background: linear-gradient(135deg, rgba(16, 163, 127, 0.14), rgba(62, 169, 255, 0.12));
@@ -836,6 +848,18 @@ export function renderAppShell(input: {
         align-items: center;
         gap: 8px;
       }
+      .section-inline-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .section-inline-control select {
+        width: auto;
+        min-width: 74px;
+        padding: 8px 28px 8px 10px;
+      }
       .field-help {
         display: inline-flex;
         align-items: center;
@@ -883,6 +907,24 @@ export function renderAppShell(input: {
         width: auto;
         margin-right: 8px;
       }
+      .section-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 108px;
+        justify-content: center;
+      }
+      .section-toggle-label {
+        font-size: 12px;
+      }
+      .section-toggle-arrow {
+        display: inline-block;
+        line-height: 1;
+        transition: transform 0.18s ease;
+      }
+      .section-toggle[aria-expanded="true"] .section-toggle-arrow {
+        transform: rotate(90deg);
+      }
       .model-picker-title {
         color: var(--text);
         font-size: 12px;
@@ -917,7 +959,6 @@ export function renderAppShell(input: {
         background: rgba(3, 5, 8, 0.68);
       }
       .app-footer {
-        margin-top: 16px;
         padding: 18px;
       }
       .footer-grid {
@@ -1265,10 +1306,18 @@ export function renderAppShell(input: {
               <h3 class="section-title">Backend Routing</h3>
               <p class="section-copy">Requests stay on official Gemini API keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
             </div>
-            <div id="backend-pills" class="meta-row"></div>
+            <div class="section-head-actions">
+              <div id="backend-pills" class="meta-row"></div>
+              <button type="button" class="secondary section-toggle" data-section-toggle="backend-section-body" aria-controls="backend-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
           </div>
-          <div id="backend-output" class="mono-box">Loading backend routing snapshot…</div>
-          <div id="backend-hint" class="footer-note" style="margin-top:10px"></div>
+          <div id="backend-section-body" class="section-body hidden">
+            <div id="backend-output" class="mono-box">Loading backend routing snapshot…</div>
+            <div id="backend-hint" class="footer-note" style="margin-top:10px"></div>
+          </div>
         </section>
 
         <section class="panel section">
@@ -1277,8 +1326,16 @@ export function renderAppShell(input: {
               <h3 class="section-title">${svgIcon('api')} Provider Diagnostics</h3>
               <p class="section-copy">Admin-only raw backend state for the Gemini API key pool and fallback investigation.</p>
             </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="provider-section-body" aria-controls="provider-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
           </div>
-          <div id="provider-output" class="mono-box">Loading model and quota snapshot…</div>
+          <div id="provider-section-body" class="section-body hidden">
+            <div id="provider-output" class="mono-box">Loading model and quota snapshot…</div>
+          </div>
         </section>
 
 
@@ -1288,7 +1345,14 @@ export function renderAppShell(input: {
               <h3 class="section-title">Compatibility Surfaces</h3>
               <p class="section-copy">Manage enabled API surfaces and choose the primary compatibility surface.</p>
             </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="compatibility-section-body" aria-controls="compatibility-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
           </div>
+          <div id="compatibility-section-body" class="section-body hidden">
           <div class="shell-grid">
             <div>
               <form id="compatibility-form">
@@ -1361,6 +1425,7 @@ export function renderAppShell(input: {
               <div id="prompt-image-output" class="image-preview-box"><div class="muted">No generated image yet.</div></div>
             </div>
           </div>
+          </div>
         </section>
 
         <section class="panel section">
@@ -1369,7 +1434,14 @@ export function renderAppShell(input: {
               <h3 class="section-title">Apps and API Keys</h3>
               <p class="section-copy">Create apps, rotate API keys, and manage client-facing limits from one console.</p>
             </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="apps-section-body" aria-controls="apps-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
           </div>
+          <div id="apps-section-body" class="section-body hidden">
           <div class="shell-grid apps-shell">
             <div>
               <form id="app-form">
@@ -1423,6 +1495,7 @@ export function renderAppShell(input: {
               </table>
             </div>
           </div>
+          </div>
         </section>
 
         <section class="panel section">
@@ -1431,7 +1504,22 @@ export function renderAppShell(input: {
               <h3 class="section-title">Recent Interactions</h3>
               <p class="section-copy">Prompt and output excerpts, token usage, latency, and operator feedback.</p>
             </div>
+            <div class="section-head-actions">
+              <label class="section-inline-control" for="interactions-limit-select">
+                Latest
+                <select id="interactions-limit-select">
+                  <option value="10" selected>10</option>
+                  <option value="20">20</option>
+                  <option value="50">50</option>
+                </select>
+              </label>
+              <button type="button" class="secondary section-toggle" data-section-toggle="interactions-section-body" aria-controls="interactions-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
           </div>
+          <div id="interactions-section-body" class="section-body hidden">
           <div class="table-wrap">
             <table class="table">
               <thead>
@@ -1447,6 +1535,7 @@ export function renderAppShell(input: {
               </thead>
               <tbody id="interactions-table"></tbody>
             </table>
+          </div>
           </div>
         </section>
       </section>
@@ -1525,8 +1614,10 @@ export function renderAppShell(input: {
       const bootstrap = window.__GEMROUTER_BOOTSTRAP__;
       const state = {
         apps: [],
+        adminStats: null,
         compatibility: null,
         authenticated: false,
+        interactionLimit: 10,
         modelCatalog: [],
         username: '',
         publicSummary: null,
@@ -1579,6 +1670,7 @@ export function renderAppShell(input: {
       const appReset = document.getElementById('app-reset');
       const appsTable = document.getElementById('apps-table');
       const interactionsTable = document.getElementById('interactions-table');
+      const interactionsLimitSelect = document.getElementById('interactions-limit-select');
       const allowedModelsPicker = document.getElementById('allowed-models-picker');
       const allowedModelsOptions = document.getElementById('allowed-models-options');
       const allowedModelsSummary = document.getElementById('allowed-models-summary');
@@ -1614,6 +1706,51 @@ export function renderAppShell(input: {
         setTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
       });
       setTheme(savedTheme);
+
+      function htmlToText(value) {
+        return String(value || '')
+          .replace(/<script[\\s\\S]*?<\\/script>/gi, ' ')
+          .replace(/<style[\\s\\S]*?<\\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/&amp;/gi, '&')
+          .replace(/&quot;/gi, '"')
+          .replace(/&#39;/gi, "'")
+          .replace(/\\s+/g, ' ')
+          .trim();
+      }
+
+      function summarizeHtmlError(html, statusCode) {
+        const text = htmlToText(html);
+        if (statusCode === 504 || /gateway time-?out|error code 504/i.test(text)) {
+          return 'Gateway timeout while waiting for the router response. Retry or use a faster image model.';
+        }
+        if (/cloudflare/i.test(text)) {
+          return 'Cloudflare returned an error page while waiting for the router response.';
+        }
+        return 'The server returned an HTML error page instead of JSON' + (statusCode ? ' (HTTP ' + statusCode + ')' : '') + '.';
+      }
+
+      function normalizeRequestError(response, body) {
+        if (body && typeof body === 'object' && body.error && body.error.message) {
+          return String(body.error.message);
+        }
+        if (typeof body === 'string') {
+          const trimmed = body.trim();
+          if (!trimmed) {
+            return 'Request failed with HTTP ' + response.status + '.';
+          }
+          if (response.status === 504 || /gateway time-?out|error code:\s*504/i.test(trimmed)) {
+            return 'Gateway timeout while waiting for the router response. Retry or use a faster image model.';
+          }
+          if (/<(!doctype|html)\\b/i.test(trimmed)) {
+            return summarizeHtmlError(trimmed, response.status);
+          }
+          return trimmed.length > 320 ? trimmed.slice(0, 317) + '…' : trimmed;
+        }
+        return 'Request failed with HTTP ' + response.status + '.';
+      }
+
       Array.from(document.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
         autosizeTextarea(textarea);
         textarea.addEventListener('input', function() {
@@ -1633,11 +1770,34 @@ export function renderAppShell(input: {
         const contentType = response.headers.get('content-type') || '';
         const body = contentType.includes('application/json') ? await response.json() : await response.text();
         if (!response.ok) {
-          const message = body && body.error ? body.error.message : (typeof body === 'string' ? body : 'Request failed');
-          throw new Error(message);
+          throw new Error(normalizeRequestError(response, body));
+        }
+        if (typeof body === 'string' && /<(!doctype|html)\\b/i.test(body.trim())) {
+          throw new Error(summarizeHtmlError(body, response.status));
         }
         return body;
       }
+
+      function setSectionExpanded(button, expanded) {
+        const bodyId = button && typeof button.getAttribute === 'function' ? button.getAttribute('aria-controls') : '';
+        const body = bodyId ? document.getElementById(bodyId) : null;
+        if (!body) return;
+        body.classList.toggle('hidden', !expanded);
+        button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        const label = button.querySelector('.section-toggle-label');
+        if (label) {
+          label.textContent = expanded ? 'Collapse' : 'Expand';
+        }
+      }
+
+      Array.from(document.querySelectorAll('[data-section-toggle]')).forEach(function(button) {
+        const bodyId = button.getAttribute('aria-controls');
+        const body = bodyId ? document.getElementById(bodyId) : null;
+        setSectionExpanded(button, body ? !body.classList.contains('hidden') : false);
+        button.addEventListener('click', function() {
+          setSectionExpanded(button, button.getAttribute('aria-expanded') !== 'true');
+        });
+      });
 
       function autosizeTextarea(textarea) {
         if (!textarea || !textarea.classList || !textarea.classList.contains('compact-textarea')) return;
@@ -2316,8 +2476,13 @@ export function renderAppShell(input: {
       }
 
       function renderInteractions(summary) {
-        interactionsTable.innerHTML = summary.recent.map(function(item) {
-          const usage = item.usage ? item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens : 'n/a';
+        const recent = Array.isArray(summary && summary.recent)
+          ? summary.recent.slice(0, Math.max(1, Number(state.interactionLimit) || 10))
+          : [];
+        interactionsTable.innerHTML = recent.map(function(item) {
+          const usage = item.usage
+            ? (item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens)
+            : 'n/a';
           const feedback = item.feedback ? '<span class="chip ' + item.feedback + '">' + item.feedback + '</span>' : '<span class="chip warn">unrated</span>';
           return '<tr>' +
             '<td>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route) + '</div></td>' +
@@ -2335,7 +2500,7 @@ export function renderAppShell(input: {
               (item.feedbackNotes ? '<div class="footer-note">' + escapeHtml(item.feedbackNotes) + '</div>' : '') +
             '</td>' +
           '</tr>';
-        }).join('');
+        }).join('') || '<tr><td colspan="7" class="muted">No interactions logged yet.</td></tr>';
       }
 
       async function loadPublicSummary() {
@@ -2362,6 +2527,7 @@ export function renderAppShell(input: {
         const selectedPromptModel = promptModel.value;
         const data = await request('/admin/summary');
         state.apps = data.apps;
+        state.adminStats = data.stats || null;
         state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
         state.compatibility = data.compatibility || null;
         renderAllowedModelsPicker(state.modelCatalog, selectedModels);
@@ -2373,7 +2539,7 @@ export function renderAppShell(input: {
         renderStats(data.stats);
         renderCompatibility(data.compatibility);
         renderApps(data.apps);
-        renderInteractions(data.stats);
+        renderInteractions(state.adminStats);
         if (editingAppId) {
           const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
           if (editingApp) {
@@ -2531,6 +2697,14 @@ export function renderAppShell(input: {
       promptApp.addEventListener('change', function() {
         fillModelOptions();
       });
+      if (interactionsLimitSelect) {
+        interactionsLimitSelect.value = String(state.interactionLimit);
+        interactionsLimitSelect.addEventListener('change', function() {
+          const nextValue = Number(interactionsLimitSelect.value || 10);
+          state.interactionLimit = Number.isFinite(nextValue) && nextValue > 0 ? nextValue : 10;
+          renderInteractions(state.adminStats);
+        });
+      }
       allowedModelsOptions.addEventListener('change', function() {
         updateAllowedModelsSummary();
       });

@@ -193,6 +193,12 @@ function sanitizeKeyPreview(key: string): string {
   return key.length <= 10 ? 'configured' : `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+function effectiveRequestTimeoutMs(timeoutMs: number): number {
+  // Stay under common reverse-proxy limits so the origin can return a JSON timeout
+  // instead of letting an edge proxy replace the response with an HTML 504 page.
+  return Math.max(1_000, Math.min(timeoutMs, 90_000));
+}
+
 function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const byId = new Map(ledgerGroups.map((group) => [String(group.id), group]));
   const modelIds = Object.keys(config.limits);
@@ -258,7 +264,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(toGenerationBody(messages, opts)),
-        signal: AbortSignal.timeout(config.timeoutMs),
+        signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -358,10 +364,13 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     if (error instanceof GeminiApiProviderError) return error;
     const isTimeout = error instanceof Error && /aborted|timeout/i.test(error.message);
     const code = isTimeout ? 'gemini_api_timeout' : 'gemini_api_upstream_error';
+    const message = isTimeout
+      ? 'Gemini API request timed out before the upstream response completed.'
+      : redact(error instanceof Error ? error.message : String(error));
     lastUpstreamError = {
       status: null,
       code,
-      message: redact(error instanceof Error ? error.message : String(error)),
+      message,
       googleStatus: null,
       googleReason: null,
       endpoint: endpoint.replace(/\?.*$/, ''),
@@ -378,7 +387,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       code,
       reason: lastUpstreamError.message ?? undefined,
     });
-    return new GeminiApiProviderError(code, lastUpstreamError.message ?? 'Gemini API request failed.', {
+    return new GeminiApiProviderError(code, message || 'Gemini API request failed.', {
       statusCode: isTimeout ? 504 : 502,
       fallbackEligible: true,
       lastUpstreamError,
