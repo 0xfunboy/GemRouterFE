@@ -1649,17 +1649,17 @@ export function renderAppShell(input: {
       function normalizeMarkdownInline(value) {
         return value
           .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
-          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-          .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+          .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')
+          .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')
+          .replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
       }
 
       function renderMarkdown(markdown) {
         const source = String(markdown || '').trim();
         if (!source) return '<div class="muted">No text response returned.</div>';
-        const escaped = escapeHtml(source).replace(/\r\n/g, '\n');
+        const escaped = escapeHtml(source).replace(/\\r\\n/g, '\\n');
         const blocks = [];
-        const lines = escaped.split('\n');
+        const lines = escaped.split('\\n');
         let paragraph = [];
         let listType = '';
         let listItems = [];
@@ -1683,7 +1683,7 @@ export function renderAppShell(input: {
 
         function flushCodeBlock() {
           if (!inCodeBlock) return;
-          blocks.push('<pre><code>' + codeLines.join('\n') + '</code></pre>');
+          blocks.push('<pre><code>' + codeLines.join('\\n') + '</code></pre>');
           inCodeBlock = false;
           codeLines = [];
         }
@@ -1712,7 +1712,7 @@ export function renderAppShell(input: {
             return;
           }
 
-          const heading = line.match(/^(#{1,3})\s+(.+)$/);
+          const heading = line.match(/^(#{1,3})\\s+(.+)$/);
           if (heading) {
             flushParagraph();
             flushList();
@@ -1721,7 +1721,7 @@ export function renderAppShell(input: {
             return;
           }
 
-          const quote = line.match(/^&gt;\s?(.*)$/);
+          const quote = line.match(/^&gt;\\s?(.*)$/);
           if (quote) {
             flushParagraph();
             flushList();
@@ -1729,7 +1729,7 @@ export function renderAppShell(input: {
             return;
           }
 
-          const unordered = line.match(/^[-*]\s+(.+)$/);
+          const unordered = line.match(/^[-*]\\s+(.+)$/);
           if (unordered) {
             flushParagraph();
             if (listType && listType !== 'ul') flushList();
@@ -1738,7 +1738,7 @@ export function renderAppShell(input: {
             return;
           }
 
-          const ordered = line.match(/^\d+\.\s+(.+)$/);
+          const ordered = line.match(/^\\d+\\.\\s+(.+)$/);
           if (ordered) {
             flushParagraph();
             if (listType && listType !== 'ol') flushList();
