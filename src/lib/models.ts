@@ -1,9 +1,9 @@
 export const PLAYWRIGHT_MODEL_IDS = ['gemini-web', 'google/gemini-web'] as const;
 
 export const DEFAULT_DIRECT_MODEL_IDS = [
-  'gemini-3.1-pro',
+  'gemini-3.1-pro-preview',
   'gemini-3.1-flash-lite',
-  'gemini-3-flash',
+  'gemini-3-flash-preview',
   'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
