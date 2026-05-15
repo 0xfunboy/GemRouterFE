@@ -768,6 +768,8 @@ function recordInteraction(input: {
     model: input.model,
     requestedModel: input.requestedModel ?? input.model,
     backendModel: input.response?.backendModel,
+    apiKeyId: input.response?.apiKeyId,
+    quotaGroup: input.response?.quotaGroup,
     prompt: flattenPrompt(input.messages),
     response: input.responseText,
     usage: input.usage,
