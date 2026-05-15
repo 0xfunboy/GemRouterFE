@@ -59,6 +59,7 @@ export interface LLMResponse {
     reason: string;
     statusCode?: number | null;
     availableAfter?: string | null;
+    availableAfterSource?: 'retry-after' | null;
   }>;
   latencyMs?: number;
 }

@@ -2539,7 +2539,21 @@ export function renderAppShell(input: {
         if (!value) return 'never';
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return String(value).replace(/\\.\\d{3}Z$/, 'Z');
-        return date.toISOString().replace(/\\.\\d{3}Z$/, 'Z');
+        return date.toLocaleString(undefined, {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          timeZoneName: 'short',
+        });
+      }
+
+      function formatRetryAfter(value, source) {
+        if (!value) return 'ready';
+        if (source === 'retry-after') return 'retry after ' + formatTimestamp(value);
+        return 'local counter active';
       }
 
       function renderHiddenLabel(label) {
@@ -2579,7 +2593,7 @@ export function renderAppShell(input: {
           const groupId = typeof group.id === 'string' && group.id.trim() ? group.id.trim() : '';
           const groupLabel = groupId ? escapeHtml(groupId) : renderHiddenLabel('hidden in guest view');
           models.slice(0, 12).forEach(function(model) {
-            const cooldown = model.cooldownUntil ? 'cooldown until ' + model.cooldownUntil : 'ready';
+            const cooldown = formatRetryAfter(model.cooldownUntil, model.cooldownSource);
             rows.push('<tr>' +
               '<td data-label="Group">' + groupLabel + '</td>' +
               '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">source: ' + escapeHtml(String(model.source || 'local-ledger')) + '</div></td>' +
@@ -2722,7 +2736,7 @@ export function renderAppShell(input: {
           const attempts = Array.isArray(item.fallbackAttempts) ? item.fallbackAttempts : [];
           const fallbackDetails = attempts.length > 0
             ? attempts.map(function(attempt) {
-              return attempt.model + ': ' + attempt.reason + (attempt.availableAfter ? ' until ' + attempt.availableAfter : '');
+              return attempt.model + ': ' + attempt.reason + (attempt.availableAfter ? ' retry after ' + formatTimestamp(attempt.availableAfter) : '');
             }).join(' | ')
             : '';
           const requested = item.requestedModel && item.requestedModel !== item.model

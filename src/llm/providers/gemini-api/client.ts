@@ -560,6 +560,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             reason: providerError.code,
             statusCode: providerError.options.statusCode ?? null,
             availableAfter: availability.cooldownUntil,
+            availableAfterSource: availability.cooldownSource,
           });
           lastError = providerError.message;
           lastFailureAt = nowIso();
