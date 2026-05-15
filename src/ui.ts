@@ -2734,20 +2734,32 @@ export function renderAppShell(input: {
             : 'n/a';
           const feedback = item.feedback ? '<span class="chip ' + item.feedback + '">' + item.feedback + '</span>' : '<span class="chip warn">unrated</span>';
           const attempts = Array.isArray(item.fallbackAttempts) ? item.fallbackAttempts : [];
-          const fallbackDetails = attempts.length > 0
-            ? attempts.map(function(attempt) {
-              return attempt.model + ': ' + attempt.reason + (attempt.availableAfter ? ' retry after ' + formatTimestamp(attempt.availableAfter) : '');
-            }).join(' | ')
+          const selected = item.requestedModel && item.requestedModel !== item.model
+            ? '<div class="footer-note">1. Requested: ' + escapeHtml(item.requestedModel) + '</div>' +
+              '<div class="footer-note">2. Policy selected: ' + escapeHtml(item.model || 'n/a') + '</div>'
+            : '<div class="footer-note">1. Requested: ' + escapeHtml(item.model || 'n/a') + '</div>';
+          const attemptDetails = attempts.length > 0
+            ? attempts.map(function(attempt, index) {
+              const key = attempt.keyId ? attempt.keyId : 'no-key';
+              const group = attempt.quotaGroup ? ' / ' + attempt.quotaGroup : '';
+              const retry = attempt.availableAfter ? ' retry after ' + formatTimestamp(attempt.availableAfter) : '';
+              return '<div class="footer-note">' + String(index + 3) + '. Tried ' + escapeHtml(attempt.model || 'n/a') +
+                ' on ' + escapeHtml(key + group) + ' -> ' + escapeHtml(attempt.reason || 'failed') + escapeHtml(retry) + '</div>';
+            }).join('')
             : '';
-          const requested = item.requestedModel && item.requestedModel !== item.model
-            ? ('requested ' + item.requestedModel + ' -> ')
-            : '';
+          const successIndex = attempts.length + (item.requestedModel && item.requestedModel !== item.model ? 3 : 2);
+          const successDetails = item.status === 'succeeded'
+            ? '<div class="footer-note good-text">' + String(successIndex) + '. Success: ' + escapeHtml(item.backendModel || item.model || 'n/a') +
+              ' on ' + escapeHtml(item.apiKeyId || 'unknown-key') + (item.quotaGroup ? ' / ' + escapeHtml(item.quotaGroup) : '') + '</div>'
+            : '<div class="footer-note warn-text">' + String(successIndex) + '. Failed: ' + escapeHtml(item.error || item.fallbackReason || 'unknown error') + '</div>';
           return '<tr>' +
             '<td>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route) + '</div></td>' +
             '<td><strong>' + escapeHtml(item.appName) + '</strong></td>' +
-            '<td><strong>' + escapeHtml(item.model || 'n/a') + '</strong><div class="footer-note">' + escapeHtml(requested + (item.backendModel ? 'backend ' + item.backendModel : item.provider || '')) + '</div>' +
+            '<td><strong>' + escapeHtml(item.backendModel || item.model || 'n/a') + '</strong>' +
+              selected +
               (item.fallbackReason ? '<div class="footer-note warn-text">fallback: ' + escapeHtml(item.fallbackReason) + '</div>' : '') +
-              (fallbackDetails ? '<div class="footer-note">' + escapeHtml(fallbackDetails) + '</div>' : '') +
+              attemptDetails +
+              successDetails +
             '</td>' +
             '<td>' + escapeHtml(item.promptExcerpt || '(empty)') + '</td>' +
             '<td>' + escapeHtml(item.responseExcerpt || item.error || '(empty)') + '</td>' +
