@@ -1,8 +1,10 @@
 import 'dotenv/config';
 
+import { execFile } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
@@ -68,6 +70,7 @@ import { renderAppShell } from './ui.js';
 const PROJECT_NAME = 'GemRouter';
 const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
+const execFileAsync = promisify(execFile);
 
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
@@ -1184,6 +1187,68 @@ function buildGuestSummary() {
         .slice(0, 6)
         .map(([label, requests]) => ({ label, requests })),
     },
+  };
+}
+
+async function readGcloudAccessToken(): Promise<string> {
+  const { stdout } = await execFileAsync('gcloud', ['auth', 'print-access-token'], {
+    timeout: 15_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const token = stdout.trim();
+  if (!token) throw new Error('gcloud returned an empty access token');
+  return token;
+}
+
+function summarizeServiceUsageMetrics(payload: Record<string, unknown>): Array<Record<string, unknown>> {
+  const metrics = Array.isArray(payload.metrics) ? payload.metrics as Array<Record<string, unknown>> : [];
+  return metrics
+    .filter((metric) => /generate|token|embedding|embed|request/i.test(String(metric.displayName ?? metric.metric ?? '')))
+    .slice(0, 80)
+    .map((metric) => ({
+      metric: metric.metric ?? null,
+      displayName: metric.displayName ?? null,
+      unit: metric.unit ?? null,
+      limits: (Array.isArray(metric.consumerQuotaLimits) ? metric.consumerQuotaLimits as Array<Record<string, unknown>> : [])
+        .slice(0, 8)
+        .map((limit) => ({
+          name: limit.name ?? null,
+          displayName: limit.displayName ?? null,
+          unit: limit.unit ?? null,
+          quotaBuckets: (Array.isArray(limit.quotaBuckets) ? limit.quotaBuckets as Array<Record<string, unknown>> : [])
+            .slice(0, 6)
+            .map((bucket) => ({
+              effectiveLimit: bucket.effectiveLimit ?? null,
+              defaultLimit: bucket.defaultLimit ?? null,
+              dimensions: bucket.dimensions ?? null,
+            })),
+        })),
+    }));
+}
+
+async function fetchGeminiProjectQuota(projectId: string, accessToken: string): Promise<Record<string, unknown>> {
+  const url = new URL(`https://serviceusage.googleapis.com/v1beta1/projects/${encodeURIComponent(projectId)}/services/generativelanguage.googleapis.com/consumerQuotaMetrics`);
+  url.searchParams.set('view', 'FULL');
+  url.searchParams.set('pageSize', '200');
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) {
+    return {
+      projectId,
+      ok: false,
+      statusCode: response.status,
+      error: (payload.error as Record<string, unknown> | undefined)?.status ?? 'service_usage_error',
+      message: (payload.error as Record<string, unknown> | undefined)?.message ?? response.statusText,
+    };
+  }
+  return {
+    projectId,
+    ok: true,
+    source: 'google-service-usage',
+    metrics: summarizeServiceUsageMetrics(payload),
   };
 }
 
@@ -2618,11 +2683,26 @@ app.post('/admin/provider/gemini-api/discover-models', async (request, reply) =>
 app.post('/admin/provider/gemini-api/refresh-quota', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
+  const geminiApi = ((runtime.backends as Record<string, unknown>)?.geminiApi as Record<string, unknown> | null) ?? {};
+  const keys = Array.isArray(geminiApi.keys) ? geminiApi.keys as Array<Record<string, unknown>> : [];
+  const projectIds = [...new Set(keys.map((key) => String(key.projectId ?? '').trim()).filter(Boolean))];
+  let projectQuotas: Array<Record<string, unknown>> = [];
+  let projectQuotaLastError: string | null = null;
+  if (projectIds.length > 0) {
+    try {
+      const token = await readGcloudAccessToken();
+      projectQuotas = await Promise.all(projectIds.map((projectId) => fetchGeminiProjectQuota(projectId, token)));
+    } catch (error) {
+      projectQuotaLastError = error instanceof Error ? error.message : String(error);
+    }
+  }
   return {
     ok: true,
-    source: 'local-ledger',
-    authoritative: false,
-    geminiApi: (runtime.backends as Record<string, unknown>).geminiApi ?? null,
+    source: projectQuotas.some((quota) => quota.ok === true) ? 'google-service-usage+local-ledger' : 'local-ledger',
+    authoritative: projectQuotas.some((quota) => quota.ok === true),
+    projectQuotas,
+    projectQuotaLastError,
+    geminiApi,
   };
 });
 
