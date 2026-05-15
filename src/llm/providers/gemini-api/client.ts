@@ -27,6 +27,7 @@ interface GeminiGenerateResponse {
           mime_type?: string;
           data?: string;
         };
+        thought?: boolean;
       }>;
     };
     finishReason?: string;
@@ -73,6 +74,28 @@ function normalizeGeminiApiModel(model: string | undefined): string {
   return normalized.replace(/^models\//, '');
 }
 
+function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
+  const model = normalizeGeminiApiModel(modelId);
+  if (!model.startsWith('gemini-')) return null;
+  const includeThoughts = opts?.thinking?.includeThoughts === true;
+  if (/^gemini-3/i.test(model)) {
+    return {
+      includeThoughts,
+      thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
+    };
+  }
+  if (/^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
+    return {
+      includeThoughts,
+      thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
+    };
+  }
+  if (/^gemini-2\.5-pro/i.test(model)) {
+    return { includeThoughts };
+  }
+  return { includeThoughts };
+}
+
 function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<string, unknown> {
   const semanticMessages = opts?.semanticProfile ? applySemanticPrompt(messages, opts.semanticProfile) : messages;
   const systemTexts = semanticMessages.filter((message) => message.role === 'system').map((message) => message.content.trim()).filter(Boolean);
@@ -93,6 +116,8 @@ function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<str
   const generationConfig: Record<string, unknown> = {};
   if (typeof opts?.temperature === 'number') generationConfig.temperature = opts.temperature;
   if (typeof opts?.maxTokens === 'number') generationConfig.maxOutputTokens = opts.maxTokens;
+  const thinkingConfig = buildThinkingConfig(opts?.model, opts);
+  if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
   if (Array.isArray(opts?.imageConfig?.responseModalities) && opts.imageConfig.responseModalities.length > 0) {
     generationConfig.responseModalities = opts.imageConfig.responseModalities;
   }
@@ -118,12 +143,14 @@ function extractParts(payload: GeminiGenerateResponse): Array<{
     mime_type?: string;
     data?: string;
   };
+  thought?: boolean;
 }> {
   return payload.candidates?.[0]?.content?.parts ?? [];
 }
 
 function extractText(payload: GeminiGenerateResponse): string {
   return extractParts(payload)
+    .filter((part) => part.thought !== true)
     .map((part) => (typeof part.text === 'string' ? part.text : ''))
     .join('')
     .trim();

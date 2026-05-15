@@ -501,6 +501,11 @@ function buildSessionOptions(input: {
     sessionLabel: sessionKey,
     resetSession: input.stateful !== true,
     backendPreference: input.backendPreference,
+    thinking: {
+      includeThoughts: config.generation.includeThoughts,
+      thinkingBudget: config.generation.thinkingBudget,
+      thinkingLevel: config.generation.thinkingLevel,
+    },
   };
 }
 

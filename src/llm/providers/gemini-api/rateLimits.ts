@@ -2,44 +2,54 @@ import type { GeminiApiRateLimit } from './types.js';
 
 export const GEMINI_API_TIER1_LIMITS = {
   'gemini-2.5-flash': {
-    rpm: 1000,
-    tpm: 1_000_000,
-    rpd: 10_000,
+    rpm: 10,
+    tpm: 250_000,
+    rpd: 20,
   },
   'gemini-2.5-pro': {
-    rpm: 150,
-    tpm: 2_000_000,
-    rpd: 1_000,
+    rpm: 0,
+    tpm: 0,
+    rpd: 0,
   },
   'gemini-2.0-flash': {
-    rpm: 2000,
-    tpm: 4_000_000,
-    rpd: null,
+    rpm: 15,
+    tpm: 1_000_000,
+    rpd: 200,
   },
   'gemini-2.0-flash-lite': {
-    rpm: 4000,
-    tpm: 4_000_000,
-    rpd: null,
+    rpm: 30,
+    tpm: 1_000_000,
+    rpd: 200,
   },
   'gemini-2.5-flash-lite': {
-    rpm: 4000,
-    tpm: 4_000_000,
-    rpd: null,
+    rpm: 15,
+    tpm: 250_000,
+    rpd: 1_000,
   },
   'gemini-3-flash-preview': {
-    rpm: 1000,
-    tpm: 2_000_000,
-    rpd: 10_000,
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
   },
   'gemini-3.1-flash-lite': {
-    rpm: 4000,
-    tpm: 4_000_000,
-    rpd: 150_000,
+    rpm: 15,
+    tpm: 250_000,
+    rpd: 1_000,
   },
-  'gemini-3.1-pro-preview': {
-    rpm: 25,
-    tpm: 2_000_000,
-    rpd: 250,
+  'gemini-3.1-flash-lite-preview': {
+    rpm: 15,
+    tpm: 250_000,
+    rpd: 1_000,
+  },
+  'gemma-4-31b-it': {
+    rpm: 15,
+    tpm: null,
+    rpd: 1_500,
+  },
+  'gemma-4-26b-a4b-it': {
+    rpm: 15,
+    tpm: null,
+    rpd: 1_500,
   },
   'gemini-embedding-001': {
     rpm: 3000,
@@ -58,8 +68,8 @@ export function getGeminiApiLimit(
   limits: Record<string, GeminiApiRateLimit>,
 ): GeminiApiRateLimit {
   return limits[model] ?? limits[model.replace(/^models\//, '')] ?? {
-    rpm: 60,
-    tpm: 60_000,
-    rpd: 1_000,
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
   };
 }

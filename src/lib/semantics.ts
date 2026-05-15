@@ -147,10 +147,15 @@ function applyJsonActionPolicy(value: unknown, profile?: SemanticProfile): unkno
 function stripThinkBlocks(text: string, partial = false): string {
   if (!text) return '';
   if (partial) {
-    return text.replace(/<\/?think>/gi, '');
+    return text.replace(/<\/?(?:think|thinking|reasoning)>/gi, '');
   }
-  let normalized = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  normalized = normalized.replace(/<\/?think>/gi, '');
+  let normalized = text.replace(/<(?:think|thinking|reasoning)>[\s\S]*?<\/(?:think|thinking|reasoning)>/gi, '');
+  normalized = normalized.replace(/<\/?(?:think|thinking|reasoning)>/gi, '');
+  normalized = normalized.replace(
+    /^\s*(?:#{1,6}\s*)?(?:reasoning|thoughts?|chain[- ]of[- ]thought)\s*:?\s*[\s\S]*?(?=^\s*(?:#{1,6}\s*)?(?:final|answer|response|output)\s*:?\s*)/im,
+    '',
+  );
+  normalized = normalized.replace(/^\s*(?:#{1,6}\s*)?(?:final|answer|response|output)\s*:?\s*/i, '');
   return normalized;
 }
 

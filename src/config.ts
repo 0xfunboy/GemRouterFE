@@ -63,6 +63,12 @@ export interface RuntimeConfig {
     fallbackModelIds: string[];
     allModelIds: string[];
   };
+  generation: {
+    includeThoughts: boolean;
+    stripReasoning: boolean;
+    thinkingBudget?: number;
+    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  };
   auditLogPath: string;
   appsStorePath: string;
   interactionsStorePath: string;
@@ -423,6 +429,15 @@ export function loadConfig(
       embeddingModelIds: freeTierEmbeddingModelIds,
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
       allModelIds: freeTierModelIds,
+    },
+    generation: {
+      includeThoughts: readBoolean(env, false, 'GEMROUTER_INCLUDE_THOUGHTS'),
+      stripReasoning: readBoolean(env, true, 'GEMROUTER_STRIP_REASONING'),
+      thinkingBudget: readNumber(env, 0, 'GEMROUTER_THINKING_BUDGET'),
+      thinkingLevel: (() => {
+        const value = pick(env, 'GEMROUTER_THINKING_LEVEL')?.toLowerCase();
+        return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ? value : 'minimal';
+      })(),
     },
     auditLogPath: path.join(dataDir, 'audit.log'),
     appsStorePath: path.join(dataDir, 'apps.json'),
