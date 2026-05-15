@@ -167,6 +167,23 @@ function readGeminiApiLimits(
   };
 }
 
+function readGeminiAccountMetadata(
+  env: Record<string, string | undefined>,
+): Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string }> {
+  const pathValue = pick(env, 'GEMROUTER_GEMINI_API_ACCOUNTS_PATH');
+  let fileAccounts: Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string }> = [];
+  if (pathValue && existsSync(pathValue)) {
+    try {
+      const parsed = JSON.parse(readFileSync(pathValue, 'utf8')) as unknown;
+      fileAccounts = Array.isArray(parsed) ? parsed as typeof fileAccounts : [];
+    } catch {
+      fileAccounts = [];
+    }
+  }
+  const envAccounts = readJsonValue<typeof fileAccounts>(env, [], 'GEMROUTER_GEMINI_API_ACCOUNTS_JSON');
+  return envAccounts.length > 0 ? envAccounts : fileAccounts;
+}
+
 function readGeminiApiKeys(
   env: Record<string, string | undefined>,
   defaultTier: string,
@@ -192,15 +209,21 @@ function readGeminiApiKeys(
     });
   }
 
-  return readList(env, [], 'GEMROUTER_GEMINI_API_KEYS').map((key, index) => {
-    const id = `account${index + 1}`;
+  const accounts = readGeminiAccountMetadata(env);
+  const rawKeys = readList(env, [], 'GEMROUTER_GEMINI_API_KEYS');
+  return rawKeys.map((key, index) => {
+    const account = accounts[index] ?? {};
+    const id = String(account.id ?? `account${index + 1}`).trim();
     return {
       id,
       key,
-      quotaGroup: defaultQuotaGroupMode === 'shared' ? 'default' : id,
-      tier: defaultTier,
-      priority: 100,
-      enabled: true,
+      owner: account.owner,
+      projectId: account.projectId,
+      quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
+      tier: String(account.tier ?? defaultTier).trim(),
+      priority: typeof account.priority === 'number' ? account.priority : 100,
+      enabled: account.enabled !== false,
+      models: Array.isArray(account.models) ? account.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean) : undefined,
     };
   });
 }
