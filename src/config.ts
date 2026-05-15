@@ -2,7 +2,15 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { coerceCompatibilityState, type ApiSurface } from './lib/compatibility.js';
-import { buildPublicModelIds, DEFAULT_DIRECT_MODEL_IDS } from './lib/models.js';
+import {
+  buildFreeTierModelIds,
+  buildPublicModelIds,
+  DEFAULT_DIRECT_MODEL_IDS,
+  DEFAULT_FREE_TIER_AUDIO_MODEL_IDS,
+  DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS,
+  DEFAULT_FREE_TIER_TEXT_MODEL_IDS,
+  DEFAULT_TEXT_FALLBACK_MODEL_IDS,
+} from './lib/models.js';
 import type { LLMBackendId } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
 import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
@@ -43,6 +51,18 @@ export interface RuntimeConfig {
     backendOrder: LLMBackendId[];
   };
   modelIds: string[];
+  freeTierPolicy: {
+    enabled: boolean;
+    pricingUrl: string;
+    refreshMs: number;
+    parseModel: string;
+    storePath: string;
+    textModelIds: string[];
+    audioModelIds: string[];
+    embeddingModelIds: string[];
+    fallbackModelIds: string[];
+    allModelIds: string[];
+  };
   auditLogPath: string;
   appsStorePath: string;
   interactionsStorePath: string;
@@ -75,6 +95,12 @@ function readList(env: Record<string, string | undefined>, fallback: string[], .
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function intersectOrFallback(values: string[], allowed: string[], fallback: string[]): string[] {
+  const allowedSet = new Set(allowed.map((value) => value.trim().toLowerCase()).filter(Boolean));
+  const filtered = values.map((value) => value.trim().toLowerCase()).filter((value) => allowedSet.has(value));
+  return filtered.length > 0 ? [...new Set(filtered)] : fallback;
 }
 
 function readJsonValue<T>(env: Record<string, string | undefined>, fallback: T, ...keys: string[]): T {
@@ -200,15 +226,47 @@ export function loadConfig(
   const dataDir = path.resolve(rootDir, pick(env, 'GEMROUTER_DATA_DIR', 'BAIRBI_DATA_DIR', 'BARIBI_DATA_DIR') ?? 'data');
   mkdirSync(dataDir, { recursive: true });
 
+  const freeTierTextModelIds = readList(
+    env,
+    [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS],
+    'GEMROUTER_FREE_TIER_TEXT_MODELS',
+  ).map((model) => model.toLowerCase());
+  const freeTierAudioModelIds = readList(
+    env,
+    [...DEFAULT_FREE_TIER_AUDIO_MODEL_IDS],
+    'GEMROUTER_FREE_TIER_AUDIO_MODELS',
+  ).map((model) => model.toLowerCase());
+  const freeTierEmbeddingModelIds = readList(
+    env,
+    [...DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS],
+    'GEMROUTER_FREE_TIER_EMBEDDING_MODELS',
+  ).map((model) => model.toLowerCase());
+  const freeTierFallbackModelIds = readList(
+    env,
+    [...DEFAULT_TEXT_FALLBACK_MODEL_IDS],
+    'GEMROUTER_TEXT_FALLBACK_MODELS',
+  ).map((model) => model.toLowerCase());
+  const freeTierModelIds = buildFreeTierModelIds({
+    textModelIds: freeTierTextModelIds,
+    audioModelIds: freeTierAudioModelIds,
+    embeddingModelIds: freeTierEmbeddingModelIds,
+  });
+
   const configuredDirectModels = readList(
     env,
-    [...DEFAULT_DIRECT_MODEL_IDS],
+    freeTierTextModelIds.length > 0 ? freeTierTextModelIds : [...DEFAULT_DIRECT_MODEL_IDS],
     'GEMINI_DIRECT_MODELS',
     'GEMROUTER_DIRECT_MODELS',
-  );
+  )
+    .map((model) => model.toLowerCase())
+    .filter((model) => freeTierTextModelIds.includes(model));
   const configuredDirectDefaultModel =
-    pick(env, 'GEMINI_DIRECT_MODEL', 'GEMROUTER_DEFAULT_MODEL')?.trim().toLowerCase() ||
+    (() => {
+      const requested = pick(env, 'GEMINI_DIRECT_MODEL', 'GEMROUTER_DEFAULT_MODEL')?.trim().toLowerCase();
+      return requested && freeTierTextModelIds.includes(requested) ? requested : undefined;
+    })() ||
     configuredDirectModels[0] ||
+    freeTierTextModelIds[0] ||
     DEFAULT_DIRECT_MODEL_IDS[0];
   const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels])];
   const modelIds = buildPublicModelIds(directModels);
@@ -276,12 +334,16 @@ export function loadConfig(
         'BAIRBI_BOOTSTRAP_ALLOWED_ORIGINS',
         'BARIBI_BOOTSTRAP_ALLOWED_ORIGINS',
       ),
-      allowedModels: readList(
-        env,
+      allowedModels: intersectOrFallback(
+        readList(
+          env,
+          modelIds,
+          'GEMROUTER_BOOTSTRAP_ALLOWED_MODELS',
+          'BAIRBI_BOOTSTRAP_ALLOWED_MODELS',
+          'BARIBI_BOOTSTRAP_ALLOWED_MODELS',
+        ),
+        freeTierTextModelIds,
         modelIds,
-        'GEMROUTER_BOOTSTRAP_ALLOWED_MODELS',
-        'BAIRBI_BOOTSTRAP_ALLOWED_MODELS',
-        'BARIBI_BOOTSTRAP_ALLOWED_MODELS',
       ),
       sessionNamespace: pick(
         env,
@@ -341,11 +403,27 @@ export function loadConfig(
       countFailed429AsUsage: readBoolean(env, true, 'GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE'),
       timeoutMs: readNumber(env, 120_000, 'GEMROUTER_GEMINI_API_TIMEOUT_MS'),
       streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_GEMINI_API_STREAM_TIMEOUT_MS'),
+      fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
     },
     llmRouting: {
       backendOrder,
     },
     modelIds,
+    freeTierPolicy: {
+      enabled: readBoolean(env, true, 'GEMROUTER_FREE_TIER_POLICY_ENABLED'),
+      pricingUrl: pick(env, 'GEMROUTER_FREE_TIER_PRICING_URL') ?? 'https://ai.google.dev/gemini-api/docs/pricing',
+      refreshMs: readNumber(env, 86_400_000, 'GEMROUTER_FREE_TIER_REFRESH_MS'),
+      parseModel: pick(env, 'GEMROUTER_FREE_TIER_PARSE_MODEL') ?? freeTierFallbackModelIds[0] ?? modelIds[0],
+      storePath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_FREE_TIER_POLICY_PATH') ?? 'data/free-tier-policy.json',
+      ),
+      textModelIds: freeTierTextModelIds,
+      audioModelIds: freeTierAudioModelIds,
+      embeddingModelIds: freeTierEmbeddingModelIds,
+      fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
+      allModelIds: freeTierModelIds,
+    },
     auditLogPath: path.join(dataDir, 'audit.log'),
     appsStorePath: path.join(dataDir, 'apps.json'),
     interactionsStorePath: path.join(dataDir, 'interactions.json'),

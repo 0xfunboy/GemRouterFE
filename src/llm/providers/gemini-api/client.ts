@@ -339,12 +339,14 @@ function textFallbackScore(requestedModelId: string, candidateModelId: string): 
 function buildTextFallbackModels(
   requestedModelId: string,
   allowedModelIds: string[] | undefined,
+  preferredFallbackModelIds: string[] | undefined,
   discoveredModels: GeminiApiModelInfo[],
   opts?: LLMOptions,
 ): string[] {
   if (isPureImageRequest(opts)) return [];
   if (!Array.isArray(allowedModelIds) || allowedModelIds.length === 0) return [];
   const requested = normalizeGeminiApiModel(requestedModelId);
+  const allowed = new Set(allowedModelIds.map((modelId) => normalizeGeminiApiModel(modelId)).filter(Boolean));
   const discoveredMethodsById = new Map(
     discoveredModels.map((entry) => [
       normalizeGeminiApiModel(String(entry.id ?? '')),
@@ -353,12 +355,15 @@ function buildTextFallbackModels(
         : [],
     ]),
   );
-  return [...new Set(
-    allowedModelIds
-      .map((modelId) => normalizeGeminiApiModel(modelId))
-      .filter((modelId) => modelId && modelId !== requested)
-      .filter((modelId) => isTextFallbackModelCandidate(modelId, discoveredMethodsById.get(modelId)))
-  )].sort((left, right) => textFallbackScore(requested, right) - textFallbackScore(requested, left));
+  const preferred = Array.isArray(preferredFallbackModelIds)
+    ? preferredFallbackModelIds.map((modelId) => normalizeGeminiApiModel(modelId)).filter((modelId) => allowed.has(modelId))
+    : [];
+  const ranked = allowedModelIds
+    .map((modelId) => normalizeGeminiApiModel(modelId))
+    .filter((modelId) => modelId && modelId !== requested)
+    .filter((modelId) => isTextFallbackModelCandidate(modelId, discoveredMethodsById.get(modelId)))
+    .sort((left, right) => textFallbackScore(requested, right) - textFallbackScore(requested, left));
+  return [...new Set([...preferred, ...ranked])].filter((modelId) => modelId !== requested);
 }
 
 function shouldRetryWithFallbackModel(
@@ -456,10 +461,17 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     const requestedModel = normalizeGeminiApiModel(opts?.model);
     const modelAttempts = [
       requestedModel,
-      ...buildTextFallbackModels(requestedModel, opts?.allowedModelIds, discovery.snapshot().models, opts),
+      ...buildTextFallbackModels(
+        requestedModel,
+        opts?.allowedModelIds,
+        config.fallbackModelIds,
+        discovery.snapshot().models,
+        opts,
+      ),
     ];
     const estimatedTokens = estimateTokens(messages);
     let lastProviderError: GeminiApiProviderError | null = null;
+    const fallbackAttempts: NonNullable<LLMResponse['fallbackAttempts']> = [];
 
     for (let modelIndex = 0; modelIndex < modelAttempts.length; modelIndex++) {
       const model = modelAttempts[modelIndex];
@@ -533,10 +545,22 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               model !== requestedModel
                 ? (lastProviderError?.code ?? `fallback_model:${requestedModel}`)
                 : undefined,
+            fallbackAttempts: fallbackAttempts.length > 0 ? fallbackAttempts : undefined,
           };
         } catch (error) {
           const providerError = normalizeError(error, endpoint, model, reservation);
           lastProviderError = providerError;
+          const availability = ledger.getAvailability(reservation.key.quotaGroup, model, estimatedTokens);
+          fallbackAttempts.push({
+            model,
+            backend: 'gemini-api',
+            provider: 'gemini-api',
+            keyId: reservation.key.id,
+            quotaGroup: reservation.key.quotaGroup,
+            reason: providerError.code,
+            statusCode: providerError.options.statusCode ?? null,
+            availableAfter: availability.cooldownUntil,
+          });
           lastError = providerError.message;
           lastFailureAt = nowIso();
           lastLatencyMs = Date.now() - started;
@@ -675,6 +699,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         defaultTier: config.defaultTier,
         baseUrl: config.baseUrl,
         version: config.version,
+        fallbackModelIds: config.fallbackModelIds,
         keys: config.keys.map((key) => ({
           id: key.id,
           preview: sanitizeKeyPreview(key.key),

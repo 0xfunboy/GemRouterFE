@@ -92,6 +92,21 @@ export class AppStore {
     return [...this.state.apps];
   }
 
+  restrictAllowedModels(allowedModels: string[]): number {
+    const allowed = new Set(allowedModels.map((model) => model.trim()).filter(Boolean));
+    let changed = 0;
+    for (const app of this.state.apps) {
+      if (app.revokedAt) continue;
+      const next = app.allowedModels.filter((model) => allowed.has(model));
+      if (next.length === app.allowedModels.length) continue;
+      app.allowedModels = next.length > 0 ? next : allowedModels;
+      app.updatedAt = nowIso();
+      changed += 1;
+    }
+    if (changed > 0) this.save();
+    return changed;
+  }
+
   findById(id: string): ApiAppRecord | undefined {
     return this.state.apps.find((app) => app.id === id);
   }

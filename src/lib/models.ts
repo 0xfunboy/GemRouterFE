@@ -1,13 +1,44 @@
 export const DEFAULT_DIRECT_MODEL_IDS = [
-  'gemini-3.1-pro-preview',
-  'gemini-3.1-flash-lite',
   'gemini-3-flash-preview',
+  'gemma-4-31b-it',
   'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite-preview',
   'gemini-2.5-flash-lite',
-  'gemini-2.5-flash-image',
-  'gemini-3-pro-image-preview',
-  'gemini-3.1-flash-image-preview',
-  'nano-banana-pro-preview',
+  'gemini-2.0-flash-lite',
+] as const;
+
+export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
+  'gemini-3-flash-preview',
+  'gemma-4-31b-it',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash-lite-preview-09-2025',
+  'gemini-2.0-flash-lite',
+] as const;
+
+export const DEFAULT_FREE_TIER_AUDIO_MODEL_IDS = [
+  'gemini-3.1-flash-live-preview',
+  'gemini-3.1-flash-tts-preview',
+  'gemini-2.5-flash-native-audio-preview-12-2025',
+  'gemini-2.5-flash-preview-tts',
+] as const;
+
+export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
+  'gemini-embedding-2',
+] as const;
+
+export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
+  'gemini-3-flash-preview',
+  'gemma-4-31b-it',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
 ] as const;
 
 export interface PublicModelDescriptor {
@@ -142,6 +173,18 @@ export function buildDiscoveredModelCatalog(
 
 export function buildPublicModelIds(directModelIds: string[]): string[] {
   return unique(directModelIds);
+}
+
+export function buildFreeTierModelIds(input: {
+  textModelIds?: string[];
+  audioModelIds?: string[];
+  embeddingModelIds?: string[];
+} = {}): string[] {
+  return unique([
+    ...(input.textModelIds ?? [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS]),
+    ...(input.audioModelIds ?? [...DEFAULT_FREE_TIER_AUDIO_MODEL_IDS]),
+    ...(input.embeddingModelIds ?? [...DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS]),
+  ]);
 }
 
 export function buildDirectModelCatalog(configuredModelIds: string[]): PublicModelDescriptor[] {

@@ -690,6 +690,11 @@ export function renderAppShell(input: {
         font-size: 15px;
         letter-spacing: -0.03em;
       }
+      .role-banner.is-critical {
+        background: linear-gradient(135deg, rgba(255, 65, 82, 0.22), rgba(255, 170, 70, 0.13));
+        border-color: rgba(255, 65, 82, 0.5);
+        box-shadow: 0 0 34px rgba(255, 65, 82, 0.16);
+      }
       .response-box, .mono-box {
         min-height: 220px;
         padding: 14px;
@@ -2714,10 +2719,22 @@ export function renderAppShell(input: {
             ? (item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens)
             : 'n/a';
           const feedback = item.feedback ? '<span class="chip ' + item.feedback + '">' + item.feedback + '</span>' : '<span class="chip warn">unrated</span>';
+          const attempts = Array.isArray(item.fallbackAttempts) ? item.fallbackAttempts : [];
+          const fallbackDetails = attempts.length > 0
+            ? attempts.map(function(attempt) {
+              return attempt.model + ': ' + attempt.reason + (attempt.availableAfter ? ' until ' + attempt.availableAfter : '');
+            }).join(' | ')
+            : '';
+          const requested = item.requestedModel && item.requestedModel !== item.model
+            ? ('requested ' + item.requestedModel + ' -> ')
+            : '';
           return '<tr>' +
             '<td>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route) + '</div></td>' +
             '<td><strong>' + escapeHtml(item.appName) + '</strong></td>' +
-            '<td><strong>' + escapeHtml(item.model || 'n/a') + '</strong><div class="footer-note">' + escapeHtml(item.provider || '') + '</div></td>' +
+            '<td><strong>' + escapeHtml(item.model || 'n/a') + '</strong><div class="footer-note">' + escapeHtml(requested + (item.backendModel ? 'backend ' + item.backendModel : item.provider || '')) + '</div>' +
+              (item.fallbackReason ? '<div class="footer-note warn-text">fallback: ' + escapeHtml(item.fallbackReason) + '</div>' : '') +
+              (fallbackDetails ? '<div class="footer-note">' + escapeHtml(fallbackDetails) + '</div>' : '') +
+            '</td>' +
             '<td>' + escapeHtml(item.promptExcerpt || '(empty)') + '</td>' +
             '<td>' + escapeHtml(item.responseExcerpt || item.error || '(empty)') + '</td>' +
             '<td>' + escapeHtml(usage) + '<div class="footer-note">' + escapeHtml(String(item.latencyMs || 0)) + ' ms</div></td>' +
@@ -2760,6 +2777,7 @@ export function renderAppShell(input: {
         state.adminStats = data.stats || null;
         state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
         state.compatibility = data.compatibility || null;
+        state.freeTierPolicy = data.freeTierPolicy || null;
         renderAllowedModelsPicker(state.modelCatalog, selectedModels);
         fillAppOptions(data.apps);
         fillModelOptions(selectedPromptModel);
@@ -2777,8 +2795,19 @@ export function renderAppShell(input: {
           }
         }
         setAdminVisible(true);
-        adminBannerTitle.textContent = 'Operator console active';
-        adminBannerCopy.textContent = state.username ? 'Signed in as ' + state.username + '.' : 'Signed in as admin.';
+        const freeTierAlerts = state.freeTierPolicy && Array.isArray(state.freeTierPolicy.alerts)
+          ? state.freeTierPolicy.alerts
+          : [];
+        const criticalAlert = freeTierAlerts.find(function(alert) { return alert.level === 'critical'; }) || freeTierAlerts[0];
+        const banner = adminBannerTitle ? adminBannerTitle.closest('.role-banner') : null;
+        if (banner) banner.classList.toggle('is-critical', Boolean(criticalAlert));
+        if (criticalAlert) {
+          adminBannerTitle.textContent = criticalAlert.message;
+          adminBannerCopy.textContent = (criticalAlert.modelIds || []).join(', ') || 'Free-tier model policy changed.';
+        } else {
+          adminBannerTitle.textContent = 'Operator console active';
+          adminBannerCopy.textContent = state.username ? 'Signed in as ' + state.username + '.' : 'Signed in as admin.';
+        }
       }
 
       async function refreshSession() {

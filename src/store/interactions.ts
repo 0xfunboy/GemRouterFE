@@ -18,6 +18,8 @@ export interface InteractionRecord {
   appName: string;
   route: string;
   model: string;
+  requestedModel?: string;
+  backendModel?: string;
   promptExcerpt: string;
   responseExcerpt: string;
   promptChars: number;
@@ -28,6 +30,16 @@ export interface InteractionRecord {
   latencyMs?: number;
   origin?: string;
   provider?: string;
+  fallbackReason?: string;
+  fallbackAttempts?: Array<{
+    model: string;
+    provider?: string;
+    keyId?: string | null;
+    quotaGroup?: string | null;
+    reason: string;
+    statusCode?: number | null;
+    availableAfter?: string | null;
+  }>;
   feedback?: 'good' | 'bad';
   feedbackNotes?: string;
   error?: string;
@@ -43,6 +55,8 @@ interface RecordInteractionInput {
   appName: string;
   route: string;
   model: string;
+  requestedModel?: string;
+  backendModel?: string;
   prompt: string;
   response?: string;
   usage?: UsageSummary;
@@ -51,6 +65,8 @@ interface RecordInteractionInput {
   latencyMs?: number;
   origin?: string;
   provider?: string;
+  fallbackReason?: string;
+  fallbackAttempts?: InteractionRecord['fallbackAttempts'];
   error?: string;
 }
 
@@ -92,6 +108,8 @@ export class InteractionStore {
       appName: input.appName,
       route: input.route,
       model: input.model,
+      requestedModel: input.requestedModel,
+      backendModel: input.backendModel,
       promptExcerpt: trimExcerpt(input.prompt, MAX_PROMPT_EXCERPT),
       responseExcerpt: trimExcerpt(input.response ?? '', MAX_RESPONSE_EXCERPT),
       promptChars: input.prompt.length,
@@ -102,6 +120,8 @@ export class InteractionStore {
       latencyMs: input.latencyMs,
       origin: input.origin,
       provider: input.provider,
+      fallbackReason: input.fallbackReason,
+      fallbackAttempts: input.fallbackAttempts,
       error: input.error,
     };
     this.state.interactions.unshift(record);

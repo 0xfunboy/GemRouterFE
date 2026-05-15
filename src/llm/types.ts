@@ -50,6 +50,16 @@ export interface LLMResponse {
   };
   fallbackFrom?: LLMBackendId;
   fallbackReason?: string;
+  fallbackAttempts?: Array<{
+    model: string;
+    backend?: LLMBackendId;
+    provider?: string;
+    keyId?: string | null;
+    quotaGroup?: string | null;
+    reason: string;
+    statusCode?: number | null;
+    availableAfter?: string | null;
+  }>;
   latencyMs?: number;
 }
 
