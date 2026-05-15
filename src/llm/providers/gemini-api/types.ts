@@ -37,6 +37,7 @@ export interface GeminiApiProviderConfig {
   countFailed429AsUsage: boolean;
   timeoutMs: number;
   streamTimeoutMs: number;
+  fallbackModelIds: string[];
 }
 
 export interface GeminiApiModelInfo {

@@ -1,6 +1,8 @@
 import 'dotenv/config';
 
 import { timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
@@ -90,6 +92,7 @@ const bootstrapApp = appStore.ensureBootstrapApp({
   rateLimitPerMinute: config.bootstrapApp.rateLimitPerMinute,
   maxConcurrency: config.bootstrapApp.maxConcurrency,
 });
+appStore.restrictAllowedModels(config.freeTierPolicy.textModelIds);
 
 const app = Fastify({
   logger: false,
@@ -444,6 +447,34 @@ function ensureModelAllowed(
   return true;
 }
 
+function isConfiguredTextModel(modelId: string): boolean {
+  return config.freeTierPolicy.textModelIds.includes(normalizeModelId(modelId));
+}
+
+function textModelsAllowedForApp(clientApp: AuthenticatedClientApp | ApiAppRecord): string[] {
+  const appAllowed = new Set(clientApp.allowedModels.map((model) => normalizeModelId(model)));
+  return config.freeTierPolicy.textModelIds.filter((modelId) => appAllowed.has(modelId));
+}
+
+function resolveTextModelForApp(
+  clientApp: AuthenticatedClientApp | ApiAppRecord,
+  requestedModel: string,
+): { model: string; requestedModel: string; policyFallbackReason?: string; allowedModelIds: string[] } | null {
+  const requested = normalizeModelId(requestedModel);
+  const allowedModelIds = textModelsAllowedForApp(clientApp);
+  if (allowedModelIds.length === 0) return null;
+  if (appStore.isModelAllowed(clientApp, requested) && isConfiguredTextModel(requested)) {
+    return { model: requested, requestedModel: requested, allowedModelIds };
+  }
+  const fallback = config.freeTierPolicy.fallbackModelIds.find((modelId) => allowedModelIds.includes(modelId)) ?? allowedModelIds[0];
+  return {
+    model: fallback,
+    requestedModel: requested,
+    allowedModelIds,
+    policyFallbackReason: isConfiguredTextModel(requested) ? 'app_model_not_allowed' : 'non_free_or_unsupported_model',
+  };
+}
+
 function buildSessionOptions(input: {
   model: string;
   allowedModelIds?: string[];
@@ -540,17 +571,171 @@ function flattenPrompt(messages: LLMMessage[]): string {
   return messages.map((message) => `${message.role}: ${message.content}`).join('\n');
 }
 
+interface FreeTierPolicyState {
+  checkedAt: string | null;
+  pricingUrl: string;
+  textModelIds: string[];
+  audioModelIds: string[];
+  embeddingModelIds: string[];
+  addedModelIds: string[];
+  removedConfiguredModelIds: string[];
+  unavailableConfiguredModelIds: string[];
+  alerts: Array<{ level: 'warning' | 'critical'; message: string; modelIds: string[] }>;
+  lastError?: string;
+}
+
+let freeTierPolicyState: FreeTierPolicyState = loadFreeTierPolicyState();
+let freeTierPolicyRefresh: Promise<FreeTierPolicyState> | null = null;
+
+function emptyFreeTierPolicyState(): FreeTierPolicyState {
+  return {
+    checkedAt: null,
+    pricingUrl: config.freeTierPolicy.pricingUrl,
+    textModelIds: config.freeTierPolicy.textModelIds,
+    audioModelIds: config.freeTierPolicy.audioModelIds,
+    embeddingModelIds: config.freeTierPolicy.embeddingModelIds,
+    addedModelIds: [],
+    removedConfiguredModelIds: [],
+    unavailableConfiguredModelIds: [],
+    alerts: [],
+  };
+}
+
+function loadFreeTierPolicyState(): FreeTierPolicyState {
+  if (!existsSync(config.freeTierPolicy.storePath)) return emptyFreeTierPolicyState();
+  try {
+    const parsed = JSON.parse(readFileSync(config.freeTierPolicy.storePath, 'utf8')) as Partial<FreeTierPolicyState>;
+    return { ...emptyFreeTierPolicyState(), ...parsed };
+  } catch {
+    return emptyFreeTierPolicyState();
+  }
+}
+
+function saveFreeTierPolicyState(state: FreeTierPolicyState): void {
+  mkdirSync(path.dirname(config.freeTierPolicy.storePath), { recursive: true });
+  writeFileSync(config.freeTierPolicy.storePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}
+
+function extractJsonObject(value: string): Record<string, unknown> | null {
+  const start = value.indexOf('{');
+  const end = value.lastIndexOf('}');
+  if (start < 0 || end <= start) return null;
+  try {
+    return JSON.parse(value.slice(start, end + 1)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function readStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? [...new Set(value.map((item) => normalizeModelId(String(item))).filter(Boolean))]
+    : [];
+}
+
+async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPolicyState> {
+  if (!config.freeTierPolicy.enabled) return freeTierPolicyState;
+  const checkedAt = Date.parse(String(freeTierPolicyState.checkedAt ?? ''));
+  if (!force && Number.isFinite(checkedAt) && Date.now() - checkedAt < config.freeTierPolicy.refreshMs) {
+    return freeTierPolicyState;
+  }
+  if (freeTierPolicyRefresh) return freeTierPolicyRefresh;
+  freeTierPolicyRefresh = (async () => {
+    try {
+      const page = await fetch(config.freeTierPolicy.pricingUrl, {
+        signal: AbortSignal.timeout(30_000),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`pricing fetch failed: HTTP ${response.status}`);
+        return response.text();
+      });
+      const text = page
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .slice(0, 120_000);
+      const response = await llm.chat([
+        {
+          role: 'system',
+          content: 'Extract Gemini API Free Tier model ids from the pricing page. Return only JSON.',
+        },
+        {
+          role: 'user',
+          content: [
+            'Return JSON with keys textModelIds, audioModelIds, embeddingModelIds.',
+            'Include only models whose standard free tier input and output are free or available free of charge.',
+            'Exclude image-generation/video/paid-only models.',
+            text,
+          ].join('\n'),
+        },
+      ], {
+        model: config.freeTierPolicy.parseModel,
+        allowedModelIds: config.freeTierPolicy.fallbackModelIds,
+      });
+      const parsed = extractJsonObject(response.content) ?? {};
+      const textModelIds = readStringList(parsed.textModelIds);
+      const audioModelIds = readStringList(parsed.audioModelIds);
+      const embeddingModelIds = readStringList(parsed.embeddingModelIds);
+      const discoveredFree = new Set([...textModelIds, ...audioModelIds, ...embeddingModelIds]);
+      const configuredFree = new Set(config.freeTierPolicy.allModelIds);
+      const addedModelIds = [...discoveredFree].filter((modelId) => !configuredFree.has(modelId));
+      const removedConfiguredModelIds = [...configuredFree].filter((modelId) => !discoveredFree.has(modelId));
+      const availableApiModelIds = new Set(
+        buildAdminModelCatalog((((llm.getDiagnostics?.() ?? {}) as Record<string, unknown>).geminiApi as Record<string, unknown>) ?? {})
+          .map((model) => String(model.id ?? '')),
+      );
+      const unavailableConfiguredModelIds = config.freeTierPolicy.textModelIds.filter((modelId) => !availableApiModelIds.has(modelId));
+      const alerts: FreeTierPolicyState['alerts'] = [];
+      if (addedModelIds.length > 0) {
+        alerts.push({ level: 'warning', message: 'attenzione nuovi modelli disponibili', modelIds: addedModelIds });
+      }
+      if (removedConfiguredModelIds.length > 0 || unavailableConfiguredModelIds.length > 0) {
+        alerts.push({
+          level: 'critical',
+          message: 'attenzione un modello configurato non è più disponibile',
+          modelIds: [...new Set([...removedConfiguredModelIds, ...unavailableConfiguredModelIds])],
+        });
+      }
+      freeTierPolicyState = {
+        checkedAt: new Date().toISOString(),
+        pricingUrl: config.freeTierPolicy.pricingUrl,
+        textModelIds: textModelIds.length > 0 ? textModelIds : config.freeTierPolicy.textModelIds,
+        audioModelIds: audioModelIds.length > 0 ? audioModelIds : config.freeTierPolicy.audioModelIds,
+        embeddingModelIds: embeddingModelIds.length > 0 ? embeddingModelIds : config.freeTierPolicy.embeddingModelIds,
+        addedModelIds,
+        removedConfiguredModelIds,
+        unavailableConfiguredModelIds,
+        alerts,
+      };
+      saveFreeTierPolicyState(freeTierPolicyState);
+    } catch (error) {
+      freeTierPolicyState = {
+        ...freeTierPolicyState,
+        checkedAt: new Date().toISOString(),
+        lastError: error instanceof Error ? error.message : String(error),
+      };
+      saveFreeTierPolicyState(freeTierPolicyState);
+    } finally {
+      freeTierPolicyRefresh = null;
+    }
+    return freeTierPolicyState;
+  })();
+  return freeTierPolicyRefresh;
+}
+
 function recordInteraction(input: {
   request: FastifyRequest;
   route: string;
   appRecord: ApiAppRecord;
   model: string;
+  requestedModel?: string;
   messages: LLMMessage[];
   responseText?: string;
   usage?: UsageSummary;
   status: 'succeeded' | 'failed';
   statusCode: number;
   provider?: string;
+  response?: LLMResponse;
   error?: string;
 }): void {
   interactions.record({
@@ -559,6 +744,8 @@ function recordInteraction(input: {
     appName: input.appRecord.name,
     route: input.route,
     model: input.model,
+    requestedModel: input.requestedModel ?? input.model,
+    backendModel: input.response?.backendModel,
     prompt: flattenPrompt(input.messages),
     response: input.responseText,
     usage: input.usage,
@@ -566,7 +753,9 @@ function recordInteraction(input: {
     statusCode: input.statusCode,
     latencyMs: Date.now() - getStartedAt(input.request),
     origin: getRequestOrigin(input.request),
-    provider: input.provider,
+    provider: input.provider ?? input.response?.provider,
+    fallbackReason: input.response?.fallbackReason,
+    fallbackAttempts: input.response?.fallbackAttempts,
     error: input.error,
   });
 }
@@ -628,6 +817,11 @@ function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
   if (response.apiKeyId) reply.header('x-gemrouter-api-key-id', response.apiKeyId);
   if (response.quotaGroup) reply.header('x-gemrouter-quota-group', response.quotaGroup);
   if (response.quotaSource) reply.header('x-gemrouter-quota-source', response.quotaSource);
+}
+
+function withFallbackReason(response: LLMResponse, fallbackReason?: string): LLMResponse {
+  if (!fallbackReason || response.fallbackReason) return response;
+  return { ...response, fallbackReason };
 }
 
 function applyErrorHeaders(reply: FastifyReply, error: unknown): void {
@@ -768,6 +962,7 @@ function buildAdminModelCatalog(
   geminiApi: Record<string, unknown>,
 ): Array<Record<string, unknown>> {
   const discovered = Array.isArray(geminiApi.models) ? geminiApi.models as Array<Record<string, unknown>> : [];
+  const freeTextModelIds = new Set(config.freeTierPolicy.textModelIds);
   if (discovered.length > 0) {
     return buildDiscoveredModelCatalog(
       discovered.map((model) => ({
@@ -776,11 +971,11 @@ function buildAdminModelCatalog(
         supportedGenerationMethods: Array.isArray(model.supportedGenerationMethods)
           ? model.supportedGenerationMethods.map((method) => String(method))
           : [],
-      })).filter((model) => model.id),
+      })).filter((model) => freeTextModelIds.has(model.id)),
     ) as unknown as Array<Record<string, unknown>>;
   }
 
-  return config.modelIds.map((modelId) => ({
+  return config.freeTierPolicy.textModelIds.map((modelId) => ({
     id: modelId,
     displayName: modelId,
     label: modelId,
@@ -1016,7 +1211,9 @@ function getRuntimeSnapshot(
 
 function normalizeAllowedModels(values: unknown): string[] {
   if (!Array.isArray(values) || values.length === 0) return config.bootstrapApp.allowedModels;
-  return values.map((value) => normalizeModelId(String(value)));
+  const freeText = new Set(config.freeTierPolicy.textModelIds);
+  const models = values.map((value) => normalizeModelId(String(value))).filter((modelId) => freeText.has(modelId));
+  return models.length > 0 ? [...new Set(models)] : config.bootstrapApp.allowedModels;
 }
 
 function listPublicEndpoints(): string[] {
@@ -1125,13 +1322,21 @@ async function handleChatCompletionsRequest(
   }
 
   try {
-    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const resolvedModel = resolveTextModelForApp(access.app, parsed.model);
+    if (!resolvedModel) {
+      return sendError(reply, 403, {
+        message: `No free-tier text model is enabled for app ${access.app.name}`,
+        type: 'permission_error',
+        code: 'no_free_text_model_allowed',
+        param: 'model',
+      });
+    }
     const sessionOptions = buildRequestLlmOptions({
       request,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
-      model: parsed.model,
-      allowedModelIds: access.app.allowedModels,
+      model: resolvedModel.model,
+      allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1148,19 +1353,24 @@ async function handleChatCompletionsRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
-      applyBackendHeaders(reply, response);
+      applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: response.content,
         usage,
         status: 'succeeded',
         statusCode: 200,
         provider: response.provider,
+        response: {
+          ...response,
+          fallbackReason: response.fallbackReason ?? resolvedModel.policyFallbackReason,
+        },
       });
       audit.write({
         type: 'chat.completion',
@@ -1226,7 +1436,8 @@ async function handleChatCompletionsRequest(
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: finalText,
         usage,
@@ -1273,7 +1484,8 @@ async function handleChatCompletionsRequest(
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
@@ -1363,13 +1575,21 @@ async function handleResponsesRequest(
   }
 
   try {
-    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const resolvedModel = resolveTextModelForApp(access.app, parsed.model);
+    if (!resolvedModel) {
+      return sendError(reply, 403, {
+        message: `No free-tier text model is enabled for app ${access.app.name}`,
+        type: 'permission_error',
+        code: 'no_free_text_model_allowed',
+        param: 'model',
+      });
+    }
     const sessionOptions = buildRequestLlmOptions({
       request,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
-      model: parsed.model,
-      allowedModelIds: access.app.allowedModels,
+      model: resolvedModel.model,
+      allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1386,19 +1606,24 @@ async function handleResponsesRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
-      applyBackendHeaders(reply, response);
+      applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: response.content,
         usage,
         status: 'succeeded',
         statusCode: 200,
         provider: response.provider,
+        response: {
+          ...response,
+          fallbackReason: response.fallbackReason ?? resolvedModel.policyFallbackReason,
+        },
       });
       audit.write({
         type: 'responses.create',
@@ -1487,7 +1712,8 @@ async function handleResponsesRequest(
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: finalText,
         usage,
@@ -1560,7 +1786,8 @@ async function handleResponsesRequest(
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
@@ -1781,12 +2008,20 @@ async function handleOllamaChatRequest(
   }
 
   try {
-    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const resolvedModel = resolveTextModelForApp(access.app, parsed.model);
+    if (!resolvedModel) {
+      return sendError(reply, 403, {
+        message: `No free-tier text model is enabled for app ${access.app.name}`,
+        type: 'permission_error',
+        code: 'no_free_text_model_allowed',
+        param: 'model',
+      });
+    }
     const sessionOptions = buildRequestLlmOptions({
       request,
       sessionNamespace: access.app.sessionNamespace,
-      model: parsed.model,
-      allowedModelIds: access.app.allowedModels,
+      model: resolvedModel.model,
+      allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1802,19 +2037,24 @@ async function handleOllamaChatRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
-      applyBackendHeaders(reply, response);
+      applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: response.content,
         usage,
         status: 'succeeded',
         statusCode: 200,
         provider: response.provider,
+        response: {
+          ...response,
+          fallbackReason: response.fallbackReason ?? resolvedModel.policyFallbackReason,
+        },
       });
       audit.write({
         type: 'ollama.chat',
@@ -1975,12 +2215,20 @@ async function handleOllamaGenerateRequest(
   }
 
   try {
-    if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+    const resolvedModel = resolveTextModelForApp(access.app, parsed.model);
+    if (!resolvedModel) {
+      return sendError(reply, 403, {
+        message: `No free-tier text model is enabled for app ${access.app.name}`,
+        type: 'permission_error',
+        code: 'no_free_text_model_allowed',
+        param: 'model',
+      });
+    }
     const sessionOptions = buildRequestLlmOptions({
       request,
       sessionNamespace: access.app.sessionNamespace,
-      model: parsed.model,
-      allowedModelIds: access.app.allowedModels,
+      model: resolvedModel.model,
+      allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: parsed.maxTokens,
       temperature: parsed.temperature,
       fingerprintFallback: createRequestFingerprint(parsed.messages),
@@ -1996,19 +2244,24 @@ async function handleOllamaGenerateRequest(
 
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
-      applyBackendHeaders(reply, response);
+      applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
       const usage = estimateUsage(parsed.messages, response.content);
       recordInteraction({
         request,
         route: request.url,
         appRecord: access.app,
-        model: parsed.model,
+        model: resolvedModel.model,
+        requestedModel: resolvedModel.requestedModel,
         messages: parsed.messages,
         responseText: response.content,
         usage,
         status: 'succeeded',
         statusCode: 200,
         provider: response.provider,
+        response: {
+          ...response,
+          fallbackReason: response.fallbackReason ?? resolvedModel.policyFallbackReason,
+        },
       });
       audit.write({
         type: 'ollama.generate',
@@ -2282,6 +2535,7 @@ app.get('/admin/me', async (request, reply) => {
 
 app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
+  await refreshFreeTierPolicyIfStale();
   let runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const initialBackends = (runtime.backends as Record<string, unknown> | null) ?? null;
   const initialGeminiApi = (initialBackends?.geminiApi as Record<string, unknown> | null) ?? null;
@@ -2318,6 +2572,10 @@ app.get('/admin/summary', async (request, reply) => {
     llm: llmSnapshot,
     models: buildCompatibleSurfaceModelIds(geminiApiSnapshot, 'chat-or-image'),
     modelCatalog: buildAdminModelCatalog(geminiApiSnapshot),
+    freeTierPolicy: {
+      ...freeTierPolicyState,
+      configured: config.freeTierPolicy,
+    },
     apps: appStore.list().map(sanitizeAdminApp),
     stats: interactions.summary(60),
   };
@@ -2473,7 +2731,15 @@ app.post<{
   }
 
   const model = normalizeModelId(body.model);
-  if (!ensureModelAllowed(reply, selectedApp, model)) return reply;
+  const resolvedModel = resolveTextModelForApp(selectedApp, model);
+  if (!resolvedModel) {
+    return sendError(reply, 403, {
+      message: `No free-tier text model is enabled for app ${selectedApp.name}`,
+      type: 'permission_error',
+      code: 'no_free_text_model_allowed',
+      param: 'model',
+    });
+  }
 
   const messages: LLMMessage[] = [];
   const systemPrompt = String(body.systemPrompt ?? '').trim();
@@ -2482,8 +2748,8 @@ app.post<{
 
   try {
     const options = buildSessionOptions({
-      model,
-      allowedModelIds: selectedApp.allowedModels,
+      model: resolvedModel.model,
+      allowedModelIds: resolvedModel.allowedModelIds,
       maxTokens: typeof body.maxTokens === 'number' ? body.maxTokens : undefined,
       temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
       sessionNamespace: selectedApp.sessionNamespace,
@@ -2491,36 +2757,38 @@ app.post<{
       stateful: body.stateful === true,
       fingerprintFallback: createRequestFingerprint(messages),
     });
-    if (isGeminiImageGenerationModelId(model)) {
-      options.imageConfig = {
-        responseModalities: ['TEXT', 'IMAGE'],
-      };
-    }
     const response = await llm.chat(messages, options);
-    applyBackendHeaders(reply, response);
+    applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
     const usage = estimateUsage(messages, response.content);
     recordInteraction({
       request,
       route: request.url,
       appRecord: selectedApp,
-      model,
+      model: resolvedModel.model,
+      requestedModel: resolvedModel.requestedModel,
       messages,
       responseText: response.content,
       usage,
       status: 'succeeded',
       statusCode: 200,
       provider: response.provider,
+      response: {
+        ...response,
+        fallbackReason: response.fallbackReason ?? resolvedModel.policyFallbackReason,
+      },
     });
     return {
       ok: true,
       app: sanitizeAdminApp(selectedApp),
-      model,
+      model: resolvedModel.model,
+      requestedModel: resolvedModel.requestedModel,
       text: response.content,
       images: response.images ?? [],
       usage,
       provider: response.provider,
       backend: response.backend ?? null,
-      fallbackReason: response.fallbackReason ?? null,
+      fallbackReason: response.fallbackReason ?? resolvedModel.policyFallbackReason ?? null,
+      fallbackAttempts: response.fallbackAttempts ?? [],
       latencyMs: Date.now() - getStartedAt(request),
     };
   } catch (error) {
@@ -2530,7 +2798,8 @@ app.post<{
       request,
       route: request.url,
       appRecord: selectedApp,
-      model,
+      model: resolvedModel.model,
+      requestedModel: resolvedModel.requestedModel,
       messages,
       status: 'failed',
       statusCode: http.statusCode,
