@@ -22,6 +22,7 @@ export interface GeminiApiModelQuotaLedger {
   tpm: WindowCounter;
   rpd: WindowCounter;
   cooldownUntil?: string;
+  cooldownSource?: 'retry-after';
   last429At?: string;
   lastSuccessAt?: string;
   lastFailureAt?: string;
@@ -63,6 +64,7 @@ export interface GeminiApiQuotaModelSnapshot {
   tpm: GeminiApiQuotaMetricSnapshot;
   rpd: GeminiApiQuotaMetricSnapshot;
   cooldownUntil: string | null;
+  cooldownSource: 'retry-after' | null;
   last429At: string | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
@@ -182,6 +184,7 @@ export class GeminiApiQuotaLedger {
     tpmRemaining: number | null;
     rpdRemaining: number | null;
     cooldownUntil: string | null;
+    cooldownSource: 'retry-after' | null;
     limit: GeminiApiRateLimit;
   } {
     const now = Date.now();
@@ -196,16 +199,18 @@ export class GeminiApiQuotaLedger {
         tpmRemaining: metric(ledger.tpm).remaining,
         rpdRemaining: metric(ledger.rpd).remaining,
         cooldownUntil,
+        cooldownSource: ledger.cooldownSource ?? null,
         limit: getGeminiApiLimit(model, this.config.limits),
       };
     }
     const rpm = metric(ledger.rpm);
     const tpm = metric(ledger.tpm);
     const rpd = metric(ledger.rpd);
-    if (rpm.remaining !== null && rpm.remaining <= 0) return { available: false, reason: 'rpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, limit: getGeminiApiLimit(model, this.config.limits) };
-    if (tpm.remaining !== null && tpm.remaining < estimatedTokens) return { available: false, reason: 'tpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, limit: getGeminiApiLimit(model, this.config.limits) };
-    if (rpd.remaining !== null && rpd.remaining <= 0) return { available: false, reason: 'rpd', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, limit: getGeminiApiLimit(model, this.config.limits) };
-    return { available: true, reason: null, rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, limit: getGeminiApiLimit(model, this.config.limits) };
+    const cooldownSource = ledger.cooldownSource ?? null;
+    if (rpm.remaining !== null && rpm.remaining <= 0) return { available: false, reason: 'rpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
+    if (tpm.remaining !== null && tpm.remaining < estimatedTokens) return { available: false, reason: 'tpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
+    if (rpd.remaining !== null && rpd.remaining <= 0) return { available: false, reason: 'rpd', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
+    return { available: true, reason: null, rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
   }
 
   reserve(input: { quotaGroup: string; keyId: string; model: string; estimatedTokens: number; requestId: string }): void {
@@ -252,8 +257,13 @@ export class GeminiApiQuotaLedger {
     ledger.lastFailureStatus = input.status;
     if (input.rateLimited) {
       ledger.last429At = nowString;
-      const cooldownMs = Math.max(this.config.quotaCooldownMs, input.retryAfterMs ?? 0);
-      ledger.cooldownUntil = new Date(now + cooldownMs).toISOString();
+      if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0) {
+        ledger.cooldownUntil = new Date(now + input.retryAfterMs).toISOString();
+        ledger.cooldownSource = 'retry-after';
+      } else {
+        delete ledger.cooldownUntil;
+        delete ledger.cooldownSource;
+      }
       if (!this.config.countFailed429AsUsage) {
         for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
           counter.events = counter.events.filter((event) => event.requestId !== input.requestId);
@@ -273,6 +283,7 @@ export class GeminiApiQuotaLedger {
       for (const [modelId, modelLedger] of Object.entries(group.models)) {
         if (model && model !== modelId) continue;
         delete modelLedger.cooldownUntil;
+        delete modelLedger.cooldownSource;
       }
     }
     this.persist();
@@ -290,6 +301,7 @@ export class GeminiApiQuotaLedger {
           tpm: metric(model.tpm),
           rpd: metric(model.rpd),
           cooldownUntil: model.cooldownUntil ?? null,
+          cooldownSource: model.cooldownSource ?? null,
           last429At: model.last429At ?? null,
           lastSuccessAt: model.lastSuccessAt ?? null,
           lastFailureAt: model.lastFailureAt ?? null,
