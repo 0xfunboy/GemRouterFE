@@ -22,6 +22,11 @@ export interface LLMOptions {
   resetSession?: boolean;
   semanticProfile?: SemanticProfile;
   backendPreference?: LLMBackendPreference;
+  thinking?: {
+    includeThoughts?: boolean;
+    thinkingBudget?: number;
+    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+  };
   imageConfig?: {
     aspectRatio?: string;
     imageSize?: string;
