@@ -1,0 +1,11 @@
+[
+  {
+    "id": "account1",
+    "owner": "account1",
+    "projectId": "gen-lang-client-0505099368",
+    "quotaGroup": "gen-lang-client-0505099368",
+    "tier": "free",
+    "priority": 100,
+    "enabled": true
+  }
+]
