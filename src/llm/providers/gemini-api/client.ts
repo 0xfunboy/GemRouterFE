@@ -266,6 +266,10 @@ function hasAnotherConfiguredKeyForModel(
   ));
 }
 
+function keyAllowsModel(key: { models?: string[] }, model: string): boolean {
+  return !key.models || key.models.length === 0 || key.models.includes(model);
+}
+
 function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
   switch (error.code) {
     case 'gemini_api_auth_failed':
@@ -280,6 +284,55 @@ function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
     default:
       return false;
   }
+}
+
+function appendLocalAvailabilityAttempts(input: {
+  attempts: NonNullable<LLMResponse['fallbackAttempts']>;
+  config: GeminiApiProviderConfig;
+  ledger: GeminiApiQuotaLedger;
+  model: string;
+  estimatedTokens: number;
+  error: GeminiApiProviderError;
+}): void {
+  const eligibleKeys = input.config.keys
+    .filter((key) => key.enabled)
+    .filter((key) => keyAllowsModel(key, input.model));
+  if (eligibleKeys.length === 0) {
+    input.attempts.push({
+      model: input.model,
+      backend: 'gemini-api',
+      provider: 'gemini-api',
+      keyId: null,
+      quotaGroup: null,
+      reason: input.error.code,
+      statusCode: input.error.options.statusCode ?? null,
+      availableAfter: null,
+      availableAfterSource: null,
+    });
+    return;
+  }
+  for (const key of eligibleKeys) {
+    const availability = input.ledger.getAvailability(key.quotaGroup, input.model, input.estimatedTokens);
+    input.attempts.push({
+      model: input.model,
+      backend: 'gemini-api',
+      provider: 'gemini-api',
+      keyId: key.id,
+      quotaGroup: key.quotaGroup,
+      reason: availability.reason ? `local_${availability.reason}_unavailable` : input.error.code,
+      statusCode: input.error.options.statusCode ?? null,
+      availableAfter: availability.cooldownUntil,
+      availableAfterSource: availability.cooldownSource,
+    });
+  }
+}
+
+function shouldRetryReservationFailure(
+  error: unknown,
+  remainingModels: string[],
+  opts?: LLMOptions,
+): error is GeminiApiProviderError {
+  return error instanceof GeminiApiProviderError && shouldRetryWithFallbackModel(error, remainingModels, opts);
 }
 
 function isPureImageRequest(opts?: LLMOptions): boolean {
@@ -513,7 +566,16 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             excludeKeyIds: [...excludedKeyIds],
           });
         } catch (error) {
-          if (lastProviderError && shouldRetryWithFallbackModel(lastProviderError, remainingModels, attemptOptions)) {
+          if (shouldRetryReservationFailure(error, remainingModels, attemptOptions)) {
+            lastProviderError = error;
+            appendLocalAvailabilityAttempts({
+              attempts: fallbackAttempts,
+              config,
+              ledger,
+              model,
+              estimatedTokens,
+              error,
+            });
             break;
           }
           if (lastProviderError) throw lastProviderError;
