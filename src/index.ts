@@ -633,6 +633,12 @@ function readStringList(value: unknown): string[] {
     : [];
 }
 
+function isParsedFreeTierRouterCandidate(modelId: string): boolean {
+  if (isGeminiImageGenerationModelId(modelId)) return false;
+  if (/robotics|computer-use|deep-research|veo|imagen|lyria|banana/i.test(modelId)) return false;
+  return /^(gemini|gemma)-/i.test(modelId);
+}
+
 async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPolicyState> {
   if (!config.freeTierPolicy.enabled) return freeTierPolicyState;
   const checkedAt = Date.parse(String(freeTierPolicyState.checkedAt ?? ''));
@@ -676,15 +682,23 @@ async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPoli
       const textModelIds = readStringList(parsed.textModelIds);
       const audioModelIds = readStringList(parsed.audioModelIds);
       const embeddingModelIds = readStringList(parsed.embeddingModelIds);
+      const rawDiagnostics = ((geminiApiLlm.getDiagnostics?.() ?? {}) as Record<string, unknown>);
+      const rawApiModelIds = new Set(
+        (Array.isArray(rawDiagnostics.models) ? rawDiagnostics.models : [])
+          .map((model) => String((model as Record<string, unknown>).id ?? '').trim())
+          .filter(Boolean),
+      );
       const discoveredFree = new Set([...textModelIds, ...audioModelIds, ...embeddingModelIds]);
       const configuredFree = new Set(config.freeTierPolicy.allModelIds);
-      const addedModelIds = [...discoveredFree].filter((modelId) => !configuredFree.has(modelId));
-      const removedConfiguredModelIds = [...configuredFree].filter((modelId) => !discoveredFree.has(modelId));
-      const availableApiModelIds = new Set(
-        buildAdminModelCatalog((((llm.getDiagnostics?.() ?? {}) as Record<string, unknown>).geminiApi as Record<string, unknown>) ?? {})
-          .map((model) => String(model.id ?? '')),
+      const addedModelIds = [...discoveredFree]
+        .filter((modelId) => !configuredFree.has(modelId))
+        .filter((modelId) => rawApiModelIds.has(modelId))
+        .filter((modelId) => isParsedFreeTierRouterCandidate(modelId))
+        .filter((modelId) => !audioModelIds.includes(modelId) && !embeddingModelIds.includes(modelId));
+      const removedConfiguredModelIds = [...configuredFree].filter((modelId) =>
+        !discoveredFree.has(modelId) && !rawApiModelIds.has(modelId)
       );
-      const unavailableConfiguredModelIds = config.freeTierPolicy.textModelIds.filter((modelId) => !availableApiModelIds.has(modelId));
+      const unavailableConfiguredModelIds = config.freeTierPolicy.textModelIds.filter((modelId) => !rawApiModelIds.has(modelId));
       const alerts: FreeTierPolicyState['alerts'] = [];
       if (addedModelIds.length > 0) {
         alerts.push({ level: 'warning', message: 'attenzione nuovi modelli disponibili', modelIds: addedModelIds });
@@ -2535,7 +2549,7 @@ app.get('/admin/me', async (request, reply) => {
 
 app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  await refreshFreeTierPolicyIfStale();
+  void refreshFreeTierPolicyIfStale();
   let runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const initialBackends = (runtime.backends as Record<string, unknown> | null) ?? null;
   const initialGeminiApi = (initialBackends?.geminiApi as Record<string, unknown> | null) ?? null;
