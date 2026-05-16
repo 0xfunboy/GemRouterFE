@@ -2803,19 +2803,42 @@ export function renderAppShell(input: {
             // Priority: (1) native free-tier metrics, (2) api/request_count total, (3) local ledger.
             var freeTierModels = Array.isArray(monitoring.freeTierPerModel) ? monitoring.freeTierPerModel : [];
 
+            var quotaGroupId = lookupQuotaGroupByProjectId(apiKeys, project.projectId);
+            var localGroup = quotaGroupId && Array.isArray(quotaGroups)
+              ? quotaGroups.find(function(g) { return g && g.id === quotaGroupId; })
+              : null;
+            var localModels = localGroup && Array.isArray(localGroup.models) ? localGroup.models : [];
+
             if (freeTierModels.length > 0) {
-              // Authoritative per-model data from Google Cloud Monitoring free-tier quota metrics
+              // RPD used: authoritative from Cloud Monitoring.
+              // RPM used / all limits: fill from local ledger when Cloud Monitoring omits them
+              // (GCP omits RPM series when no traffic in the last 2 min; limits not always returned per model).
+              // Model name: Cloud Monitoring may strip "-preview" — match local ledger for canonical name.
+              var seenModels = {};
               freeTierModels.forEach(function(ftm) {
-                var ftRpmUsed = typeof ftm.rpmUsed === 'number' ? ftm.rpmUsed : null;
-                var ftRpdUsed = typeof ftm.rpdUsed === 'number' ? ftm.rpdUsed : null;
-                var ftRpmLimit = typeof ftm.rpmLimit === 'number' ? ftm.rpmLimit : null;
-                var ftRpdLimit = typeof ftm.rpdLimit === 'number' ? ftm.rpdLimit : null;
+                var cmModel = String(ftm.model || '');
+                var localModel = localModels.find(function(lm) {
+                  var n = String(lm.model || '');
+                  return n === cmModel || n === cmModel + '-preview';
+                });
+                var displayModel = localModel ? String(localModel.model) : cmModel;
+                seenModels[displayModel] = true;
+                var lRpm = localModel && localModel.rpm ? localModel.rpm : null;
+                var lRpd = localModel && localModel.rpd ? localModel.rpd : null;
+                var ftRpmUsed = typeof ftm.rpmUsed === 'number' ? ftm.rpmUsed :
+                  (lRpm && typeof lRpm.used === 'number' ? lRpm.used : null);
+                var ftRpdUsed = typeof ftm.rpdUsed === 'number' ? ftm.rpdUsed :
+                  (lRpd && typeof lRpd.used === 'number' ? lRpd.used : null);
+                var ftRpmLimit = typeof ftm.rpmLimit === 'number' ? ftm.rpmLimit :
+                  (lRpm && typeof lRpm.limit === 'number' ? lRpm.limit : null);
+                var ftRpdLimit = typeof ftm.rpdLimit === 'number' ? ftm.rpdLimit :
+                  (lRpd && typeof lRpd.limit === 'number' ? lRpd.limit : null);
                 var ftRpmLeft = (ftRpmLimit !== null && ftRpmUsed !== null) ? Math.max(0, ftRpmLimit - ftRpmUsed) : null;
                 var ftRpdLeft = (ftRpdLimit !== null && ftRpdUsed !== null) ? Math.max(0, ftRpdLimit - ftRpdUsed) : null;
                 rows.push('<tr>' +
                   '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
-                  '<td data-label="Model">' + escapeHtml(String(ftm.model || '-')) + '</td>' +
-                  '<td data-label="Metric"><span class="chip good" title="Authoritative usage from Google Cloud Monitoring (generate_content_free_tier_requests)">free-tier</span></td>' +
+                  '<td data-label="Model">' + escapeHtml(displayModel || '-') + '</td>' +
+                  '<td data-label="Metric"><span class="chip good" title="RPD from Google Cloud Monitoring (generate_content_free_tier_requests); RPM/limits from local ledger when GCP omits them">free-tier</span></td>' +
                   '<td data-label="RPM used">' + cell(ftRpmUsed, ftRpmLimit, ftRpmLeft) + '</td>' +
                   '<td data-label="RPM limit">' + (ftRpmLimit !== null ? escapeHtml(String(ftRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
                   '<td data-label="RPM left">' + (ftRpmLeft !== null ? ('<span' + (ftRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(ftRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
@@ -2824,15 +2847,32 @@ export function renderAppShell(input: {
                   '<td data-label="RPD left">' + (ftRpdLeft !== null ? ('<span' + (ftRpdLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(ftRpdLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
                 '</tr>');
               });
+              // Show local models not returned by Cloud Monitoring (0 usage today = omitted by GCP)
+              localModels.forEach(function(lm) {
+                var n = String(lm.model || '');
+                if (seenModels[n]) return;
+                var lRpm = lm.rpm || null;
+                var lRpd = lm.rpd || null;
+                var lRpmUsed = lRpm && typeof lRpm.used === 'number' ? lRpm.used : null;
+                var lRpdUsed = 0;
+                var lRpmLimit = lRpm && typeof lRpm.limit === 'number' ? lRpm.limit : null;
+                var lRpdLimit = lRpd && typeof lRpd.limit === 'number' ? lRpd.limit : null;
+                var lRpmLeft = (lRpmLimit !== null && lRpmUsed !== null) ? Math.max(0, lRpmLimit - lRpmUsed) : null;
+                var lRpdLeft = lRpdLimit !== null ? lRpdLimit : null;
+                rows.push('<tr>' +
+                  '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
+                  '<td data-label="Model">' + escapeHtml(n || '-') + '</td>' +
+                  '<td data-label="Metric"><span class="chip good" title="RPD=0 today (not returned by GCP); RPM from local ledger">free-tier</span></td>' +
+                  '<td data-label="RPM used">' + cell(lRpmUsed, lRpmLimit, lRpmLeft) + '</td>' +
+                  '<td data-label="RPM limit">' + (lRpmLimit !== null ? escapeHtml(String(lRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPM left">' + (lRpmLeft !== null ? ('<span' + (lRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(lRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD used">0</td>' +
+                  '<td data-label="RPD limit">' + (lRpdLimit !== null ? escapeHtml(String(lRpdLimit)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD left">' + (lRpdLeft !== null ? escapeHtml(String(lRpdLeft)) : '<span class="muted">-</span>') + '</td>' +
+                '</tr>');
+              });
               return;
             }
-
-            var quotaGroupId = lookupQuotaGroupByProjectId(apiKeys, project.projectId);
-            var localGroup = quotaGroupId && Array.isArray(quotaGroups)
-              ? quotaGroups.find(function(g) { return g && g.id === quotaGroupId; })
-              : null;
-            var localModels = localGroup && Array.isArray(localGroup.models) ? localGroup.models : [];
-
             // api/request_count row (no model breakdown, but from Google's servers)
             if (reqRpm !== null || reqRpd !== null) {
               rows.push('<tr>' +
