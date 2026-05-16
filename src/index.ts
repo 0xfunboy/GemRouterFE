@@ -86,6 +86,26 @@ const compatibility = new CompatibilityStore(config.compatibility.settingsStoreP
 });
 const interactions = new InteractionStore(config.interactionsStorePath);
 
+interface GeminiProjectQuotaState {
+  updatedAt: string | null;
+  source: 'google-service-usage+cloud-monitoring+local-ledger' | 'google-service-usage+local-ledger' | 'local-ledger';
+  authoritative: boolean;
+  monitoringAuthoritative: boolean;
+  projectQuotas: Array<Record<string, unknown>>;
+  lastError: string | null;
+}
+
+const GEMINI_PROJECT_QUOTA_REFRESH_MS = 30_000;
+let geminiProjectQuotaState: GeminiProjectQuotaState = {
+  updatedAt: null,
+  source: 'local-ledger',
+  authoritative: false,
+  monitoringAuthoritative: false,
+  projectQuotas: [],
+  lastError: null,
+};
+let geminiProjectQuotaRefresh: Promise<GeminiProjectQuotaState> | null = null;
+
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
   rawKey: config.bootstrapApp.apiKey,
@@ -751,15 +771,18 @@ function recordInteraction(input: {
   appRecord: ApiAppRecord;
   model: string;
   requestedModel?: string;
+  policyFallbackReason?: string;
   messages: LLMMessage[];
   responseText?: string;
   usage?: UsageSummary;
   status: 'succeeded' | 'failed';
   statusCode: number;
   provider?: string;
-  response?: LLMResponse;
+  response?: Partial<LLMResponse>;
+  llmError?: unknown;
   error?: string;
 }): void {
+  const response = input.response ?? buildInteractionResponseFromError(input.llmError);
   interactions.record({
     requestId: input.request.id,
     appId: input.appRecord.id,
@@ -767,9 +790,9 @@ function recordInteraction(input: {
     route: input.route,
     model: input.model,
     requestedModel: input.requestedModel ?? input.model,
-    backendModel: input.response?.backendModel,
-    apiKeyId: input.response?.apiKeyId,
-    quotaGroup: input.response?.quotaGroup,
+    backendModel: response?.backendModel,
+    apiKeyId: response?.apiKeyId,
+    quotaGroup: response?.quotaGroup,
     prompt: flattenPrompt(input.messages),
     response: input.responseText,
     usage: input.usage,
@@ -777,11 +800,26 @@ function recordInteraction(input: {
     statusCode: input.statusCode,
     latencyMs: Date.now() - getStartedAt(input.request),
     origin: getRequestOrigin(input.request),
-    provider: input.provider ?? input.response?.provider,
-    fallbackReason: input.response?.fallbackReason,
-    fallbackAttempts: input.response?.fallbackAttempts,
+    provider: input.provider ?? response?.provider,
+    fallbackReason: response?.fallbackReason,
+    policyFallbackReason: input.policyFallbackReason,
+    fallbackAttempts: response?.fallbackAttempts,
     error: input.error,
   });
+}
+
+function buildInteractionResponseFromError(error: unknown): Partial<LLMResponse> | undefined {
+  if (!(error instanceof LLMProviderError)) return undefined;
+  return {
+    provider: error.backend,
+    backend: error.backend,
+    backendModel: error.options.upstreamModel ?? undefined,
+    apiKeyId: error.options.upstreamApiKeyId ?? undefined,
+    quotaGroup: error.options.upstreamQuotaGroup ?? undefined,
+    fallbackFrom: error.options.fallbackFrom,
+    fallbackReason: error.options.fallbackReason ?? error.code,
+    fallbackAttempts: error.options.fallbackAttempts,
+  };
 }
 
 function sanitizeLlmDiagnostics(
@@ -1068,6 +1106,12 @@ function buildProviderSnapshot(
       apiKeys: geminiApi.keys ?? [],
       quotaGroups: geminiApi.quotaGroups ?? [],
       models: geminiApi.models ?? [],
+      source: geminiProjectQuotaState.source,
+      authoritative: geminiProjectQuotaState.authoritative,
+      monitoringAuthoritative: geminiProjectQuotaState.monitoringAuthoritative,
+      updatedAt: geminiProjectQuotaState.updatedAt,
+      lastError: geminiProjectQuotaState.lastError,
+      projectQuotas: geminiProjectQuotaState.projectQuotas,
     },
     models: buildProviderModelState(geminiApi),
   };
@@ -1202,6 +1246,270 @@ async function readGcloudAccessToken(): Promise<string> {
   return token;
 }
 
+interface MonitoringUsageEntry {
+  quotaMetric: string;
+  limitName: string;
+  model: string | null;
+  value: number;
+}
+
+function parseMonitoringTimeSeries(timeSeries: Array<Record<string, unknown>>): MonitoringUsageEntry[] {
+  const results: MonitoringUsageEntry[] = [];
+  for (const series of timeSeries) {
+    const metric = (series.metric as Record<string, unknown> | undefined) ?? {};
+    const labels = (metric.labels as Record<string, unknown> | undefined) ?? {};
+    const points = Array.isArray(series.points) ? series.points as Array<Record<string, unknown>> : [];
+    const latest = points[0];
+    if (!latest) continue;
+    const val = (latest.value as Record<string, unknown> | undefined) ?? {};
+    let value = 0;
+    if (typeof val.int64Value === 'string') value = parseInt(val.int64Value, 10) || 0;
+    else if (typeof val.int64Value === 'number') value = val.int64Value;
+    else if (typeof val.doubleValue === 'number') value = Math.round(val.doubleValue);
+    results.push({
+      quotaMetric: String(labels.quota_metric ?? ''),
+      limitName: String(labels.limit_name ?? ''),
+      model: labels.model ? String(labels.model) : null,
+      value,
+    });
+  }
+  return results;
+}
+
+function parseRequestCountTimeSeries(timeSeries: Array<Record<string, unknown>>, mostRecentOnly: boolean): number | null {
+  if (timeSeries.length === 0) return null;
+  let total = 0;
+  let hasData = false;
+  for (const series of timeSeries) {
+    const points = Array.isArray(series.points) ? series.points as Array<Record<string, unknown>> : [];
+    const relevant = mostRecentOnly ? points.slice(0, 1) : points;
+    for (const point of relevant) {
+      const val = (point.value as Record<string, unknown> | undefined) ?? {};
+      let value = 0;
+      if (typeof val.int64Value === 'string') value = parseInt(val.int64Value, 10) || 0;
+      else if (typeof val.int64Value === 'number') value = val.int64Value;
+      else if (typeof val.doubleValue === 'number') value = Math.round(val.doubleValue);
+      total += value;
+      hasData = true;
+    }
+  }
+  return hasData ? total : null;
+}
+
+interface FreeTierRow {
+  model: string;
+  limitName: string;
+  value: number;
+}
+
+interface FreeTierModelMetrics {
+  model: string;
+  rpmUsed: number | null;
+  rpdUsed: number | null;
+  rpmLimit: number | null;
+  rpdLimit: number | null;
+}
+
+function parseFreeTierTimeSeries(timeSeries: Array<Record<string, unknown>>, mostRecentOnly: boolean): FreeTierRow[] {
+  const results: FreeTierRow[] = [];
+  for (const s of timeSeries) {
+    const metric = (s.metric as Record<string, unknown> | undefined) ?? {};
+    const labels = (metric.labels as Record<string, unknown> | undefined) ?? {};
+    const model = String(labels.model ?? '').trim();
+    const limitName = String(labels.limit_name ?? '').trim();
+    if (!model || !limitName) continue;
+    const points = Array.isArray(s.points) ? s.points as Array<Record<string, unknown>> : [];
+    const relevant = mostRecentOnly ? points.slice(0, 1) : points;
+    let value = 0;
+    for (const point of relevant) {
+      const val = (point.value as Record<string, unknown> | undefined) ?? {};
+      if (typeof val.int64Value === 'string') value += parseInt(val.int64Value, 10) || 0;
+      else if (typeof val.int64Value === 'number') value += val.int64Value;
+      else if (typeof val.doubleValue === 'number') value += Math.round(val.doubleValue);
+    }
+    results.push({ model, limitName, value });
+  }
+  return results;
+}
+
+function mergeFreeTierMetrics(rpmRows: FreeTierRow[], rpdRows: FreeTierRow[], limitRows: FreeTierRow[]): FreeTierModelMetrics[] {
+  const byModel: Record<string, FreeTierModelMetrics> = {};
+  const get = (model: string) => {
+    if (!byModel[model]) byModel[model] = { model, rpmUsed: null, rpdUsed: null, rpmLimit: null, rpdLimit: null };
+    return byModel[model];
+  };
+  for (const row of rpmRows) {
+    if (!row.limitName.toUpperCase().includes('MINUTE')) continue;
+    const entry = get(row.model);
+    entry.rpmUsed = (entry.rpmUsed ?? 0) + row.value;
+  }
+  for (const row of rpdRows) {
+    if (!row.limitName.toUpperCase().includes('DAY')) continue;
+    const entry = get(row.model);
+    entry.rpdUsed = (entry.rpdUsed ?? 0) + row.value;
+  }
+  for (const row of limitRows) {
+    const upper = row.limitName.toUpperCase();
+    const entry = get(row.model);
+    if (upper.includes('MINUTE')) entry.rpmLimit = row.value;
+    else if (upper.includes('DAY')) entry.rpdLimit = row.value;
+  }
+  return Object.values(byModel);
+}
+
+async function fetchGeminiQuotaFromMonitoring(
+  projectId: string,
+  accessToken: string,
+): Promise<Record<string, unknown>> {
+  const now = new Date();
+  const nowMs = now.getTime();
+  // Rate (RPM): GAUGE metric - query last 5 minutes, 60s alignment
+  const rateStart = new Date(nowMs - 5 * 60_000);
+  // Allocation (RPD): GAUGE metric - query last 6 hours, 3600s alignment, take most recent point
+  const allocStart = new Date(nowMs - 6 * 60 * 60_000);
+  // api/request_count is CUMULATIVE → ALIGN_DELTA gives count in each alignment window
+  const startOfDayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const startOfDay = new Date(startOfDayMs);
+  const dayElapsedSeconds = Math.max(120, Math.floor((nowMs - startOfDayMs) / 1000));
+  const reqCountRpmStart = new Date(nowMs - 2 * 60_000);
+  const headers = { Authorization: `Bearer ${accessToken}` };
+
+  const makeUrl = (filter: string, start: Date, alignPeriod: string, aligner: string): URL => {
+    const url = new URL(`https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(projectId)}/timeSeries`);
+    url.searchParams.set('filter', filter);
+    url.searchParams.set('interval.startTime', start.toISOString());
+    url.searchParams.set('interval.endTime', now.toISOString());
+    url.searchParams.set('aggregation.alignmentPeriod', alignPeriod);
+    url.searchParams.set('aggregation.perSeriesAligner', aligner);
+    url.searchParams.set('view', 'FULL');
+    return url;
+  };
+
+  // quota/* metrics: only populated for standard GCP quota (not AI Studio free-tier)
+  const GEMINI_QUOTA_FILTER = 'metric.labels.quota_metric : "generativelanguage"';
+  const rateUrl = makeUrl(
+    `metric.type="serviceruntime.googleapis.com/quota/rate/net_usage" AND ${GEMINI_QUOTA_FILTER}`,
+    rateStart, '60s', 'ALIGN_MAX',
+  );
+  const allocUrl = makeUrl(
+    `metric.type="serviceruntime.googleapis.com/quota/allocation/usage" AND ${GEMINI_QUOTA_FILTER}`,
+    allocStart, '3600s', 'ALIGN_MAX',
+  );
+  const limitUrl = makeUrl(
+    `metric.type="serviceruntime.googleapis.com/quota/limit" AND ${GEMINI_QUOTA_FILTER}`,
+    rateStart, '60s', 'ALIGN_MAX',
+  );
+  // api/request_count: CUMULATIVE, works for any project making API calls, no per-model breakdown
+  const REQ_COUNT_FILTER = 'metric.type="serviceruntime.googleapis.com/api/request_count" AND resource.type="consumed_api" AND resource.labels.service="generativelanguage.googleapis.com"';
+  const reqCountRpmUrl = makeUrl(REQ_COUNT_FILTER, reqCountRpmStart, '60s', 'ALIGN_DELTA');
+  const reqCountRpdUrl = makeUrl(REQ_COUNT_FILTER, startOfDay, `${dayElapsedSeconds}s`, 'ALIGN_DELTA');
+  // Native free-tier quota metrics: authoritative per-model usage from Google Cloud Monitoring
+  const FREE_TIER_USAGE_FILTER = 'metric.type="generativelanguage.googleapis.com/quota/generate_content_free_tier_requests/usage"';
+  const FREE_TIER_LIMIT_FILTER = 'metric.type="generativelanguage.googleapis.com/quota/generate_content_free_tier_requests/limit"';
+  const freeTierReqsRpmUrl = makeUrl(FREE_TIER_USAGE_FILTER, reqCountRpmStart, '60s', 'ALIGN_DELTA');
+  const freeTierReqsRpdUrl = makeUrl(FREE_TIER_USAGE_FILTER, startOfDay, `${dayElapsedSeconds}s`, 'ALIGN_DELTA');
+  const freeTierReqsLimitUrl = makeUrl(FREE_TIER_LIMIT_FILTER, allocStart, '3600s', 'ALIGN_NEXT_OLDER');
+
+  const [rateResp, allocResp, limitResp, reqCountRpmResp, reqCountRpdResp, freeTierRpmResp, freeTierRpdResp, freeTierLimitResp] = await Promise.all([
+    fetch(rateUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(allocUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(limitUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(reqCountRpmUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(reqCountRpdUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(freeTierReqsRpmUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(freeTierReqsRpdUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+    fetch(freeTierReqsLimitUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
+  ]);
+  const [ratePay, allocPay, limitPay, reqCountRpmPay, reqCountRpdPay, freeTierRpmPay, freeTierRpdPay, freeTierLimitPay]: [
+    Record<string, unknown>, Record<string, unknown>, Record<string, unknown>,
+    Record<string, unknown>, Record<string, unknown>,
+    Record<string, unknown>, Record<string, unknown>, Record<string, unknown>,
+  ] = await Promise.all([
+    rateResp ? rateResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    allocResp ? allocResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    limitResp ? limitResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    reqCountRpmResp ? reqCountRpmResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    reqCountRpdResp ? reqCountRpdResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    freeTierRpmResp ? freeTierRpmResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    freeTierRpdResp ? freeTierRpdResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+    freeTierLimitResp ? freeTierLimitResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
+  ]);
+
+  const rateOk = rateResp?.ok ?? false;
+  const allocOk = allocResp?.ok ?? false;
+  const limitOk = limitResp?.ok ?? false;
+  const reqCountOk = (reqCountRpmResp?.ok ?? false) || (reqCountRpdResp?.ok ?? false);
+
+  const rateUsage = parseMonitoringTimeSeries(
+    Array.isArray(ratePay.timeSeries) ? ratePay.timeSeries as Array<Record<string, unknown>> : [],
+  );
+  const allocUsage = parseMonitoringTimeSeries(
+    Array.isArray(allocPay.timeSeries) ? allocPay.timeSeries as Array<Record<string, unknown>> : [],
+  );
+  const limitUsage = parseMonitoringTimeSeries(
+    Array.isArray(limitPay.timeSeries) ? limitPay.timeSeries as Array<Record<string, unknown>> : [],
+  );
+  const requestCountRpm = parseRequestCountTimeSeries(
+    Array.isArray(reqCountRpmPay.timeSeries) ? reqCountRpmPay.timeSeries as Array<Record<string, unknown>> : [],
+    true,
+  );
+  const requestCountRpd = parseRequestCountTimeSeries(
+    Array.isArray(reqCountRpdPay.timeSeries) ? reqCountRpdPay.timeSeries as Array<Record<string, unknown>> : [],
+    false,
+  );
+
+  const errorMessage = (pay: Record<string, unknown>): string =>
+    String((pay.error as Record<string, unknown> | undefined)?.message ?? '');
+
+  // Native free-tier per-model metrics
+  const freeTierRpmRows = parseFreeTierTimeSeries(
+    Array.isArray(freeTierRpmPay.timeSeries) ? freeTierRpmPay.timeSeries as Array<Record<string, unknown>> : [],
+    true,
+  );
+  const freeTierRpdRows = parseFreeTierTimeSeries(
+    Array.isArray(freeTierRpdPay.timeSeries) ? freeTierRpdPay.timeSeries as Array<Record<string, unknown>> : [],
+    false,
+  );
+  const freeTierLimitRows = parseFreeTierTimeSeries(
+    Array.isArray(freeTierLimitPay.timeSeries) ? freeTierLimitPay.timeSeries as Array<Record<string, unknown>> : [],
+    true,
+  );
+  const freeTierPerModel = mergeFreeTierMetrics(freeTierRpmRows, freeTierRpdRows, freeTierLimitRows);
+  const freeTierOk = (freeTierRpmResp?.ok ?? false) || (freeTierRpdResp?.ok ?? false) || (freeTierLimitResp?.ok ?? false);
+
+  return {
+    projectId,
+    ok: rateOk || allocOk || limitOk || reqCountOk || freeTierOk,
+    rateOk,
+    allocOk,
+    limitOk,
+    reqCountOk,
+    freeTierOk,
+    rateUsage,
+    allocUsage,
+    limitUsage,
+    requestCountRpm,
+    requestCountRpd,
+    freeTierPerModel: freeTierPerModel.length > 0 ? freeTierPerModel : null,
+    rateError: !rateOk ? (errorMessage(ratePay) || String(rateResp?.status ?? 'no response')) : null,
+    allocError: !allocOk ? (errorMessage(allocPay) || String(allocResp?.status ?? 'no response')) : null,
+    limitError: !limitOk ? (errorMessage(limitPay) || String(limitResp?.status ?? 'no response')) : null,
+    rateCount: rateUsage.length,
+    allocCount: allocUsage.length,
+    limitCount: limitUsage.length,
+    debug: {
+      rateStatus: rateResp?.status ?? null,
+      allocStatus: allocResp?.status ?? null,
+      limitStatus: limitResp?.status ?? null,
+      reqCountRpmStatus: reqCountRpmResp?.status ?? null,
+      reqCountRpdStatus: reqCountRpdResp?.status ?? null,
+      freeTierRpmStatus: freeTierRpmResp?.status ?? null,
+      freeTierRpdStatus: freeTierRpdResp?.status ?? null,
+      freeTierLimitStatus: freeTierLimitResp?.status ?? null,
+    },
+  };
+}
+
 function summarizeServiceUsageMetrics(payload: Record<string, unknown>): Array<Record<string, unknown>> {
   const metrics = Array.isArray(payload.metrics) ? payload.metrics as Array<Record<string, unknown>> : [];
   return metrics
@@ -1252,6 +1560,73 @@ async function fetchGeminiProjectQuota(projectId: string, accessToken: string): 
     source: 'google-service-usage',
     metrics: summarizeServiceUsageMetrics(payload),
   };
+}
+
+async function refreshGeminiProjectQuotaState(force = false): Promise<GeminiProjectQuotaState> {
+  const updatedAt = Date.parse(String(geminiProjectQuotaState.updatedAt ?? ''));
+  if (!force && Number.isFinite(updatedAt) && (Date.now() - updatedAt) < GEMINI_PROJECT_QUOTA_REFRESH_MS) {
+    return geminiProjectQuotaState;
+  }
+  if (geminiProjectQuotaRefresh) return geminiProjectQuotaRefresh;
+  geminiProjectQuotaRefresh = (async () => {
+    const runtime = getRuntimeSnapshot(undefined, { includeSensitiveLlm: true });
+    const geminiApi = ((runtime.backends as Record<string, unknown>)?.geminiApi as Record<string, unknown> | null) ?? {};
+    const keys = Array.isArray(geminiApi.keys) ? geminiApi.keys as Array<Record<string, unknown>> : [];
+    const projectIds = [...new Set(keys.map((key) => String(key.projectId ?? '').trim()).filter(Boolean))];
+    let projectQuotas: Array<Record<string, unknown>> = [];
+    let lastError: string | null = null;
+    if (projectIds.length > 0) {
+      try {
+        const token = await readGcloudAccessToken();
+        projectQuotas = await Promise.all(projectIds.map(async (projectId) => {
+          const [serviceUsageResult, monitoringResult] = await Promise.allSettled([
+            fetchGeminiProjectQuota(projectId, token),
+            fetchGeminiQuotaFromMonitoring(projectId, token),
+          ]);
+          const base = serviceUsageResult.status === 'fulfilled'
+            ? serviceUsageResult.value
+            : { projectId, ok: false, error: 'serviceusage_error', message: serviceUsageResult.reason instanceof Error ? serviceUsageResult.reason.message : String(serviceUsageResult.reason) };
+          const monitoring = monitoringResult.status === 'fulfilled'
+            ? monitoringResult.value
+            : { projectId, ok: false, rateOk: false, allocOk: false, rateUsage: [], allocUsage: [], rateError: monitoringResult.reason instanceof Error ? monitoringResult.reason.message : String(monitoringResult.reason), allocError: null };
+          return { ...base, monitoring };
+        }));
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const anyServiceUsageOk = projectQuotas.some((quota) => quota.ok === true);
+    const anyMonitoringOk = projectQuotas.some((quota) => {
+      const m = quota.monitoring as Record<string, unknown> | undefined;
+      return m?.ok === true;
+    });
+    geminiProjectQuotaState = {
+      updatedAt: new Date().toISOString(),
+      source: anyServiceUsageOk && anyMonitoringOk
+        ? 'google-service-usage+cloud-monitoring+local-ledger'
+        : anyServiceUsageOk ? 'google-service-usage+local-ledger' : 'local-ledger',
+      authoritative: anyServiceUsageOk,
+      monitoringAuthoritative: anyMonitoringOk,
+      projectQuotas,
+      lastError,
+    };
+    geminiProjectQuotaRefresh = null;
+    return geminiProjectQuotaState;
+  })();
+  return geminiProjectQuotaRefresh;
+}
+
+function resetGeminiProjectQuotaState(): GeminiProjectQuotaState {
+  geminiProjectQuotaState = {
+    updatedAt: null,
+    source: 'local-ledger',
+    authoritative: false,
+    monitoringAuthoritative: false,
+    projectQuotas: [],
+    lastError: null,
+  };
+  geminiProjectQuotaRefresh = null;
+  return geminiProjectQuotaState;
 }
 
 function getRuntimeSnapshot(
@@ -1447,6 +1822,7 @@ async function handleChatCompletionsRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: response.content,
         usage,
@@ -1493,12 +1869,14 @@ async function handleChatCompletionsRequest(
     let emitted = '';
     let finalText = '';
     let finalProvider: string | undefined;
+    let finalResponse: LLMResponse | undefined;
     try {
       const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
         if (next.done) {
+          finalResponse = next.value;
           finalText = next.value.content;
           finalProvider = next.value.provider;
           break;
@@ -1524,12 +1902,14 @@ async function handleChatCompletionsRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: finalText,
         usage,
         status: 'succeeded',
         statusCode: 200,
         provider: finalProvider,
+        response: finalResponse,
       });
       sendChunk({
         id: completionId,
@@ -1572,10 +1952,12 @@ async function handleChatCompletionsRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
         statusCode: http.statusCode,
+        llmError: error,
         error: http.message,
       });
       sendChunk(
@@ -1619,6 +2001,7 @@ async function handleChatCompletionsRequest(
       messages: parsed.messages,
       status: 'failed',
       statusCode: http.statusCode,
+      llmError: error,
       error: http.message,
     });
     return sendError(reply, http.statusCode, {
@@ -1700,6 +2083,7 @@ async function handleResponsesRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: response.content,
         usage,
@@ -1770,12 +2154,14 @@ async function handleResponsesRequest(
     let emitted = '';
     let finalText = '';
     let finalProvider: string | undefined;
+    let finalResponse: LLMResponse | undefined;
     try {
       const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
         if (next.done) {
+          finalResponse = next.value;
           finalText = next.value.content;
           finalProvider = next.value.provider;
           break;
@@ -1800,12 +2186,14 @@ async function handleResponsesRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: finalText,
         usage,
         status: 'succeeded',
         statusCode: 200,
         provider: finalProvider,
+        response: finalResponse,
       });
       sendEvent({
         type: 'response.output_text.done',
@@ -1874,10 +2262,12 @@ async function handleResponsesRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: finalText || emitted,
         status: 'failed',
         statusCode: http.statusCode,
+        llmError: error,
         error: http.message,
       });
       sendEvent({
@@ -1922,6 +2312,7 @@ async function handleResponsesRequest(
       messages: parsed.messages,
       status: 'failed',
       statusCode: http.statusCode,
+      llmError: error,
       error: http.message,
     });
     return sendError(reply, http.statusCode, {
@@ -2042,6 +2433,7 @@ async function handleImageGenerationsRequest(
       messages: [{ role: 'user', content: parsed.prompt }],
       status: 'failed',
       statusCode: http.statusCode,
+      llmError: error,
       error: http.message,
     });
     audit.write({
@@ -2131,6 +2523,7 @@ async function handleOllamaChatRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: response.content,
         usage,
@@ -2166,12 +2559,14 @@ async function handleOllamaChatRequest(
     let emitted = '';
     let finalText = '';
     let finalProvider: string | undefined;
+    let finalResponse: LLMResponse | undefined;
     try {
       const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
         if (next.done) {
+          finalResponse = next.value;
           finalText = next.value.content;
           finalProvider = next.value.provider;
           break;
@@ -2195,6 +2590,7 @@ async function handleOllamaChatRequest(
         status: 'succeeded',
         statusCode: 200,
         provider: finalProvider,
+        response: finalResponse,
       });
       sendChunk(buildOllamaChatDone({ model: parsed.model, usage }));
       audit.write({
@@ -2222,6 +2618,7 @@ async function handleOllamaChatRequest(
         responseText: finalText || emitted,
         status: 'failed',
         statusCode: http.statusCode,
+        llmError: error,
         error: http.message,
       });
       sendChunk(buildOllamaError(http.message));
@@ -2259,6 +2656,7 @@ async function handleOllamaChatRequest(
       messages: parsed.messages,
       status: 'failed',
       statusCode: http.statusCode,
+      llmError: error,
       error: http.message,
     });
     return sendError(reply, http.statusCode, {
@@ -2338,6 +2736,7 @@ async function handleOllamaGenerateRequest(
         appRecord: access.app,
         model: resolvedModel.model,
         requestedModel: resolvedModel.requestedModel,
+        policyFallbackReason: resolvedModel.policyFallbackReason,
         messages: parsed.messages,
         responseText: response.content,
         usage,
@@ -2373,12 +2772,14 @@ async function handleOllamaGenerateRequest(
     let emitted = '';
     let finalText = '';
     let finalProvider: string | undefined;
+    let finalResponse: LLMResponse | undefined;
     try {
       const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
         if (next.done) {
+          finalResponse = next.value;
           finalText = next.value.content;
           finalProvider = next.value.provider;
           break;
@@ -2402,6 +2803,7 @@ async function handleOllamaGenerateRequest(
         status: 'succeeded',
         statusCode: 200,
         provider: finalProvider,
+        response: finalResponse,
       });
       sendChunk(buildOllamaGenerateDone({ model: parsed.model, usage }));
       audit.write({
@@ -2429,6 +2831,7 @@ async function handleOllamaGenerateRequest(
         responseText: finalText || emitted,
         status: 'failed',
         statusCode: http.statusCode,
+        llmError: error,
         error: http.message,
       });
       sendChunk(buildOllamaError(http.message));
@@ -2466,6 +2869,7 @@ async function handleOllamaGenerateRequest(
       messages: parsed.messages,
       status: 'failed',
       statusCode: http.statusCode,
+      llmError: error,
       error: http.message,
     });
     return sendError(reply, http.statusCode, {
@@ -2622,6 +3026,7 @@ app.get('/admin/me', async (request, reply) => {
 app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   void refreshFreeTierPolicyIfStale();
+  await refreshGeminiProjectQuotaState();
   let runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const initialBackends = (runtime.backends as Record<string, unknown> | null) ?? null;
   const initialGeminiApi = (initialBackends?.geminiApi as Record<string, unknown> | null) ?? null;
@@ -2684,26 +3089,17 @@ app.post('/admin/provider/gemini-api/discover-models', async (request, reply) =>
 
 app.post('/admin/provider/gemini-api/refresh-quota', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
+  const quotaState = await refreshGeminiProjectQuotaState(true);
   const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const geminiApi = ((runtime.backends as Record<string, unknown>)?.geminiApi as Record<string, unknown> | null) ?? {};
-  const keys = Array.isArray(geminiApi.keys) ? geminiApi.keys as Array<Record<string, unknown>> : [];
-  const projectIds = [...new Set(keys.map((key) => String(key.projectId ?? '').trim()).filter(Boolean))];
-  let projectQuotas: Array<Record<string, unknown>> = [];
-  let projectQuotaLastError: string | null = null;
-  if (projectIds.length > 0) {
-    try {
-      const token = await readGcloudAccessToken();
-      projectQuotas = await Promise.all(projectIds.map((projectId) => fetchGeminiProjectQuota(projectId, token)));
-    } catch (error) {
-      projectQuotaLastError = error instanceof Error ? error.message : String(error);
-    }
-  }
   return {
     ok: true,
-    source: projectQuotas.some((quota) => quota.ok === true) ? 'google-service-usage+local-ledger' : 'local-ledger',
-    authoritative: projectQuotas.some((quota) => quota.ok === true),
-    projectQuotas,
-    projectQuotaLastError,
+    source: quotaState.source,
+    authoritative: quotaState.authoritative,
+    monitoringAuthoritative: quotaState.monitoringAuthoritative,
+    updatedAt: quotaState.updatedAt,
+    projectQuotas: quotaState.projectQuotas,
+    projectQuotaLastError: quotaState.lastError,
     geminiApi,
   };
 });
@@ -2721,6 +3117,30 @@ app.post('/admin/provider/gemini-api/clear-cooldown', async (request, reply) => 
     });
   }
   return client.clearCooldown();
+});
+
+app.post('/admin/reset-telemetry', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const client = geminiApiLlm as typeof geminiApiLlm & {
+    resetTelemetry?: () => Record<string, unknown>;
+  };
+  if (typeof client.resetTelemetry !== 'function') {
+    return sendError(reply, 503, {
+      message: 'Gemini API telemetry reset is not available',
+      type: 'server_error',
+      code: 'gemini_api_reset_unavailable',
+    });
+  }
+  interactions.clear();
+  audit.reset();
+  const geminiApi = client.resetTelemetry();
+  resetGeminiProjectQuotaState();
+  return {
+    ok: true,
+    interactions: 0,
+    auditLogReset: true,
+    geminiApi,
+  };
 });
 
 app.post<{
@@ -2867,6 +3287,7 @@ app.post<{
       appRecord: selectedApp,
       model: resolvedModel.model,
       requestedModel: resolvedModel.requestedModel,
+      policyFallbackReason: resolvedModel.policyFallbackReason,
       messages,
       responseText: response.content,
       usage,
@@ -2901,9 +3322,11 @@ app.post<{
       appRecord: selectedApp,
       model: resolvedModel.model,
       requestedModel: resolvedModel.requestedModel,
+      policyFallbackReason: resolvedModel.policyFallbackReason,
       messages,
       status: 'failed',
       statusCode: http.statusCode,
+      llmError: error,
       error: http.message,
     });
     audit.write({
@@ -2956,16 +3379,19 @@ app.get('/v1/provider/quota', async (request, reply) => {
     const provider = (runtime.provider as Record<string, unknown> | null) ?? {};
     const backends = (runtime.backends as Record<string, unknown> | null) ?? {};
     const geminiApi = (backends.geminiApi as Record<string, unknown> | null) ?? {};
+    const providerQuota = (provider.quota as Record<string, unknown> | null) ?? {};
     return {
       ok: true,
       geminiApi: {
         enabled: geminiApi.enabled ?? false,
-        source: 'local-ledger',
-        authoritative: false,
+        source: providerQuota.source ?? 'local-ledger',
+        authoritative: providerQuota.authoritative ?? false,
         apiKeys: geminiApi.keys ?? [],
         quotaGroups: geminiApi.quotaGroups ?? [],
         models: geminiApi.models ?? [],
-        updatedAt: geminiApi.quotaUpdatedAt ?? null,
+        updatedAt: providerQuota.updatedAt ?? geminiApi.quotaUpdatedAt ?? null,
+        projectQuotas: providerQuota.projectQuotas ?? [],
+        lastError: providerQuota.lastError ?? null,
         modelDiscovery: geminiApi.modelDiscovery ?? null,
       },
       model: provider.configuredModel ?? null,

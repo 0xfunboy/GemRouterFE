@@ -167,6 +167,26 @@ function readGeminiApiLimits(
   };
 }
 
+function readGeminiApiGroupLimits(
+  env: Record<string, string | undefined>,
+  accounts: Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string; limits?: Record<string, GeminiApiRateLimit> }>,
+): Record<string, Record<string, GeminiApiRateLimit>> {
+  const result: Record<string, Record<string, GeminiApiRateLimit>> = {};
+  // Per-group overrides from accounts file (quotaGroup → model → rateLimit)
+  for (const account of accounts) {
+    const group = account.quotaGroup ?? account.id;
+    if (group && account.limits && typeof account.limits === 'object') {
+      result[String(group)] = account.limits as Record<string, GeminiApiRateLimit>;
+    }
+  }
+  // Env override: GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON = { "quotaGroup": { "model": { rpm, tpm, rpd } } }
+  const envGroupLimits = readJsonValue<Record<string, Record<string, GeminiApiRateLimit>>>(env, {}, 'GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON');
+  for (const [group, limits] of Object.entries(envGroupLimits)) {
+    result[group] = { ...(result[group] ?? {}), ...limits };
+  }
+  return result;
+}
+
 function readGeminiAccountMetadata(
   env: Record<string, string | undefined>,
 ): Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string }> {
@@ -415,6 +435,7 @@ export function loadConfig(
       defaultTier: geminiApiDefaultTier,
       defaultQuotaGroupMode: geminiApiQuotaGroupMode,
       limits: readGeminiApiLimits(env),
+      groupLimits: readGeminiApiGroupLimits(env, readGeminiAccountMetadata(env)),
       ledgerPath: path.resolve(
         rootDir,
         pick(env, 'GEMROUTER_GEMINI_API_LEDGER_PATH') ?? 'data/gemini-api-quota-ledger.json',

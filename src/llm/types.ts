@@ -11,6 +11,18 @@ export type LLMBackendPreference = 'auto' | LLMBackendId;
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */
 export type ModelTier = 'small' | 'medium' | 'large';
 
+export interface LLMFallbackAttempt {
+  model: string;
+  backend?: LLMBackendId;
+  provider?: string;
+  keyId?: string | null;
+  quotaGroup?: string | null;
+  reason: string;
+  statusCode?: number | null;
+  availableAfter?: string | null;
+  availableAfterSource?: 'retry-after' | null;
+}
+
 export interface LLMOptions {
   model?: string;
   allowedModelIds?: string[];
@@ -55,17 +67,7 @@ export interface LLMResponse {
   };
   fallbackFrom?: LLMBackendId;
   fallbackReason?: string;
-  fallbackAttempts?: Array<{
-    model: string;
-    backend?: LLMBackendId;
-    provider?: string;
-    keyId?: string | null;
-    quotaGroup?: string | null;
-    reason: string;
-    statusCode?: number | null;
-    availableAfter?: string | null;
-    availableAfterSource?: 'retry-after' | null;
-  }>;
+  fallbackAttempts?: LLMFallbackAttempt[];
   latencyMs?: number;
 }
 

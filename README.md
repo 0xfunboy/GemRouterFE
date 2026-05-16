@@ -1,119 +1,62 @@
 # GemRouter
 
-GemRouter is a lightweight Gemini routing backend. It exposes GemRouter-native, OpenAI-compatible, DeepSeek-compatible, and Ollama-compatible HTTP surfaces while routing requests across configured Gemini API keys.
+A lightweight backend router for Gemini API traffic. It exposes OpenAI-compatible, DeepSeek-compatible, and Ollama-compatible HTTP surfaces while routing requests across a pool of Gemini API keys with automatic fallback and local quota tracking.
 
-This repo is the backend-only fork of the previous browser-automation codebase. The legacy browser runtime, remote desktop tooling, and web-scraping paths have been removed.
+## What it does
 
-## What It Does
-
-- Routes requests across multiple Gemini API keys.
-- Falls back across configured backends in `GEMROUTER_BACKEND_ORDER`.
-- Tracks local quota and cooldown state for Gemini API keys.
-- Exposes operator APIs and a small admin UI for runtime inspection.
-- Preserves chat, responses, and image-generation surfaces where supported by the Gemini model.
-
-## What It No Longer Does
-
-- No browser automation.
-- No browser runtime.
-- No Gemini Web scraping.
-- No remote desktop tooling.
-- No display-service dependencies.
+- Routes requests across multiple Gemini API keys (AI Studio free-tier and Tier 1).
+- Tracks RPM / TPM / RPD quotas per key and model locally; falls back to the next available key on exhaustion or rate limiting.
+- Supports per-account quota tiers via `data/gemini-api-accounts.json`.
+- Exposes an operator admin UI at `/admin` for live quota inspection and key management.
+- Serves OpenAI, DeepSeek, and Ollama compatibility surfaces from the same backend.
 
 ## Requirements
 
-- Node `23.3.0`
+- Node `23.3.0` (see [`.nvmrc`](./.nvmrc))
 - `pnpm` `10.26.1`
-
-The repo already targets Node `23.3.0` in [`.nvmrc`](./.nvmrc).
 
 ## Install
 
 ```bash
 pnpm install --frozen-lockfile
 cp .env.example .env
-pnpm check
+# edit .env — set at minimum GEMROUTER_ADMIN_TOKEN, GEMROUTER_BOOTSTRAP_API_KEY, GEMROUTER_GEMINI_API_KEYS
 pnpm build
 ```
-
-Fill the required values in `.env` before starting:
-
-- `GEMROUTER_ADMIN_TOKEN`
-- `GEMROUTER_BOOTSTRAP_API_KEY`
-- `GEMROUTER_GEMINI_API_KEYS` or `GEMROUTER_GEMINI_API_KEYS_JSON`
-- `GEMROUTER_DIRECT_MODELS`
-
-Recommended `GEMROUTER_DIRECT_MODELS` for the current HTTP router:
-
-- `gemini-3.1-pro-preview`
-- `gemini-3.1-flash-lite`
-- `gemini-3-flash-preview`
-- `gemini-2.5-pro`
-- `gemini-2.5-flash-lite`
-- `gemini-2.5-flash-image`
-- `gemini-3-pro-image-preview`
-- `gemini-3.1-flash-image-preview`
-- `nano-banana-pro-preview`
-
-Chat and image-generation models are exposed by `/v1/models` and `/models`.
-Live audio, embeddings, and video generation models still need dedicated APIs and are not exposed by default.
 
 ## Start
 
 ```bash
 pnpm start
-```
-
-The service start helper for deployment is:
-
-```bash
+# or for production
 ./scripts/start-gemrouter.sh
 ```
 
-## Health Check
+Default port: `4024`. Health check:
 
 ```bash
 curl -fsS http://127.0.0.1:4024/health
 ```
 
-## OpenAI-Compatible Example
+## Quick example
 
 ```bash
 curl -sS http://127.0.0.1:4024/v1/chat/completions \
   -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gemini-2.5-flash-lite",
-    "messages": [
-      { "role": "user", "content": "Reply only with OK." }
-    ]
+    "model": "gemini-2.5-flash",
+    "messages": [{ "role": "user", "content": "Reply only with OK." }]
   }'
 ```
 
-## OpenAI-Compatible Images Example
+## Documentation
 
-```bash
-curl -sS http://127.0.0.1:4024/v1/images/generations \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-2.5-flash-image",
-    "prompt": "Create a minimal black circle centered on a white background.",
-    "response_format": "b64_json"
-  }'
-```
+| Guide | Contents |
+|---|---|
+| [Setup](docs/setup.md) | Installation, configuration, first run |
+| [Configuration reference](docs/configuration.md) | All environment variables |
+| [Routing and quota](docs/routing.md) | Multi-key routing, quota scoring, API surfaces |
+| [Operations](docs/operations.md) | Deployment, systemd, security, troubleshooting |
 
-## Notes
-
-- Default port is `4024`.
-- Default backend order is `gemini-api`.
-- Default primary compatibility surface is `gemrouter`.
-- The admin UI is served at `/` and `/admin`.
-- Systemd unit templates live in `ops/systemd/`.
-- `ops/systemd/install-gemrouter-services.sh` installs the system units when root access is available.
-- Nightly restarts are handled by `ops/systemd/gemrouter-nightly-restart.timer` at `03:30`.
-- The Cloudflare tunnel template lives in `ops/cloudflared/gemrouter.yml`.
-
-## Docs
-
-- [Documentation Index](./docs/README.md)
+Account metadata lives in [`data/gemini-api-accounts.json`](data/gemini-api-accounts.json) (see [`docs/gemini-api-accounts.example.json`](docs/gemini-api-accounts.example.json) for the format).
