@@ -1334,7 +1334,27 @@ export function renderAppShell(input: {
             </div>
           </div>
           <div>
-            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Quota Snapshot</h4>
+            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Google Quota (Cloud Monitoring)</h4>
+            <p class="section-copy" style="margin-bottom:8px">Real-time usage from Google Cloud Monitoring — all sources, not just this router. RPM = last completed minute; RPD = today's total. ~1-2 min lag.</p>
+            <div class="table-wrap">
+              <table class="table responsive-table" style="font-size:13px">
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Model</th>
+                    <th>Metric</th>
+                    <th>RPM used</th>
+                    <th>RPM limit</th>
+                    <th>RPM left</th>
+                    <th>RPD used</th>
+                    <th>RPD limit</th>
+                    <th>RPD left</th>
+                  </tr>
+                </thead>
+                <tbody id="google-quota-table"></tbody>
+              </table>
+            </div>
+            <h4 class="section-title" style="font-size:15px;margin:16px 0 10px">${svgIcon('chart')} Local Ledger (this router only)</h4>
             <div class="table-wrap">
               <table class="table quota-table responsive-table">
                 <thead>
@@ -1450,13 +1470,13 @@ export function renderAppShell(input: {
               <p class="section-copy">Choose the primary compatibility surface and inspect the routed endpoints.</p>
             </div>
             <div class="section-head-actions">
-              <button type="button" class="secondary section-toggle" data-section-toggle="compatibility-section-body" aria-controls="compatibility-section-body" aria-expanded="true">
-                <span class="section-toggle-label">Collapse</span>
+              <button type="button" class="secondary section-toggle" data-section-toggle="compatibility-section-body" aria-controls="compatibility-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
                 <span class="section-toggle-arrow" aria-hidden="true">▸</span>
               </button>
             </div>
           </div>
-          <div id="compatibility-section-body" class="section-body">
+          <div id="compatibility-section-body" class="section-body hidden">
           <div class="shell-grid">
             <div>
               <form id="compatibility-form">
@@ -1530,13 +1550,13 @@ export function renderAppShell(input: {
               <p class="section-copy">Create apps, rotate API keys, and manage client-facing limits from one console.</p>
             </div>
             <div class="section-head-actions">
-              <button type="button" class="secondary section-toggle" data-section-toggle="apps-section-body" aria-controls="apps-section-body" aria-expanded="true">
-                <span class="section-toggle-label">Collapse</span>
+              <button type="button" class="secondary section-toggle" data-section-toggle="apps-section-body" aria-controls="apps-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
                 <span class="section-toggle-arrow" aria-hidden="true">▸</span>
               </button>
             </div>
           </div>
-          <div id="apps-section-body" class="section-body">
+          <div id="apps-section-body" class="section-body hidden">
           <div class="shell-grid apps-shell">
             <div>
               <form id="app-form">
@@ -1608,20 +1628,20 @@ export function renderAppShell(input: {
                   <option value="50">50</option>
                 </select>
               </label>
-              <button type="button" class="secondary section-toggle" data-section-toggle="interactions-section-body" aria-controls="interactions-section-body" aria-expanded="false">
-                <span class="section-toggle-label">Expand</span>
+              <button type="button" class="secondary section-toggle" data-section-toggle="interactions-section-body" aria-controls="interactions-section-body" aria-expanded="true">
+                <span class="section-toggle-label">Collapse</span>
                 <span class="section-toggle-arrow" aria-hidden="true">▸</span>
               </button>
             </div>
           </div>
-          <div id="interactions-section-body" class="section-body hidden">
+          <div id="interactions-section-body" class="section-body">
           <div class="table-wrap">
             <table class="table">
               <thead>
                 <tr>
                   <th>When</th>
                   <th>App</th>
-                  <th>Model</th>
+                  <th>Routing</th>
                   <th>Prompt</th>
                   <th>Output</th>
                   <th>Usage</th>
@@ -1732,16 +1752,21 @@ export function renderAppShell(input: {
       const bootstrap = window.__GEMROUTER_BOOTSTRAP__;
       const state = {
         apps: [],
+        adminRefreshInFlight: false,
+        adminSummary: null,
         adminStats: null,
         compatibility: null,
         authenticated: false,
         interactionLimit: 10,
         modelCatalog: [],
+        projectQuota: null,
+        projectQuotaRefreshInFlight: false,
         username: '',
         publicSummary: null,
         publicRefreshInFlight: false,
       };
       const PUBLIC_REFRESH_MS = 5000;
+      const PROJECT_QUOTA_REFRESH_MS = 30000;
 
       const root = document.documentElement;
       const savedTheme = localStorage.getItem('gemrouter-theme') || 'dark';
@@ -1773,6 +1798,7 @@ export function renderAppShell(input: {
       const providerOutput = document.getElementById('provider-output');
       const geminiApiKeysTable = document.getElementById('gemini-api-keys-table');
       const geminiApiQuotaTable = document.getElementById('gemini-api-quota-table');
+      const googleQuotaTable = document.getElementById('google-quota-table');
       const statsGrid = document.getElementById('stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
@@ -2461,12 +2487,63 @@ export function renderAppShell(input: {
           : 'Fallback stays on the Gemini API key pool; there is no browser or CLI backend.';
       }
 
+      function syncProjectQuotaState(quota) {
+        const payload = quota && typeof quota === 'object' ? quota : {};
+        state.projectQuota = {
+          source: payload.source || 'local-ledger',
+          authoritative: payload.authoritative === true,
+          monitoringAuthoritative: payload.monitoringAuthoritative === true,
+          updatedAt: payload.updatedAt || null,
+          lastError: payload.lastError || payload.projectQuotaLastError || null,
+          projectQuotas: Array.isArray(payload.projectQuotas) ? payload.projectQuotas : [],
+        };
+      }
+
+      function resolveProjectQuotaState(quota) {
+        if (state.projectQuota && typeof state.projectQuota === 'object') {
+          return state.projectQuota;
+        }
+        return quota && typeof quota === 'object' ? quota : {};
+      }
+
+      function lookupAccountIdByProjectId(apiKeys, projectId) {
+        const normalizedProjectId = String(projectId || '').trim();
+        if (!normalizedProjectId) return 'unknown';
+        const match = Array.isArray(apiKeys)
+          ? apiKeys.find(function(key) {
+            return String(key && key.projectId || '').trim() === normalizedProjectId;
+          })
+          : null;
+        return match && match.id ? String(match.id) : normalizedProjectId;
+      }
+
+      function extractProjectQuotaPredictRpm(projectQuota) {
+        const metrics = Array.isArray(projectQuota && projectQuota.metrics) ? projectQuota.metrics : [];
+        const metric = metrics.find(function(entry) {
+          return String(entry && entry.metric || '') === 'generativelanguage.googleapis.com/predict_requests_free_tier_per_model';
+        });
+        if (!metric || !Array.isArray(metric.limits)) return null;
+        for (const limit of metric.limits) {
+          const quotaBuckets = Array.isArray(limit && limit.quotaBuckets) ? limit.quotaBuckets : [];
+          const bucket = quotaBuckets.find(function(entry) {
+            return !entry.dimensions || Object.keys(entry.dimensions).length === 0;
+          }) || quotaBuckets[0];
+          if (bucket && bucket.effectiveLimit !== undefined && bucket.effectiveLimit !== null) {
+            return String(bucket.effectiveLimit);
+          }
+        }
+        return null;
+      }
+
       function renderProviderState(data) {
         const provider = data.provider || {};
         const geminiApi = provider.geminiApi || {};
         const quota = provider.quota || {};
+        const projectQuota = resolveProjectQuotaState(quota);
         const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
         const quotaGroups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
+        const projectQuotas = Array.isArray(projectQuota.projectQuotas) ? projectQuota.projectQuotas : [];
+        const projectQuotaOkCount = projectQuotas.filter(function(entry) { return entry && entry.ok === true; }).length;
         const models = Array.isArray(provider.models) ? provider.models : [];
         const supportedModelIds = models
           .map(function(model) { return model && typeof model.id === 'string' ? model.id.trim() : ''; })
@@ -2480,9 +2557,12 @@ export function renderAppShell(input: {
           '<span class="chip">Last API model ' + escapeHtml(String(geminiApi.lastResolvedModel || 'n/a')) + '</span>',
           '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || 'n/a')) + '</span>',
           '<span class="chip">Public models ' + escapeHtml(String(directModelCount)) + '</span>',
+          '<span class="chip ' + (projectQuota.authoritative ? 'good' : '') + '">Quota ' + escapeHtml(projectQuota.authoritative ? ('limits live · usage local ' + String(projectQuotaOkCount) + '/' + String(projectQuotas.length || 0)) : 'local only') + '</span>',
+          '<span class="chip">Quota refresh ' + escapeHtml(projectQuota.updatedAt ? formatTimestamp(projectQuota.updatedAt) : 'pending') + '</span>',
         ].join('');
 
         renderGeminiApiKeyTable(apiKeys);
+        renderGoogleQuotaTable(projectQuotas, apiKeys, quotaGroups);
         renderGeminiApiQuotaTable(quotaGroups, supportedModelIds);
 
         providerOutput.textContent = [
@@ -2497,6 +2577,28 @@ export function renderAppShell(input: {
           'last_error=' + String(geminiApi.lastError || ''),
           'model_discovery_last_refresh=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastRefreshAt) || ''),
           'model_discovery_last_error=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastError) || ''),
+          '',
+          '[project_quota]',
+          'source=' + String(projectQuota.source || quota.source || 'local-ledger'),
+          'authoritative=' + String(Boolean(projectQuota.authoritative)),
+          'updated_at=' + String(projectQuota.updatedAt || ''),
+          'last_error=' + String(projectQuota.lastError || ''),
+          ...(projectQuotas.length > 0
+            ? projectQuotas.map(function(entry) {
+              const accountId = lookupAccountIdByProjectId(apiKeys, entry.projectId);
+              const predictRpm = extractProjectQuotaPredictRpm(entry);
+              return [
+                'account=' + accountId,
+                'project=' + String(entry.projectId || ''),
+                'ok=' + String(Boolean(entry.ok)),
+                'metrics=' + String(Array.isArray(entry.metrics) ? entry.metrics.length : 0),
+                predictRpm ? 'predict_rpm=' + predictRpm : '',
+                entry.statusCode ? 'status=' + String(entry.statusCode) : '',
+                entry.error ? 'error=' + String(entry.error) : '',
+                entry.message ? 'message=' + String(entry.message) : '',
+              ].filter(Boolean).join(' ');
+            })
+            : ['none']),
           '',
           '[upstream]',
           'status=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.status) || ''),
@@ -2516,6 +2618,26 @@ export function renderAppShell(input: {
               ].join(' ');
             })
             : ['none']),
+          '',
+          '[free_tier_metrics]',
+          ...(projectQuotas.length > 0
+            ? projectQuotas.map(function(entry) {
+              const m = entry && entry.monitoring && typeof entry.monitoring === 'object' ? entry.monitoring : {};
+              const dbg = m.debug && typeof m.debug === 'object' ? m.debug : {};
+              const ftModels = Array.isArray(m.freeTierPerModel) ? m.freeTierPerModel : [];
+              return [
+                'project=' + String(entry.projectId || ''),
+                'ok=' + String(Boolean(m.freeTierOk)),
+                'models=' + String(ftModels.length),
+                'rpm_status=' + String(dbg.freeTierRpmStatus || '?'),
+                'rpd_status=' + String(dbg.freeTierRpdStatus || '?'),
+                'limit_status=' + String(dbg.freeTierLimitStatus || '?'),
+                ftModels.length > 0
+                  ? ftModels.map(function(fm) { return String(fm.model || '') + '(rpm=' + String(fm.rpmUsed ?? '-') + '/' + String(fm.rpmLimit ?? '-') + ' rpd=' + String(fm.rpdUsed ?? '-') + '/' + String(fm.rpdLimit ?? '-') + ')'; }).join(' ')
+                  : 'no_data',
+              ].join(' | ');
+            })
+            : ['no project quota data']),
         ].join('\\n');
       }
 
@@ -2578,6 +2700,213 @@ export function renderAppShell(input: {
         }).join('') || '<tr><td colspan="4" class="muted">No Gemini API accounts configured.</td></tr>';
       }
 
+      function lookupEffectiveLimitFromMetrics(serviceUsageMetrics, quotaMetric, model, isAllocation) {
+        if (!Array.isArray(serviceUsageMetrics)) return null;
+        const metric = serviceUsageMetrics.find(function(m) { return String(m && m.metric || '') === quotaMetric; });
+        if (!metric || !Array.isArray(metric.limits)) return null;
+        for (var li = 0; li < metric.limits.length; li++) {
+          var limit = metric.limits[li];
+          if (!Array.isArray(limit.quotaBuckets)) continue;
+          var buckets = limit.quotaBuckets;
+          var match = null;
+          if (model) {
+            match = buckets.find(function(b) {
+              var dims = b.dimensions || {};
+              return String(dims.model || dims.model_id || '').toLowerCase() === String(model).toLowerCase();
+            });
+          }
+          if (!match) match = buckets.find(function(b) { return !b.dimensions || Object.keys(b.dimensions).length === 0; });
+          if (!match) match = buckets[0];
+          if (match && match.effectiveLimit !== null && match.effectiveLimit !== undefined) {
+            return parseInt(String(match.effectiveLimit), 10) || null;
+          }
+        }
+        return null;
+      }
+
+      function renderGoogleQuotaTable(projectQuotas, apiKeys, quotaGroups) {
+        if (!googleQuotaTable) return;
+        if (!Array.isArray(projectQuotas) || projectQuotas.length === 0) {
+          googleQuotaTable.innerHTML = '<tr><td colspan="9" class="muted">No data yet — click Refresh quota or wait for the 30s auto-poll.</td></tr>';
+          return;
+        }
+
+        function lookupQuotaGroupByProjectId(keys, projectId) {
+          var norm = String(projectId || '').trim();
+          if (!norm) return null;
+          var match = Array.isArray(keys) ? keys.find(function(k) { return String(k && k.projectId || '').trim() === norm; }) : null;
+          return match && match.quotaGroup ? String(match.quotaGroup) : null;
+        }
+
+        function cell(used, limit, left) {
+          if (used === null && limit === null) return '<span class="muted">-</span>';
+          var usedStr = used !== null ? escapeHtml(String(used)) : '-';
+          var limitStr = limit !== null ? escapeHtml(String(limit)) : '-';
+          var leftColor = (left !== null && left <= 0) ? ' style="color:var(--warn);font-weight:bold"' : '';
+          var leftStr = left !== null ? escapeHtml(String(left)) : '-';
+          return usedStr + ' / ' + limitStr + '<div class="footer-note"' + leftColor + '>left ' + leftStr + '</div>';
+        }
+
+        var rows = [];
+        projectQuotas.forEach(function(project) {
+          var monitoring = project && project.monitoring && typeof project.monitoring === 'object' ? project.monitoring : {};
+          var serviceMetrics = Array.isArray(project.metrics) ? project.metrics : [];
+          var accountId = lookupAccountIdByProjectId(apiKeys, project.projectId);
+          var rateUsage = Array.isArray(monitoring.rateUsage) ? monitoring.rateUsage : [];
+          var allocUsage = Array.isArray(monitoring.allocUsage) ? monitoring.allocUsage : [];
+          var limitUsage = Array.isArray(monitoring.limitUsage) ? monitoring.limitUsage : [];
+          var dbg = monitoring.debug || {};
+          var reqRpm = typeof monitoring.requestCountRpm === 'number' ? monitoring.requestCountRpm : null;
+          var reqRpd = typeof monitoring.requestCountRpd === 'number' ? monitoring.requestCountRpd : null;
+
+          if (!monitoring.ok) {
+            var errMsg = String(monitoring.rateError || monitoring.allocError || monitoring.limitError || 'Cloud Monitoring not reachable');
+            rows.push(
+              '<tr><td colspan="9">' +
+              '<span class="chip warn">' + escapeHtml(String(project.projectId || '')) + '</span> ' +
+              escapeHtml(errMsg) +
+              '<div class="footer-note muted">HTTP rate=' + escapeHtml(String(dbg.rateStatus || '?')) + ' alloc=' + escapeHtml(String(dbg.allocStatus || '?')) + ' limit=' + escapeHtml(String(dbg.limitStatus || '?')) + '</div>' +
+              '</td></tr>');
+            return;
+          }
+
+          // Build limit lookup from Cloud Monitoring quota/limit series
+          var monitoringLimits = {};
+          limitUsage.forEach(function(entry) {
+            var key = String(entry.quotaMetric || '') + '||' + String(entry.model || '');
+            monitoringLimits[key] = entry.value;
+          });
+
+          // Combine rate and alloc by (quotaMetric, model)
+          var byKey = {};
+          rateUsage.forEach(function(entry) {
+            var key = String(entry.quotaMetric || '') + '||' + String(entry.model || '');
+            if (!byKey[key]) byKey[key] = { quotaMetric: entry.quotaMetric, model: entry.model, rpmUsed: null, rpdUsed: null };
+            byKey[key].rpmUsed = entry.value;
+          });
+          allocUsage.forEach(function(entry) {
+            var key = String(entry.quotaMetric || '') + '||' + String(entry.model || '');
+            if (!byKey[key]) byKey[key] = { quotaMetric: entry.quotaMetric, model: entry.model, rpmUsed: null, rpdUsed: null };
+            byKey[key].rpdUsed = entry.value;
+          });
+          Object.keys(monitoringLimits).forEach(function(key) {
+            if (!byKey[key]) {
+              var parts = key.split('||');
+              byKey[key] = { quotaMetric: parts[0] || '', model: parts[1] || null, rpmUsed: null, rpdUsed: null };
+            }
+          });
+
+          var entries = Object.values(byKey);
+
+          if (entries.length === 0) {
+            // quota/* is empty (expected for AI Studio free-tier accounts).
+            // Priority: (1) native free-tier metrics, (2) api/request_count total, (3) local ledger.
+            var freeTierModels = Array.isArray(monitoring.freeTierPerModel) ? monitoring.freeTierPerModel : [];
+
+            if (freeTierModels.length > 0) {
+              // Authoritative per-model data from Google Cloud Monitoring free-tier quota metrics
+              freeTierModels.forEach(function(ftm) {
+                var ftRpmUsed = typeof ftm.rpmUsed === 'number' ? ftm.rpmUsed : null;
+                var ftRpdUsed = typeof ftm.rpdUsed === 'number' ? ftm.rpdUsed : null;
+                var ftRpmLimit = typeof ftm.rpmLimit === 'number' ? ftm.rpmLimit : null;
+                var ftRpdLimit = typeof ftm.rpdLimit === 'number' ? ftm.rpdLimit : null;
+                var ftRpmLeft = (ftRpmLimit !== null && ftRpmUsed !== null) ? Math.max(0, ftRpmLimit - ftRpmUsed) : null;
+                var ftRpdLeft = (ftRpdLimit !== null && ftRpdUsed !== null) ? Math.max(0, ftRpdLimit - ftRpdUsed) : null;
+                rows.push('<tr>' +
+                  '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
+                  '<td data-label="Model">' + escapeHtml(String(ftm.model || '-')) + '</td>' +
+                  '<td data-label="Metric"><span class="chip good" title="Authoritative usage from Google Cloud Monitoring (generate_content_free_tier_requests)">free-tier</span></td>' +
+                  '<td data-label="RPM used">' + cell(ftRpmUsed, ftRpmLimit, ftRpmLeft) + '</td>' +
+                  '<td data-label="RPM limit">' + (ftRpmLimit !== null ? escapeHtml(String(ftRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPM left">' + (ftRpmLeft !== null ? ('<span' + (ftRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(ftRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD used">' + (ftRpdUsed !== null ? escapeHtml(String(ftRpdUsed)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD limit">' + (ftRpdLimit !== null ? escapeHtml(String(ftRpdLimit)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD left">' + (ftRpdLeft !== null ? ('<span' + (ftRpdLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(ftRpdLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+                '</tr>');
+              });
+              return;
+            }
+
+            var quotaGroupId = lookupQuotaGroupByProjectId(apiKeys, project.projectId);
+            var localGroup = quotaGroupId && Array.isArray(quotaGroups)
+              ? quotaGroups.find(function(g) { return g && g.id === quotaGroupId; })
+              : null;
+            var localModels = localGroup && Array.isArray(localGroup.models) ? localGroup.models : [];
+
+            // api/request_count row (no model breakdown, but from Google's servers)
+            if (reqRpm !== null || reqRpd !== null) {
+              rows.push('<tr>' +
+                '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
+                '<td data-label="Model"><span class="muted">all</span></td>' +
+                '<td data-label="Metric"><span title="Google Cloud Monitoring api/request_count (all Gemini calls)">google total</span></td>' +
+                '<td data-label="RPM used">' + (reqRpm !== null ? escapeHtml(String(reqRpm)) : '<span class="muted">-</span>') + '</td>' +
+                '<td data-label="RPM limit"><span class="muted">-</span></td>' +
+                '<td data-label="RPM left"><span class="muted">-</span></td>' +
+                '<td data-label="RPD used">' + (reqRpd !== null ? escapeHtml(String(reqRpd)) : '<span class="muted">-</span>') + '</td>' +
+                '<td data-label="RPD limit"><span class="muted">-</span></td>' +
+                '<td data-label="RPD left"><span class="muted">-</span></td>' +
+              '</tr>');
+            }
+
+            if (localModels.length > 0) {
+              localModels.forEach(function(lm) {
+                var lmRpmUsed = lm.rpm && typeof lm.rpm.used === 'number' ? lm.rpm.used : null;
+                var lmRpdUsed = lm.rpd && typeof lm.rpd.used === 'number' ? lm.rpd.used : null;
+                var lmRpmLimit = lm.rpm && typeof lm.rpm.limit === 'number' ? lm.rpm.limit : null;
+                var lmRpdLimit = lm.rpd && typeof lm.rpd.limit === 'number' ? lm.rpd.limit : null;
+                var lmRpmLeft = (lmRpmLimit !== null && lmRpmUsed !== null) ? Math.max(0, lmRpmLimit - lmRpmUsed) : null;
+                var lmRpdLeft = (lmRpdLimit !== null && lmRpdUsed !== null) ? Math.max(0, lmRpdLimit - lmRpdUsed) : null;
+                rows.push('<tr>' +
+                  '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
+                  '<td data-label="Model">' + escapeHtml(String(lm.model || '-')) + '</td>' +
+                  '<td data-label="Metric"><span class="chip" title="Usage tracked by GemRouter (RPM: 1-min rolling, RPD: resets UTC midnight). Limits from local rate config.">local</span></td>' +
+                  '<td data-label="RPM used">' + cell(lmRpmUsed, lmRpmLimit, lmRpmLeft) + '</td>' +
+                  '<td data-label="RPM limit">' + (lmRpmLimit !== null ? escapeHtml(String(lmRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPM left">' + (lmRpmLeft !== null ? ('<span' + (lmRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(lmRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD used">' + (lmRpdUsed !== null ? escapeHtml(String(lmRpdUsed)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD limit">' + (lmRpdLimit !== null ? escapeHtml(String(lmRpdLimit)) : '<span class="muted">-</span>') + '</td>' +
+                  '<td data-label="RPD left">' + (lmRpdLeft !== null ? ('<span' + (lmRpdLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(lmRpdLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+                '</tr>');
+              });
+            } else if (reqRpm === null && reqRpd === null) {
+              var debugInfo = 'rate=' + String(monitoring.rateCount || 0) + ' alloc=' + String(monitoring.allocCount || 0) +
+                ' HTTP quota=' + String(dbg.rateStatus || '?') + ' reqCount=' + String(dbg.reqCountRpmStatus || '?') +
+                ' freeTierRpm=' + String(dbg.freeTierRpmStatus || '?');
+              rows.push(
+                '<tr><td colspan="9">' +
+                '<span class="chip">' + escapeHtml(accountId) + '</span> ' +
+                'No quota data. Cloud Monitoring not reachable or project not set up. Check the Local Ledger section below.' +
+                '<div class="footer-note muted">' + escapeHtml(debugInfo) + '</div>' +
+                '</td></tr>');
+            }
+            return;
+          }
+
+          entries.forEach(function(entry) {
+            var key = String(entry.quotaMetric || '') + '||' + String(entry.model || '');
+            var rpmLimit = monitoringLimits[key] !== undefined ? monitoringLimits[key] :
+              lookupEffectiveLimitFromMetrics(serviceMetrics, entry.quotaMetric, entry.model, false);
+            var rpdLimit = lookupEffectiveLimitFromMetrics(serviceMetrics, entry.quotaMetric, entry.model, true);
+            var rpmLeft = (rpmLimit !== null && entry.rpmUsed !== null) ? Math.max(0, rpmLimit - entry.rpmUsed) : null;
+            var rpdLeft = (rpdLimit !== null && entry.rpdUsed !== null) ? Math.max(0, rpdLimit - entry.rpdUsed) : null;
+            var metricShort = String(entry.quotaMetric || '').replace('generativelanguage.googleapis.com/', '');
+
+            rows.push('<tr>' +
+              '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
+              '<td data-label="Model">' + escapeHtml(String(entry.model || '-')) + '</td>' +
+              '<td data-label="Metric" title="' + escapeHtml(String(entry.quotaMetric || '')) + '">' + escapeHtml(metricShort) + '</td>' +
+              '<td data-label="RPM used">' + cell(entry.rpmUsed, rpmLimit, rpmLeft) + '</td>' +
+              '<td data-label="RPM limit">' + (rpmLimit !== null ? escapeHtml(String(rpmLimit)) : '<span class="muted">-</span>') + '</td>' +
+              '<td data-label="RPM left">' + (rpmLeft !== null ? ('<span' + (rpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(rpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+              '<td data-label="RPD used">' + (entry.rpdUsed !== null ? escapeHtml(String(entry.rpdUsed)) : '<span class="muted">-</span>') + '</td>' +
+              '<td data-label="RPD limit">' + (rpdLimit !== null ? escapeHtml(String(rpdLimit)) : '<span class="muted">-</span>') + '</td>' +
+              '<td data-label="RPD left">' + (entry.rpdUsed !== null && rpdLimit !== null ? ('<span' + (rpdLeft !== null && rpdLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(rpdLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
+            '</tr>');
+          });
+        });
+        googleQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="9" class="muted">No Cloud Monitoring data available.</td></tr>';
+      }
+
       function renderGeminiApiQuotaTable(quotaGroups, supportedModelIds) {
         const rows = [];
         const supported = Array.isArray(supportedModelIds) && supportedModelIds.length > 0
@@ -2587,6 +2916,10 @@ export function renderAppShell(input: {
           const models = Array.isArray(group.models)
             ? group.models.filter(function(model) {
               const modelId = typeof model.model === 'string' ? model.model.trim() : '';
+              // Skip models with all-zero limits — removed from config but still in ledger
+              const zeroLimits = model.rpm && model.tpm && model.rpd &&
+                model.rpm.limit === 0 && model.tpm.limit === 0 && model.rpd.limit === 0;
+              if (zeroLimits) return false;
               return (!supported || supported.has(modelId)) && hasQuotaActivity(model);
             })
             : [];
@@ -2594,12 +2927,29 @@ export function renderAppShell(input: {
           const groupLabel = groupId ? escapeHtml(groupId) : renderHiddenLabel('hidden in guest view');
           models.slice(0, 12).forEach(function(model) {
             const cooldown = formatRetryAfter(model.cooldownUntil, model.cooldownSource);
+            // If upstream headers were captured from the Gemini API response, prefer those for RPM/RPD display
+            const hasUpstream = model.upstreamRpmLimit !== null || model.upstreamRpdLimit !== null;
+            const rpmDisplay = hasUpstream && model.upstreamRpmRemaining !== null
+              ? '<span title="From Gemini API response headers (authoritative)">' +
+                  escapeHtml(String(model.upstreamRpmRemaining)) + ' left / ' +
+                  (model.upstreamRpmLimit !== null ? escapeHtml(String(model.upstreamRpmLimit)) : '-') +
+                  ' <span class="chip good" style="font-size:0.7em">upstream</span></span>'
+              : formatQuotaMetric(model.rpm);
+            const rpdDisplay = hasUpstream && model.upstreamRpdRemaining !== null
+              ? '<span title="From Gemini API response headers (authoritative)">' +
+                  escapeHtml(String(model.upstreamRpdRemaining)) + ' left / ' +
+                  (model.upstreamRpdLimit !== null ? escapeHtml(String(model.upstreamRpdLimit)) : '-') +
+                  ' <span class="chip good" style="font-size:0.7em">upstream</span></span>'
+              : formatQuotaMetric(model.rpd);
+            const headerNote = model.upstreamHeadersAt
+              ? '<div class="footer-note">headers at ' + escapeHtml(formatTimestamp(model.upstreamHeadersAt)) + '</div>'
+              : (model.upstreamHeadersRaw === null ? '<div class="footer-note muted">no upstream headers yet</div>' : '');
             rows.push('<tr>' +
               '<td data-label="Group">' + groupLabel + '</td>' +
-              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">source: ' + escapeHtml(String(model.source || 'local-ledger')) + '</div></td>' +
-              '<td data-label="RPM">' + formatQuotaMetric(model.rpm) + '</td>' +
+              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">RPD resets UTC midnight</div>' + headerNote + '</td>' +
+              '<td data-label="RPM">' + rpmDisplay + '</td>' +
               '<td data-label="TPM">' + formatQuotaMetric(model.tpm) + '</td>' +
-              '<td data-label="RPD">' + formatQuotaMetric(model.rpd) + '</td>' +
+              '<td data-label="RPD">' + rpdDisplay + '</td>' +
               '<td data-label="State"><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span></td>' +
             '</tr>');
           });
@@ -2724,6 +3074,102 @@ export function renderAppShell(input: {
         }).join('');
       }
 
+      function formatAttemptTarget(attempt) {
+        if (attempt && attempt.keyId) return String(attempt.keyId);
+        return 'no-key';
+      }
+
+      function describePolicyRemap(item) {
+        const reason = (item && item.policyFallbackReason) || (item && item.fallbackReason) || '';
+        if (reason === 'non_free_or_unsupported_model') return 'free-tier';
+        if (reason === 'app_model_not_allowed') return 'app';
+        return 'policy';
+      }
+
+      function describeAttemptReason(attempt) {
+        const reason = String(attempt && attempt.reason || '');
+        switch (reason) {
+          case 'local_rpm_limit_zero':
+            return 'quota zero';
+          case 'local_tpm_limit_zero':
+            return 'tpm zero';
+          case 'local_rpd_limit_zero':
+            return 'rpd zero';
+          case 'local_rpm_unavailable':
+            return 'rpm full';
+          case 'local_tpm_unavailable':
+            return 'tpm full';
+          case 'local_rpd_unavailable':
+            return 'rpd full';
+          case 'local_cooldown_unavailable':
+            return 'cooldown';
+          case 'gemini_api_auth_failed':
+            return 'auth';
+          case 'gemini_api_model_not_found':
+            return 'model missing';
+          case 'gemini_api_rate_limited':
+            return 'rate limit';
+          case 'gemini_api_high_demand':
+            return 'busy';
+          case 'gemini_api_upstream_error':
+            return 'upstream';
+          case 'gemini_api_timeout':
+            return 'timeout';
+          case 'gemini_api_quota_unavailable':
+            return 'no quota';
+          case 'gemini_api_no_key_for_model':
+            return 'no key';
+          default:
+            return reason ? reason.replace(/_/g, ' ') : 'attempt failed';
+        }
+      }
+
+      function buildRoutingSummary(item) {
+        const requested = item.requestedModel || item.model || 'n/a';
+        const startModel = item.model || requested;
+        const finalModel = item.backendModel || startModel;
+        const attempts = Array.isArray(item.fallbackAttempts) ? item.fallbackAttempts : [];
+        const steps = [];
+        let step = 1;
+
+        steps.push('<div class="footer-note">' + String(step++) + '. req ' + escapeHtml(requested) + '</div>');
+
+        if (requested !== startModel) {
+          steps.push(
+            '<div class="footer-note warn-text">' +
+            String(step++) + '. map ' + escapeHtml(requested) + ' -> ' + escapeHtml(startModel) +
+            ' [' + escapeHtml(describePolicyRemap(item)) + ']</div>'
+          );
+        }
+
+        attempts.forEach(function(attempt) {
+          const parts = [formatAttemptTarget(attempt), describeAttemptReason(attempt)];
+          if (attempt.statusCode) parts.push('[' + String(attempt.statusCode) + ']');
+          if (attempt.availableAfter) parts.push('retry ' + formatTimestamp(attempt.availableAfter));
+          steps.push(
+            '<div class="footer-note">' +
+            String(step++) + '. ' + escapeHtml(attempt.model || 'n/a') +
+            ' · ' + escapeHtml(parts.filter(Boolean).join(' · ')) + '</div>'
+          );
+        });
+
+        if (item.status === 'succeeded') {
+          steps.push(
+            '<div class="footer-note good-text">' +
+            String(step++) + '. ok ' + escapeHtml(finalModel) +
+            ' · ' + escapeHtml(String(item.apiKeyId || 'unknown')) + '</div>'
+          );
+        } else {
+          const finalReason = item.fallbackReason || item.error || 'failed';
+          steps.push(
+            '<div class="footer-note warn-text">' +
+            String(step++) + '. fail ' + escapeHtml(describeAttemptReason({ reason: finalReason })) + '</div>'
+          );
+        }
+
+        return '<strong>' + escapeHtml(finalModel) + '</strong>' + steps.join('');
+      }
+
       function renderInteractions(summary) {
         const recent = Array.isArray(summary && summary.recent)
           ? summary.recent.slice(0, Math.max(1, Number(state.interactionLimit) || 10))
@@ -2733,34 +3179,10 @@ export function renderAppShell(input: {
             ? (item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens)
             : 'n/a';
           const feedback = item.feedback ? '<span class="chip ' + item.feedback + '">' + item.feedback + '</span>' : '<span class="chip warn">unrated</span>';
-          const attempts = Array.isArray(item.fallbackAttempts) ? item.fallbackAttempts : [];
-          const selected = item.requestedModel && item.requestedModel !== item.model
-            ? '<div class="footer-note">1. Requested: ' + escapeHtml(item.requestedModel) + '</div>' +
-              '<div class="footer-note">2. Policy selected: ' + escapeHtml(item.model || 'n/a') + '</div>'
-            : '<div class="footer-note">1. Requested: ' + escapeHtml(item.model || 'n/a') + '</div>';
-          const attemptDetails = attempts.length > 0
-            ? attempts.map(function(attempt, index) {
-              const key = attempt.keyId ? attempt.keyId : 'no-key';
-              const group = attempt.quotaGroup ? ' / ' + attempt.quotaGroup : '';
-              const retry = attempt.availableAfter ? ' retry after ' + formatTimestamp(attempt.availableAfter) : '';
-              return '<div class="footer-note">' + String(index + 3) + '. Tried ' + escapeHtml(attempt.model || 'n/a') +
-                ' on ' + escapeHtml(key + group) + ' -> ' + escapeHtml(attempt.reason || 'failed') + escapeHtml(retry) + '</div>';
-            }).join('')
-            : '';
-          const successIndex = attempts.length + (item.requestedModel && item.requestedModel !== item.model ? 3 : 2);
-          const successDetails = item.status === 'succeeded'
-            ? '<div class="footer-note good-text">' + String(successIndex) + '. Success: ' + escapeHtml(item.backendModel || item.model || 'n/a') +
-              ' on ' + escapeHtml(item.apiKeyId || 'unknown-key') + (item.quotaGroup ? ' / ' + escapeHtml(item.quotaGroup) : '') + '</div>'
-            : '<div class="footer-note warn-text">' + String(successIndex) + '. Failed: ' + escapeHtml(item.error || item.fallbackReason || 'unknown error') + '</div>';
           return '<tr>' +
             '<td>' + escapeHtml(new Date(item.createdAt).toLocaleString()) + '<div class="footer-note">' + escapeHtml(item.route) + '</div></td>' +
             '<td><strong>' + escapeHtml(item.appName) + '</strong></td>' +
-            '<td><strong>' + escapeHtml(item.backendModel || item.model || 'n/a') + '</strong>' +
-              selected +
-              (item.fallbackReason ? '<div class="footer-note warn-text">fallback: ' + escapeHtml(item.fallbackReason) + '</div>' : '') +
-              attemptDetails +
-              successDetails +
-            '</td>' +
+            '<td>' + buildRoutingSummary(item) + '</td>' +
             '<td>' + escapeHtml(item.promptExcerpt || '(empty)') + '</td>' +
             '<td>' + escapeHtml(item.responseExcerpt || item.error || '(empty)') + '</td>' +
             '<td>' + escapeHtml(usage) + '<div class="footer-note">' + escapeHtml(String(item.latencyMs || 0)) + ' ms</div></td>' +
@@ -2795,44 +3217,73 @@ export function renderAppShell(input: {
       }
 
       async function loadAdminSummary() {
+        if (state.adminRefreshInFlight) return;
+        state.adminRefreshInFlight = true;
         const editingAppId = String(appForm.elements.id.value || '').trim();
         const selectedModels = getAllowedModelSelection();
         const selectedPromptModel = promptModel.value;
-        const data = await request('/admin/summary');
-        state.apps = data.apps;
-        state.adminStats = data.stats || null;
-        state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
-        state.compatibility = data.compatibility || null;
-        state.freeTierPolicy = data.freeTierPolicy || null;
-        renderAllowedModelsPicker(state.modelCatalog, selectedModels);
-        fillAppOptions(data.apps);
-        fillModelOptions(selectedPromptModel);
-        renderRuntimePills(data);
-        renderBackendDiagnostics(data);
-        renderProviderState(data);
-        renderStats(data.stats);
-        renderCompatibility(data.compatibility);
-        renderApps(data.apps);
-        renderInteractions(state.adminStats);
-        if (editingAppId) {
-          const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
-          if (editingApp) {
-            populateAppForm(editingApp);
+        try {
+          const data = await request('/admin/summary');
+          state.adminSummary = data;
+          state.apps = data.apps;
+          state.adminStats = data.stats || null;
+          state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
+          state.compatibility = data.compatibility || null;
+          state.freeTierPolicy = data.freeTierPolicy || null;
+          syncProjectQuotaState((data.provider && data.provider.quota) || null);
+          renderAllowedModelsPicker(state.modelCatalog, selectedModels);
+          fillAppOptions(data.apps);
+          fillModelOptions(selectedPromptModel);
+          renderRuntimePills(data);
+          renderBackendDiagnostics(data);
+          renderProviderState(data);
+          renderStats(data.stats);
+          renderCompatibility(data.compatibility);
+          renderApps(data.apps);
+          renderInteractions(state.adminStats);
+          if (editingAppId) {
+            const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
+            if (editingApp) {
+              populateAppForm(editingApp);
+            }
           }
+          setAdminVisible(true);
+          const freeTierAlerts = state.freeTierPolicy && Array.isArray(state.freeTierPolicy.alerts)
+            ? state.freeTierPolicy.alerts
+            : [];
+          const criticalAlert = freeTierAlerts.find(function(alert) { return alert.level === 'critical'; }) || freeTierAlerts[0];
+          const banner = adminBannerTitle ? adminBannerTitle.closest('.role-banner') : null;
+          if (banner) banner.classList.toggle('is-critical', Boolean(criticalAlert));
+          if (criticalAlert) {
+            adminBannerTitle.textContent = criticalAlert.message;
+            adminBannerCopy.textContent = (criticalAlert.modelIds || []).join(', ') || 'Free-tier model policy changed.';
+          } else {
+            adminBannerTitle.textContent = 'Operator console active';
+            adminBannerCopy.textContent = state.username ? 'Signed in as ' + state.username + '.' : 'Signed in as admin.';
+          }
+        } finally {
+          state.adminRefreshInFlight = false;
         }
-        setAdminVisible(true);
-        const freeTierAlerts = state.freeTierPolicy && Array.isArray(state.freeTierPolicy.alerts)
-          ? state.freeTierPolicy.alerts
-          : [];
-        const criticalAlert = freeTierAlerts.find(function(alert) { return alert.level === 'critical'; }) || freeTierAlerts[0];
-        const banner = adminBannerTitle ? adminBannerTitle.closest('.role-banner') : null;
-        if (banner) banner.classList.toggle('is-critical', Boolean(criticalAlert));
-        if (criticalAlert) {
-          adminBannerTitle.textContent = criticalAlert.message;
-          adminBannerCopy.textContent = (criticalAlert.modelIds || []).join(', ') || 'Free-tier model policy changed.';
-        } else {
-          adminBannerTitle.textContent = 'Operator console active';
-          adminBannerCopy.textContent = state.username ? 'Signed in as ' + state.username + '.' : 'Signed in as admin.';
+      }
+
+      async function loadProjectQuota(force) {
+        if (!state.authenticated || state.projectQuotaRefreshInFlight) return;
+        const updatedAt = Date.parse(String(state.projectQuota && state.projectQuota.updatedAt || ''));
+        if (!force && Number.isFinite(updatedAt) && (Date.now() - updatedAt) < PROJECT_QUOTA_REFRESH_MS) {
+          return;
+        }
+        state.projectQuotaRefreshInFlight = true;
+        try {
+          const data = await request('/admin/provider/gemini-api/refresh-quota', {
+            method: 'POST',
+            body: JSON.stringify({}),
+          });
+          syncProjectQuotaState(data);
+          if (state.adminSummary) {
+            renderProviderState(state.adminSummary);
+          }
+        } finally {
+          state.projectQuotaRefreshInFlight = false;
         }
       }
 
@@ -2844,7 +3295,10 @@ export function renderAppShell(input: {
           authSummary.textContent = state.username ? 'Admin session active for ' + state.username + '.' : 'Admin session active.';
           authStatus.textContent = '';
           await loadAdminSummary();
+          await loadProjectQuota(false);
         } else {
+          state.adminSummary = null;
+          state.projectQuota = null;
           setAdminVisible(false);
           authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
           authStatus.textContent = '';
@@ -2894,6 +3348,8 @@ export function renderAppShell(input: {
         } finally {
           state.authenticated = false;
           state.username = '';
+          state.adminSummary = null;
+          state.projectQuota = null;
           setAdminVisible(false);
           authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
           authStatus.textContent = '';
@@ -3107,7 +3563,10 @@ export function renderAppShell(input: {
 
       window.setInterval(function() {
         if (document.hidden) return;
-        loadPublicSummary().catch(function(error) {
+        Promise.all([
+          loadPublicSummary(),
+          refreshSession(),
+        ]).catch(function(error) {
           authStatus.textContent = error.message;
         });
       }, PUBLIC_REFRESH_MS);

@@ -29,6 +29,15 @@ export interface GeminiApiModelQuotaLedger {
   lastFailureCode?: string;
   lastFailureReason?: string;
   lastFailureStatus?: number;
+  // Authoritative limits/remaining from upstream response headers
+  upstreamRpmLimit?: number;
+  upstreamRpmRemaining?: number;
+  upstreamTpmLimit?: number;
+  upstreamTpmRemaining?: number;
+  upstreamRpdLimit?: number;
+  upstreamRpdRemaining?: number;
+  upstreamHeadersRaw?: Record<string, string>;
+  upstreamHeadersAt?: string;
 }
 
 export interface GeminiApiQuotaGroupLedger {
@@ -73,6 +82,12 @@ export interface GeminiApiQuotaModelSnapshot {
   lastFailureStatus: number | null;
   source: GeminiApiQuotaSource;
   authoritative: boolean;
+  upstreamRpmLimit: number | null;
+  upstreamRpmRemaining: number | null;
+  upstreamRpdLimit: number | null;
+  upstreamRpdRemaining: number | null;
+  upstreamHeadersRaw: Record<string, string> | null;
+  upstreamHeadersAt: string | null;
 }
 
 export interface GeminiApiQuotaGroupSnapshot {
@@ -82,6 +97,17 @@ export interface GeminiApiQuotaGroupSnapshot {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function parseHeaderInt(headers: Record<string, string>, ...names: string[]): number | undefined {
+  for (const name of names) {
+    const v = headers[name] ?? headers[name.toLowerCase()];
+    if (v !== undefined) {
+      const n = parseInt(v, 10);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return undefined;
 }
 
 function emptyLedger(): GeminiApiQuotaLedgerFile {
@@ -132,13 +158,22 @@ export class GeminiApiQuotaLedger {
     writeFileSync(this.config.ledgerPath, `${JSON.stringify(this.data, null, 2)}\n`);
   }
 
+  private getLimitForGroup(quotaGroup: string, model: string): import('./types.js').GeminiApiRateLimit {
+    const groupOverride = this.config.groupLimits?.[quotaGroup];
+    const bare = model.replace(/^models\//, '');
+    if (groupOverride && (groupOverride[model] || groupOverride[bare])) {
+      return groupOverride[model] ?? groupOverride[bare]!;
+    }
+    return getGeminiApiLimit(model, this.config.limits);
+  }
+
   private getModelLedger(quotaGroup: string, model: string): GeminiApiModelQuotaLedger {
     const group = this.data.groups[quotaGroup] ?? {
       quotaGroup,
       models: {},
     };
     this.data.groups[quotaGroup] = group;
-    const limit = getGeminiApiLimit(model, this.config.limits);
+    const limit = this.getLimitForGroup(quotaGroup, model);
     const modelLedger = group.models[model] ?? {
       model,
       rpm: { limit: limit.rpm, events: [] },
@@ -163,10 +198,17 @@ export class GeminiApiQuotaLedger {
     counter.events = counter.events.filter((event) => event.ts >= cutoff);
   }
 
+  // RPD resets at UTC midnight, matching Google's quota reset behavior
+  private pruneRpdCounter(counter: WindowCounter, now: number): void {
+    const d = new Date(now);
+    const midnightUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    counter.events = counter.events.filter((event) => event.ts >= midnightUtc);
+  }
+
   private pruneModel(model: GeminiApiModelQuotaLedger, now: number): void {
     this.pruneCounter(model.rpm, this.config.rpmWindowMs, now);
     this.pruneCounter(model.tpm, this.config.tpmWindowMs, now);
-    this.pruneCounter(model.rpd, this.config.rpdWindowMs, now);
+    this.pruneRpdCounter(model.rpd, now);
   }
 
   pruneAll(now = Date.now()): void {
@@ -191,6 +233,7 @@ export class GeminiApiQuotaLedger {
     const ledger = this.getModelLedger(quotaGroup, model);
     this.pruneModel(ledger, now);
     const cooldownUntil = ledger.cooldownUntil ?? null;
+    const groupLimit = this.getLimitForGroup(quotaGroup, model);
     if (cooldownUntil && Date.parse(cooldownUntil) > now) {
       return {
         available: false,
@@ -200,17 +243,17 @@ export class GeminiApiQuotaLedger {
         rpdRemaining: metric(ledger.rpd).remaining,
         cooldownUntil,
         cooldownSource: ledger.cooldownSource ?? null,
-        limit: getGeminiApiLimit(model, this.config.limits),
+        limit: groupLimit,
       };
     }
     const rpm = metric(ledger.rpm);
     const tpm = metric(ledger.tpm);
     const rpd = metric(ledger.rpd);
     const cooldownSource = ledger.cooldownSource ?? null;
-    if (rpm.remaining !== null && rpm.remaining <= 0) return { available: false, reason: 'rpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
-    if (tpm.remaining !== null && tpm.remaining < estimatedTokens) return { available: false, reason: 'tpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
-    if (rpd.remaining !== null && rpd.remaining <= 0) return { available: false, reason: 'rpd', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
-    return { available: true, reason: null, rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: getGeminiApiLimit(model, this.config.limits) };
+    if (rpm.remaining !== null && rpm.remaining <= 0) return { available: false, reason: 'rpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
+    if (tpm.remaining !== null && tpm.remaining < estimatedTokens) return { available: false, reason: 'tpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
+    if (rpd.remaining !== null && rpd.remaining <= 0) return { available: false, reason: 'rpd', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
+    return { available: true, reason: null, rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
   }
 
   reserve(input: { quotaGroup: string; keyId: string; model: string; estimatedTokens: number; requestId: string }): void {
@@ -224,13 +267,30 @@ export class GeminiApiQuotaLedger {
     this.persist();
   }
 
-  markSuccess(input: { quotaGroup: string; keyId: string; model: string; requestId: string; totalTokens?: number }): void {
+  markSuccess(input: {
+    quotaGroup: string;
+    keyId: string;
+    model: string;
+    requestId: string;
+    totalTokens?: number;
+    upstreamHeaders?: Record<string, string>;
+  }): void {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = nowIso();
     ledger.lastSuccessAt = now;
     if (typeof input.totalTokens === 'number' && Number.isFinite(input.totalTokens)) {
       const event = ledger.tpm.events.find((candidate) => candidate.requestId === input.requestId);
       if (event) event.tokens = input.totalTokens;
+    }
+    if (input.upstreamHeaders && Object.keys(input.upstreamHeaders).length > 0) {
+      ledger.upstreamHeadersRaw = input.upstreamHeaders;
+      ledger.upstreamHeadersAt = now;
+      ledger.upstreamRpmLimit = parseHeaderInt(input.upstreamHeaders, 'x-ratelimit-limit-requests');
+      ledger.upstreamRpmRemaining = parseHeaderInt(input.upstreamHeaders, 'x-ratelimit-remaining-requests');
+      ledger.upstreamTpmLimit = parseHeaderInt(input.upstreamHeaders, 'x-ratelimit-limit-tokens');
+      ledger.upstreamTpmRemaining = parseHeaderInt(input.upstreamHeaders, 'x-ratelimit-remaining-tokens');
+      ledger.upstreamRpdLimit = parseHeaderInt(input.upstreamHeaders, 'x-ratelimit-limit-requests-day', 'x-ratelimit-limit-requests-per-day');
+      ledger.upstreamRpdRemaining = parseHeaderInt(input.upstreamHeaders, 'x-ratelimit-remaining-requests-day', 'x-ratelimit-remaining-requests-per-day');
     }
     const key = this.getKeyLedger(input.keyId);
     key.lastSuccessAt = now;
@@ -289,13 +349,24 @@ export class GeminiApiQuotaLedger {
     this.persist();
   }
 
+  reset(): void {
+    this.data = emptyLedger();
+    this.persist();
+  }
+
   snapshot(): { apiKeys: GeminiApiKeyLedger[]; quotaGroups: GeminiApiQuotaGroupSnapshot[]; updatedAt: string } {
     this.pruneAll(Date.now());
     return {
       apiKeys: Object.values(this.data.keys),
       quotaGroups: Object.values(this.data.groups).map((group) => ({
         id: group.quotaGroup,
-        models: Object.values(group.models).map((model) => ({
+        models: Object.values(group.models).map((model) => {
+          // Always reflect current configured limits (file may have stale values)
+          const configuredLimit = this.getLimitForGroup(group.quotaGroup, model.model);
+          model.rpm.limit = configuredLimit.rpm;
+          model.tpm.limit = configuredLimit.tpm;
+          model.rpd.limit = configuredLimit.rpd;
+          return ({
           model: model.model,
           rpm: metric(model.rpm),
           tpm: metric(model.tpm),
@@ -310,7 +381,14 @@ export class GeminiApiQuotaLedger {
           lastFailureStatus: model.lastFailureStatus ?? null,
           source: 'local-ledger',
           authoritative: false,
-        })),
+          upstreamRpmLimit: model.upstreamRpmLimit ?? null,
+          upstreamRpmRemaining: model.upstreamRpmRemaining ?? null,
+          upstreamRpdLimit: model.upstreamRpdLimit ?? null,
+          upstreamRpdRemaining: model.upstreamRpdRemaining ?? null,
+          upstreamHeadersRaw: model.upstreamHeadersRaw ?? null,
+          upstreamHeadersAt: model.upstreamHeadersAt ?? null,
+        });
+        }),
       })),
       updatedAt: this.data.updatedAt,
     };

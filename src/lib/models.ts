@@ -1,7 +1,6 @@
 export const DEFAULT_DIRECT_MODEL_IDS = [
   'gemini-3-flash-preview',
   'gemma-4-31b-it',
-  'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-3.1-flash-lite',
@@ -13,7 +12,6 @@ export const DEFAULT_DIRECT_MODEL_IDS = [
 export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
   'gemini-3-flash-preview',
   'gemma-4-31b-it',
-  'gemini-2.5-pro',
   'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-3.1-flash-lite',
@@ -36,7 +34,6 @@ export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
 export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
   'gemini-3-flash-preview',
   'gemma-4-31b-it',
-  'gemini-2.5-pro',
   'gemini-2.5-flash',
 ] as const;
 

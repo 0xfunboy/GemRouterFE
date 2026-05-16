@@ -31,4 +31,14 @@ export class AuditLogger {
         console.error('[audit] write failed:', error);
       });
   }
+
+  reset(): void {
+    this.queue = this.queue
+      .then(async () => {
+        await writeFile(this.filePath, '', { encoding: 'utf8', flag: 'w' });
+      })
+      .catch((error) => {
+        console.error('[audit] reset failed:', error);
+      });
+  }
 }

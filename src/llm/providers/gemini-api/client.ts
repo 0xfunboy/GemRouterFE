@@ -238,6 +238,17 @@ function retryAfterMs(response: Response): number | undefined {
   return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : undefined;
 }
 
+// Capture any header whose name contains quota/ratelimit keywords — works regardless of exact names Gemini uses
+function captureRateLimitHeaders(response: Response): Record<string, string> {
+  const result: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    if (/ratelimit|rate-limit|quota|x-goog-quota/i.test(key)) {
+      result[key.toLowerCase()] = value;
+    }
+  });
+  return result;
+}
+
 function buildEndpoint(config: GeminiApiProviderConfig, model: string, stream = false): string {
   const base = `${config.baseUrl.replace(/\/+$/, '')}/${config.version}/models/${encodeURIComponent(model)}`;
   return stream ? `${base}:streamGenerateContent` : `${base}:generateContent`;
@@ -286,6 +297,34 @@ function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
   }
 }
 
+function localAvailabilityReasonLabel(input: {
+  availability: ReturnType<GeminiApiQuotaLedger['getAvailability']>;
+  fallbackCode: string;
+}): string {
+  const { availability } = input;
+  if (availability.reason === 'rpm' && availability.limit.rpm === 0) return 'local_rpm_limit_zero';
+  if (availability.reason === 'tpm' && availability.limit.tpm === 0) return 'local_tpm_limit_zero';
+  if (availability.reason === 'rpd' && availability.limit.rpd === 0) return 'local_rpd_limit_zero';
+  return availability.reason ? `local_${availability.reason}_unavailable` : input.fallbackCode;
+}
+
+function withFallbackHistory(
+  error: GeminiApiProviderError,
+  attempts: NonNullable<LLMResponse['fallbackAttempts']>,
+  currentModel?: string,
+): GeminiApiProviderError {
+  const lastAttempt = attempts.at(-1);
+  return new GeminiApiProviderError(error.code as ConstructorParameters<typeof GeminiApiProviderError>[0], error.message, {
+    ...error.options,
+    fallbackReason: error.options.fallbackReason ?? error.code,
+    fallbackAttempts: attempts.length > 0 ? [...attempts] : error.options.fallbackAttempts,
+    upstreamModel: error.options.upstreamModel ?? lastAttempt?.model ?? currentModel ?? null,
+    upstreamApiKeyId: error.options.upstreamApiKeyId ?? lastAttempt?.keyId ?? null,
+    upstreamQuotaGroup: error.options.upstreamQuotaGroup ?? lastAttempt?.quotaGroup ?? null,
+    lastUpstreamError: (error.options.lastUpstreamError as GeminiApiUpstreamErrorSnapshot | null | undefined) ?? undefined,
+  });
+}
+
 function appendLocalAvailabilityAttempts(input: {
   attempts: NonNullable<LLMResponse['fallbackAttempts']>;
   config: GeminiApiProviderConfig;
@@ -319,7 +358,10 @@ function appendLocalAvailabilityAttempts(input: {
       provider: 'gemini-api',
       keyId: key.id,
       quotaGroup: key.quotaGroup,
-      reason: availability.reason ? `local_${availability.reason}_unavailable` : input.error.code,
+      reason: localAvailabilityReasonLabel({
+        availability,
+        fallbackCode: input.error.code,
+      }),
       statusCode: input.error.options.statusCode ?? null,
       availableAfter: availability.cooldownUntil,
       availableAfterSource: availability.cooldownSource,
@@ -566,8 +608,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             excludeKeyIds: [...excludedKeyIds],
           });
         } catch (error) {
-          if (shouldRetryReservationFailure(error, remainingModels, attemptOptions)) {
-            lastProviderError = error;
+          if (error instanceof GeminiApiProviderError) {
             appendLocalAvailabilityAttempts({
               attempts: fallbackAttempts,
               config,
@@ -576,10 +617,15 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               estimatedTokens,
               error,
             });
+          }
+          if (shouldRetryReservationFailure(error, remainingModels, attemptOptions)) {
+            lastProviderError = error;
             break;
           }
-          if (lastProviderError) throw lastProviderError;
-          throw error;
+          if (lastProviderError) throw withFallbackHistory(lastProviderError, fallbackAttempts, model);
+          throw error instanceof GeminiApiProviderError
+            ? withFallbackHistory(error, fallbackAttempts, model)
+            : error;
         }
 
         lastSelectedKeyId = reservation.key.id;
@@ -608,6 +654,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             model,
             requestId: reservation.requestId,
             totalTokens: usage?.totalTokenCount,
+            upstreamHeaders: captureRateLimitHeaders(response),
           });
           lastError = null;
           lastUpstreamError = null;
@@ -664,17 +711,20 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           if (shouldRetryWithFallbackModel(providerError, remainingModels, attemptOptions)) {
             break;
           }
-          throw providerError;
+          throw withFallbackHistory(providerError, fallbackAttempts, model);
         }
       }
     }
 
-    throw lastProviderError ?? new GeminiApiProviderError(
+    if (lastProviderError) throw withFallbackHistory(lastProviderError, fallbackAttempts);
+    throw new GeminiApiProviderError(
       'gemini_api_upstream_error',
       'No Gemini API model could satisfy the request.',
       {
         statusCode: 503,
         fallbackEligible: true,
+        fallbackReason: 'gemini_api_upstream_error',
+        fallbackAttempts,
       },
     );
   }
@@ -717,6 +767,9 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       {
         statusCode: response.status,
         fallbackEligible: mapped.fallbackEligible,
+        upstreamModel: model,
+        upstreamApiKeyId: reservation.key.id,
+        upstreamQuotaGroup: reservation.key.quotaGroup,
         lastUpstreamError,
       },
     );
@@ -757,6 +810,9 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     return new GeminiApiProviderError(code, message || 'Gemini API request failed.', {
       statusCode: isTimeout ? 504 : 502,
       fallbackEligible: true,
+      upstreamModel: model,
+      upstreamApiKeyId: reservation.key.id,
+      upstreamQuotaGroup: reservation.key.quotaGroup,
       lastUpstreamError,
       cause: error,
     });
@@ -848,10 +904,27 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         quota: ledger.snapshot(),
       };
     },
+
+    resetTelemetry(): Record<string, unknown> {
+      ledger.reset();
+      lastSelectedKeyId = null;
+      lastSelectedQuotaGroup = null;
+      lastResolvedModel = null;
+      lastError = null;
+      lastUpstreamError = null;
+      lastSuccessAt = null;
+      lastFailureAt = null;
+      lastLatencyMs = null;
+      return {
+        ok: true,
+        quota: ledger.snapshot(),
+      };
+    },
   } as LLMClient & {
     health: () => Record<string, unknown>;
     discoverModels: () => Promise<Record<string, unknown>>;
     listModels: () => Promise<Record<string, unknown>>;
     clearCooldown: () => Record<string, unknown>;
+    resetTelemetry: () => Record<string, unknown>;
   };
 }

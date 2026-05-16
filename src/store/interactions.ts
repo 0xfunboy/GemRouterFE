@@ -33,6 +33,7 @@ export interface InteractionRecord {
   origin?: string;
   provider?: string;
   fallbackReason?: string;
+  policyFallbackReason?: string;
   fallbackAttempts?: Array<{
     model: string;
     provider?: string;
@@ -71,6 +72,7 @@ interface RecordInteractionInput {
   origin?: string;
   provider?: string;
   fallbackReason?: string;
+  policyFallbackReason?: string;
   fallbackAttempts?: InteractionRecord['fallbackAttempts'];
   error?: string;
 }
@@ -128,6 +130,7 @@ export class InteractionStore {
       origin: input.origin,
       provider: input.provider,
       fallbackReason: input.fallbackReason,
+      policyFallbackReason: input.policyFallbackReason,
       fallbackAttempts: input.fallbackAttempts,
       error: input.error,
     };
@@ -157,6 +160,11 @@ export class InteractionStore {
     record.updatedAt = nowIso();
     this.save();
     return record;
+  }
+
+  clear(): void {
+    this.state = { interactions: [] };
+    this.save();
   }
 
   summary(limit = 50): {

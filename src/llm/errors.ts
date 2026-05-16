@@ -1,4 +1,4 @@
-import type { LLMBackendId } from './types.js';
+import type { LLMBackendId, LLMFallbackAttempt } from './types.js';
 
 export type LLMProviderErrorCode =
   | 'backend_disabled'
@@ -15,18 +15,25 @@ export type LLMProviderErrorCode =
   | 'gemini_api_timeout'
   | 'gemini_api_stream_error';
 
+export interface LLMProviderErrorOptions {
+  statusCode?: number;
+  fallbackEligible?: boolean;
+  fallbackFrom?: LLMBackendId;
+  fallbackReason?: string;
+  fallbackAttempts?: LLMFallbackAttempt[];
+  upstreamModel?: string | null;
+  upstreamApiKeyId?: string | null;
+  upstreamQuotaGroup?: string | null;
+  lastUpstreamError?: unknown;
+  cause?: unknown;
+}
+
 export class LLMProviderError extends Error {
   constructor(
     public readonly code: LLMProviderErrorCode,
     public readonly backend: LLMBackendId,
     message: string,
-    public readonly options: {
-      statusCode?: number;
-      fallbackEligible?: boolean;
-      fallbackFrom?: LLMBackendId;
-      fallbackReason?: string;
-      cause?: unknown;
-    } = {},
+    public readonly options: LLMProviderErrorOptions = {},
   ) {
     super(message);
     this.name = 'LLMProviderError';
