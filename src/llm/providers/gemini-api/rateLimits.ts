@@ -6,11 +6,6 @@ export const GEMINI_API_TIER1_LIMITS = {
     tpm: 250_000,
     rpd: 20,
   },
-  'gemini-2.5-pro': {
-    rpm: 0,
-    tpm: 0,
-    rpd: 0,
-  },
   'gemini-2.0-flash': {
     rpm: 15,
     tpm: 1_000_000,

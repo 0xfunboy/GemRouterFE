@@ -26,6 +26,7 @@ export interface GeminiApiProviderConfig {
   defaultTier: string;
   defaultQuotaGroupMode: 'per-key' | 'shared';
   limits: Record<string, GeminiApiRateLimit>;
+  groupLimits: Record<string, Record<string, GeminiApiRateLimit>>;
   ledgerPath: string;
   discoveryCachePath: string;
   discoveryRefreshMs: number;
