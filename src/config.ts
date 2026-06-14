@@ -14,6 +14,8 @@ import {
 import type { LLMBackendId } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
 import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
+import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
+import type { DeepSeekApiConfig } from './llm/providers/deepseek-api/client.js';
 
 export interface BootstrapAppConfig {
   name: string;
@@ -47,6 +49,8 @@ export interface RuntimeConfig {
     enabledSurfaces: ApiSurface[];
   };
   geminiApi: GeminiApiProviderConfig;
+  ollama: OllamaRouterConfig;
+  deepseekApi: DeepSeekApiConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
   };
@@ -104,8 +108,8 @@ function readList(env: Record<string, string | undefined>, fallback: string[], .
 }
 
 function intersectOrFallback(values: string[], allowed: string[], fallback: string[]): string[] {
-  const allowedSet = new Set(allowed.map((value) => value.trim().toLowerCase()).filter(Boolean));
-  const filtered = values.map((value) => value.trim().toLowerCase()).filter((value) => allowedSet.has(value));
+  const allowedSet = new Set(allowed.map((value) => value.trim()).filter(Boolean));
+  const filtered = values.map((value) => value.trim()).filter((value) => allowedSet.has(value));
   return filtered.length > 0 ? [...new Set(filtered)] : fallback;
 }
 
@@ -143,8 +147,31 @@ function readDashboardUsers(
 
 function normalizeBackendId(value: string): LLMBackendId | null {
   const normalized = value.trim().toLowerCase();
+  if (normalized === 'ollama') return 'ollama';
+  if (normalized === 'deepseek-api' || normalized === 'deepseek' || normalized === 'deepseek_api') return 'deepseek-api';
   if (normalized === 'gemini-api' || normalized === 'gemini' || normalized === 'ai-studio') return 'gemini-api';
   return null;
+}
+
+function readOllamaInventoryModelIds(inventoryPath: string): string[] {
+  if (!existsSync(inventoryPath)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(inventoryPath, 'utf8')) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const models = parsed.flatMap((endpoint) => {
+      if (!endpoint || typeof endpoint !== 'object') return [];
+      const typed = endpoint as Record<string, unknown>;
+      if (typed.ok === false || !Array.isArray(typed.models)) return [];
+      return typed.models.flatMap((model) => {
+        if (!model || typeof model !== 'object') return [];
+        const name = String((model as Record<string, unknown>).name ?? '').trim();
+        return name ? [name] : [];
+      });
+    });
+    return [...new Set(models)];
+  } catch {
+    return [];
+  }
 }
 
 function readGeminiApiLimits(
@@ -271,30 +298,45 @@ export function loadConfig(
     (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
   ),
 ): RuntimeConfig {
-  const rootDir = path.resolve(pick(env, 'GEMROUTER_ROOT_DIR', 'BAIRBI_ROOT_DIR', 'BARIBI_ROOT_DIR') ?? process.cwd());
-  const dataDir = path.resolve(rootDir, pick(env, 'GEMROUTER_DATA_DIR', 'BAIRBI_DATA_DIR', 'BARIBI_DATA_DIR') ?? 'data');
+  const rootDir = path.resolve(pick(env, 'LEAKROUTER_ROOT_DIR', 'GEMROUTER_ROOT_DIR', 'BAIRBI_ROOT_DIR', 'BARIBI_ROOT_DIR') ?? process.cwd());
+  const dataDir = path.resolve(rootDir, pick(env, 'LEAKROUTER_DATA_DIR', 'GEMROUTER_DATA_DIR', 'BAIRBI_DATA_DIR', 'BARIBI_DATA_DIR') ?? 'data');
   mkdirSync(dataDir, { recursive: true });
+
+  const ollamaInventoryPath = path.resolve(
+    rootDir,
+    pick(env, 'LEAKROUTER_OLLAMA_INVENTORY_PATH', 'GEMROUTER_OLLAMA_INVENTORY_PATH') ?? 'ollama-model-inventory.json',
+  );
+  const ollamaModelIds = readOllamaInventoryModelIds(ollamaInventoryPath);
+  const deepseekModels = readList(env, ['deepseek-chat', 'deepseek-reasoner'], 'LEAKROUTER_DEEPSEEK_MODELS', 'GEMROUTER_DEEPSEEK_MODELS');
+  const configuredModelIds = readList(
+    env,
+    [...ollamaModelIds, ...deepseekModels],
+    'LEAKROUTER_MODELS',
+    'GEMROUTER_DIRECT_MODELS',
+  );
 
   const freeTierTextModelIds = readList(
     env,
-    [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS],
+    configuredModelIds.length > 0 ? configuredModelIds : [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS],
+    'LEAKROUTER_TEXT_MODELS',
     'GEMROUTER_FREE_TIER_TEXT_MODELS',
-  ).map((model) => model.toLowerCase());
+  );
   const freeTierAudioModelIds = readList(
     env,
     [...DEFAULT_FREE_TIER_AUDIO_MODEL_IDS],
     'GEMROUTER_FREE_TIER_AUDIO_MODELS',
-  ).map((model) => model.toLowerCase());
+  );
   const freeTierEmbeddingModelIds = readList(
     env,
     [...DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS],
     'GEMROUTER_FREE_TIER_EMBEDDING_MODELS',
-  ).map((model) => model.toLowerCase());
+  );
   const freeTierFallbackModelIds = readList(
     env,
-    [...DEFAULT_TEXT_FALLBACK_MODEL_IDS],
+    freeTierTextModelIds.slice(0, 3),
+    'LEAKROUTER_FALLBACK_MODELS',
     'GEMROUTER_TEXT_FALLBACK_MODELS',
-  ).map((model) => model.toLowerCase());
+  );
   const freeTierModelIds = buildFreeTierModelIds({
     textModelIds: freeTierTextModelIds,
     audioModelIds: freeTierAudioModelIds,
@@ -304,6 +346,7 @@ export function loadConfig(
   const configuredDirectModels = readList(
     env,
     freeTierTextModelIds.length > 0 ? freeTierTextModelIds : [...DEFAULT_DIRECT_MODEL_IDS],
+    'LEAKROUTER_MODELS',
     'GEMINI_DIRECT_MODELS',
     'GEMROUTER_DIRECT_MODELS',
   )
@@ -311,7 +354,7 @@ export function loadConfig(
     .filter((model) => freeTierTextModelIds.includes(model));
   const configuredDirectDefaultModel =
     (() => {
-      const requested = pick(env, 'GEMINI_DIRECT_MODEL', 'GEMROUTER_DEFAULT_MODEL')?.trim().toLowerCase();
+      const requested = pick(env, 'LEAKROUTER_DEFAULT_MODEL', 'GEMINI_DIRECT_MODEL', 'GEMROUTER_DEFAULT_MODEL')?.trim();
       return requested && freeTierTextModelIds.includes(requested) ? requested : undefined;
     })() ||
     configuredDirectModels[0] ||
@@ -322,19 +365,21 @@ export function loadConfig(
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
       env,
+      'LEAKROUTER_COMPAT_DEFAULT_SURFACE',
       'GEMROUTER_COMPAT_DEFAULT_SURFACE',
       'BAIRBI_COMPAT_DEFAULT_SURFACE',
       'BARIBI_COMPAT_DEFAULT_SURFACE',
-    ) ?? 'gemrouter',
+    ) ?? 'ollama',
     enabledSurfaces: readList(
       env,
-      ['gemrouter', 'openai', 'deepseek', 'ollama'],
+      ['openai', 'deepseek', 'ollama'],
+      'LEAKROUTER_COMPAT_ENABLED_SURFACES',
       'GEMROUTER_COMPAT_ENABLED_SURFACES',
       'BAIRBI_COMPAT_ENABLED_SURFACES',
       'BARIBI_COMPAT_ENABLED_SURFACES',
     ),
   });
-  const backendOrder = readBackendOrder(env, ['gemini-api'], 'GEMROUTER_BACKEND_ORDER');
+  const backendOrder = readBackendOrder(env, ['ollama', 'deepseek-api'], 'LEAKROUTER_BACKEND_ORDER', 'GEMROUTER_BACKEND_ORDER');
   const geminiApiDefaultTier = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_TIER') ?? 'tier1';
   const geminiApiQuotaGroupMode = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE') === 'shared'
     ? 'shared'
@@ -342,21 +387,23 @@ export function loadConfig(
   const geminiApiKeys = readGeminiApiKeys(env, geminiApiDefaultTier, geminiApiQuotaGroupMode);
 
   return {
-    host: pick(env, 'HOST', 'GEMROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',
-    port: readNumber(env, 4024, 'PORT', 'GEMROUTER_PORT', 'BAIRBI_PORT', 'BARIBI_PORT'),
+    host: pick(env, 'HOST', 'LEAKROUTER_HOST', 'GEMROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',
+    port: readNumber(env, 4024, 'PORT', 'LEAKROUTER_PORT', 'GEMROUTER_PORT', 'BAIRBI_PORT', 'BARIBI_PORT'),
     rootDir,
     dataDir,
     dashboardEnabled: readBoolean(
       env,
       true,
+      'LEAKROUTER_DASHBOARD_ENABLED',
       'GEMROUTER_DASHBOARD_ENABLED',
       'BAIRBI_DASHBOARD_ENABLED',
       'BARIBI_DASHBOARD_ENABLED',
     ),
-    adminToken: requireEnv(env, 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
+    adminToken: requireEnv(env, 'LEAKROUTER_ADMIN_TOKEN', 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
     adminSessionTtlMs: readNumber(
       env,
       24 * 60 * 60_000,
+      'LEAKROUTER_ADMIN_SESSION_TTL_MS',
       'GEMROUTER_ADMIN_SESSION_TTL_MS',
       'BAIRBI_ADMIN_SESSION_TTL_MS',
       'BARIBI_ADMIN_SESSION_TTL_MS',
@@ -366,19 +413,21 @@ export function loadConfig(
       [
         {
           username: 'admin',
-          password: requireEnv(env, 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
+          password: requireEnv(env, 'LEAKROUTER_ADMIN_TOKEN', 'GEMROUTER_ADMIN_TOKEN', 'BAIRBI_ADMIN_TOKEN', 'BARIBI_ADMIN_TOKEN'),
         },
       ],
+      'LEAKROUTER_DASHBOARD_ADMIN_USERS',
       'GEMROUTER_DASHBOARD_ADMIN_USERS',
       'BAIRBI_DASHBOARD_ADMIN_USERS',
       'BARIBI_DASHBOARD_ADMIN_USERS',
     ),
     bootstrapApp: {
-      name: pick(env, 'GEMROUTER_BOOTSTRAP_APP_NAME', 'BAIRBI_BOOTSTRAP_APP_NAME', 'BARIBI_BOOTSTRAP_APP_NAME') ?? 'local-client',
-      apiKey: requireEnv(env, 'GEMROUTER_BOOTSTRAP_API_KEY', 'BAIRBI_BOOTSTRAP_API_KEY', 'BARIBI_BOOTSTRAP_API_KEY'),
+      name: pick(env, 'LEAKROUTER_BOOTSTRAP_APP_NAME', 'GEMROUTER_BOOTSTRAP_APP_NAME', 'BAIRBI_BOOTSTRAP_APP_NAME', 'BARIBI_BOOTSTRAP_APP_NAME') ?? 'local-client',
+      apiKey: requireEnv(env, 'LEAKROUTER_BOOTSTRAP_API_KEY', 'GEMROUTER_BOOTSTRAP_API_KEY', 'BAIRBI_BOOTSTRAP_API_KEY', 'BARIBI_BOOTSTRAP_API_KEY'),
       allowedOrigins: readList(
         env,
         ['http://localhost:*', 'http://127.0.0.1:*', 'http://[::1]:*'],
+        'LEAKROUTER_BOOTSTRAP_ALLOWED_ORIGINS',
         'GEMROUTER_BOOTSTRAP_ALLOWED_ORIGINS',
         'BAIRBI_BOOTSTRAP_ALLOWED_ORIGINS',
         'BARIBI_BOOTSTRAP_ALLOWED_ORIGINS',
@@ -387,6 +436,7 @@ export function loadConfig(
         readList(
           env,
           modelIds,
+          'LEAKROUTER_BOOTSTRAP_ALLOWED_MODELS',
           'GEMROUTER_BOOTSTRAP_ALLOWED_MODELS',
           'BAIRBI_BOOTSTRAP_ALLOWED_MODELS',
           'BARIBI_BOOTSTRAP_ALLOWED_MODELS',
@@ -396,6 +446,7 @@ export function loadConfig(
       ),
       sessionNamespace: pick(
         env,
+        'LEAKROUTER_BOOTSTRAP_SESSION_NAMESPACE',
         'GEMROUTER_BOOTSTRAP_SESSION_NAMESPACE',
         'BAIRBI_BOOTSTRAP_SESSION_NAMESPACE',
         'BARIBI_BOOTSTRAP_SESSION_NAMESPACE',
@@ -403,6 +454,7 @@ export function loadConfig(
       rateLimitPerMinute: readNumber(
         env,
         30,
+        'LEAKROUTER_BOOTSTRAP_RATE_LIMIT_PER_MINUTE',
         'GEMROUTER_BOOTSTRAP_RATE_LIMIT_PER_MINUTE',
         'BAIRBI_BOOTSTRAP_RATE_LIMIT_PER_MINUTE',
         'BARIBI_BOOTSTRAP_RATE_LIMIT_PER_MINUTE',
@@ -410,6 +462,7 @@ export function loadConfig(
       maxConcurrency: readNumber(
         env,
         2,
+        'LEAKROUTER_BOOTSTRAP_MAX_CONCURRENCY',
         'GEMROUTER_BOOTSTRAP_MAX_CONCURRENCY',
         'BAIRBI_BOOTSTRAP_MAX_CONCURRENCY',
         'BARIBI_BOOTSTRAP_MAX_CONCURRENCY',
@@ -417,6 +470,7 @@ export function loadConfig(
       concurrencyWaitMs: readNumber(
         env,
         90_000,
+        'LEAKROUTER_BOOTSTRAP_CONCURRENCY_WAIT_MS',
         'GEMROUTER_BOOTSTRAP_CONCURRENCY_WAIT_MS',
         'BAIRBI_BOOTSTRAP_CONCURRENCY_WAIT_MS',
         'BARIBI_BOOTSTRAP_CONCURRENCY_WAIT_MS',
@@ -455,19 +509,31 @@ export function loadConfig(
       streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_GEMINI_API_STREAM_TIMEOUT_MS'),
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
     },
+    ollama: {
+      enabled: readBoolean(env, ollamaModelIds.length > 0, 'LEAKROUTER_OLLAMA_ENABLED', 'GEMROUTER_OLLAMA_ENABLED'),
+      inventoryPath: ollamaInventoryPath,
+      timeoutMs: readNumber(env, 120_000, 'LEAKROUTER_OLLAMA_TIMEOUT_MS', 'GEMROUTER_OLLAMA_TIMEOUT_MS'),
+      streamTimeoutMs: readNumber(env, 180_000, 'LEAKROUTER_OLLAMA_STREAM_TIMEOUT_MS', 'GEMROUTER_OLLAMA_STREAM_TIMEOUT_MS'),
+      defaultModel: configuredDirectDefaultModel,
+    },
+    deepseekApi: {
+      enabled: readBoolean(env, Boolean(pick(env, 'LEAKROUTER_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY')), 'LEAKROUTER_DEEPSEEK_ENABLED', 'GEMROUTER_DEEPSEEK_ENABLED'),
+      apiKey: pick(env, 'LEAKROUTER_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'),
+      baseUrl: pick(env, 'LEAKROUTER_DEEPSEEK_BASE_URL', 'DEEPSEEK_BASE_URL') ?? 'https://api.deepseek.com/v1',
+      models: deepseekModels,
+      defaultModel: pick(env, 'LEAKROUTER_DEEPSEEK_DEFAULT_MODEL', 'DEEPSEEK_MODEL') ?? deepseekModels[0] ?? 'deepseek-chat',
+      timeoutMs: readNumber(env, 120_000, 'LEAKROUTER_DEEPSEEK_TIMEOUT_MS', 'DEEPSEEK_TIMEOUT_MS'),
+    },
     llmRouting: {
       backendOrder,
     },
     modelIds,
     freeTierPolicy: {
       enabled: readBoolean(env, true, 'GEMROUTER_FREE_TIER_POLICY_ENABLED'),
-      pricingUrl: pick(env, 'GEMROUTER_FREE_TIER_PRICING_URL') ?? 'https://ai.google.dev/gemini-api/docs/pricing',
+      pricingUrl: pick(env, 'LEAKROUTER_MODEL_POLICY_URL', 'GEMROUTER_FREE_TIER_PRICING_URL') ?? '',
       refreshMs: readNumber(env, 86_400_000, 'GEMROUTER_FREE_TIER_REFRESH_MS'),
       parseModel: pick(env, 'GEMROUTER_FREE_TIER_PARSE_MODEL') ?? freeTierFallbackModelIds[0] ?? modelIds[0],
-      storePath: path.resolve(
-        rootDir,
-        pick(env, 'GEMROUTER_FREE_TIER_POLICY_PATH') ?? 'data/free-tier-policy.json',
-      ),
+      storePath: path.resolve(rootDir, pick(env, 'LEAKROUTER_MODEL_POLICY_PATH', 'GEMROUTER_FREE_TIER_POLICY_PATH') ?? 'data/model-policy.json'),
       textModelIds: freeTierTextModelIds,
       audioModelIds: freeTierAudioModelIds,
       embeddingModelIds: freeTierEmbeddingModelIds,
@@ -486,6 +552,6 @@ export function loadConfig(
     auditLogPath: path.join(dataDir, 'audit.log'),
     appsStorePath: path.join(dataDir, 'apps.json'),
     interactionsStorePath: path.join(dataDir, 'interactions.json'),
-    publicBaseUrl: pick(env, 'GEMROUTER_PUBLIC_BASE_URL', 'BAIRBI_PUBLIC_BASE_URL', 'BARIBI_PUBLIC_BASE_URL'),
+    publicBaseUrl: pick(env, 'LEAKROUTER_PUBLIC_BASE_URL', 'GEMROUTER_PUBLIC_BASE_URL', 'BAIRBI_PUBLIC_BASE_URL', 'BARIBI_PUBLIC_BASE_URL'),
   };
 }

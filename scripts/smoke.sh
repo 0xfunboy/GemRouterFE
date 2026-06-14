@@ -108,7 +108,7 @@ request_json() {
     status="$(
       curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -H "Authorization: Bearer ${API_KEY}" \
-        -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
+        -H "x-leakrouter-backend: ${SMOKE_BACKEND}" \
         -H 'Content-Type: application/json' \
         -d "${body}"
     )"
@@ -116,7 +116,7 @@ request_json() {
     status="$(
       curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -H "Authorization: Bearer ${API_KEY}" \
-        -H "x-gemrouter-backend: ${SMOKE_BACKEND}"
+        -H "x-leakrouter-backend: ${SMOKE_BACKEND}"
     )"
   fi
 
@@ -149,7 +149,7 @@ request_json_basic() {
     status="$(
       curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -u "${API_KEY}:" \
-        -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
+        -H "x-leakrouter-backend: ${SMOKE_BACKEND}" \
         -H 'Content-Type: application/json' \
         -d "${body}"
     )"
@@ -157,7 +157,7 @@ request_json_basic() {
     status="$(
       curl -sS --max-time 120 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -u "${API_KEY}:" \
-        -H "x-gemrouter-backend: ${SMOKE_BACKEND}"
+        -H "x-leakrouter-backend: ${SMOKE_BACKEND}"
     )"
   fi
 
@@ -191,7 +191,7 @@ request_json_preview() {
     status="$(
       curl -sS --max-time 180 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -H "Authorization: Bearer ${API_KEY}" \
-        -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
+        -H "x-leakrouter-backend: ${SMOKE_BACKEND}" \
         -H 'Content-Type: application/json' \
         -d "${body}"
     )"
@@ -199,7 +199,7 @@ request_json_preview() {
     status="$(
       curl -sS --max-time 180 -D "${header_file}" -o "${body_file}" -w '%{http_code}' -X "${method}" "${url}" \
         -H "Authorization: Bearer ${API_KEY}" \
-        -H "x-gemrouter-backend: ${SMOKE_BACKEND}"
+        -H "x-leakrouter-backend: ${SMOKE_BACKEND}"
     )"
   fi
 
@@ -228,10 +228,10 @@ print_backend_meta() {
   local provider
   local fallback_from
   local fallback_reason
-  backend="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-backend:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
-  provider="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-provider:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
-  fallback_from="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-fallback-from:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
-  fallback_reason="$(awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-fallback-reason:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  backend="$(awk 'BEGIN{IGNORECASE=1} /^x-leakrouter-backend:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  provider="$(awk 'BEGIN{IGNORECASE=1} /^x-leakrouter-provider:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  fallback_from="$(awk 'BEGIN{IGNORECASE=1} /^x-leakrouter-fallback-from:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
+  fallback_reason="$(awk 'BEGIN{IGNORECASE=1} /^x-leakrouter-fallback-reason:/{sub(/\r$/,"",$2); print $2}' FS=': ' "${header_file}" | tail -n 1)"
   if [[ -n "${backend}" ]]; then
     echo "[smoke] backend used: ${backend}"
   fi
@@ -244,7 +244,7 @@ print_backend_meta() {
   if [[ -n "${fallback_reason}" ]]; then
     echo "[smoke] fallback reason: ${fallback_reason}"
   fi
-  awk 'BEGIN{IGNORECASE=1} /^x-gemrouter-api-key-id:|^x-gemrouter-quota-group:|^x-gemrouter-quota-source:/{sub(/\r$/,""); print "[smoke] " $0}' "${header_file}"
+  awk 'BEGIN{IGNORECASE=1} /^x-leakrouter-api-key-id:|^x-leakrouter-quota-group:|^x-leakrouter-quota-source:/{sub(/\r$/,""); print "[smoke] " $0}' "${header_file}"
 }
 
 request_admin() {
@@ -301,7 +301,7 @@ request_admin() {
   test_status="$(
     curl -sS --max-time 120 -o "${test_body}" -w '%{http_code}' \
       -b "${cookie_file}" \
-      -H "x-gemrouter-backend: ${SMOKE_BACKEND}" \
+      -H "x-leakrouter-backend: ${SMOKE_BACKEND}" \
       -H 'Content-Type: application/json' \
       -d "{\"prompt\":\"Reply only with ADMIN-SMOKE-OK.\",\"model\":\"${SMOKE_PRIMARY_MODEL}\"}" \
       "${API_BASE}/admin/test-chat"

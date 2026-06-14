@@ -14,8 +14,8 @@ function loadPngDataUri(fileName: string): string {
   }
 }
 
-const UI_ICON_DATA_URI = loadPngDataUri('GemRouter_Icon_logo256.png');
-const UI_WORDMARK_DATA_URI = loadPngDataUri('GemRouter_Wordmark.png');
+const UI_ICON_DATA_URI = loadPngDataUri('LeakRouter_Icon_logo256.png');
+const UI_WORDMARK_DATA_URI = loadPngDataUri('LeakRouter_Wordmark.png');
 
 function svgIcon(name: 'activity' | 'admin' | 'api' | 'bolt' | 'browser' | 'chart' | 'health' | 'menu' | 'moon' | 'plug' | 'route' | 'sun'): string {
   const paths: Record<typeof name, string> = {
@@ -51,8 +51,8 @@ export function renderAppShell(input: {
   socialPreviewUrl?: string;
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
-  const pageTitle = `${input.projectName} — Gemini API Compatibility Router`;
-  const pageDescription = 'GemRouter routes across Gemini API keys while exposing OpenAI, DeepSeek, and Ollama compatible APIs.';
+  const pageTitle = `${input.projectName} — Inference Compatibility Router`;
+  const pageDescription = 'LeakRouter routes authorized Ollama inventory models and optional DeepSeek API fallback behind authenticated compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
     : '';
@@ -1223,7 +1223,7 @@ export function renderAppShell(input: {
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
             ${brandTitle}
-            <span>Gemini API router with compatible API surfaces</span>
+            <span>Model Provider router with compatible API surfaces</span>
           </div>
         </div>
         <div class="nav-actions nav-menu">
@@ -1253,7 +1253,7 @@ export function renderAppShell(input: {
                 </div>
               </form>
               <div id="auth-status" class="status" style="margin-top:10px"></div>
-              <div class="footer-note" style="margin-top:12px">Admin actions stay in this browser session and use the same backend APIs exposed by GemRouter.</div>
+              <div class="footer-note" style="margin-top:12px">Admin actions stay in this browser session and use the same backend APIs exposed by LeakRouter.</div>
             </div>
           </div>
         </div>
@@ -1283,16 +1283,16 @@ export function renderAppShell(input: {
         </div>
         <div class="source-grid">
           <div class="source-card">
-            <strong>${svgIcon('api')} Gemini API</strong>
-            <p>Multi-key pool with real account metadata in admin, local RPM/TPM/RPD ledger, model discovery, and quota-aware routing.</p>
+            <strong>${svgIcon('api')} Ollama Inventory</strong>
+            <p>Routes across authorized Ollama endpoints while exposing only model names and aggregate availability.</p>
           </div>
           <div class="source-card">
             <strong>${svgIcon('route')} Fallback Routing</strong>
-            <p>Automatic fallback across configured Gemini API keys and allowed text models when an upstream path is exhausted, rate-limited, or temporarily unavailable.</p>
+            <p>Selects between Ollama and DeepSeek API modes according to backend order, model policy, and upstream availability.</p>
           </div>
           <div class="source-card">
             <strong>${svgIcon('chart')} Operator Surface</strong>
-            <p>Compatibility controls, prompt testing, quota visibility, app management, and interaction telemetry in one admin UI.</p>
+            <p>Compatibility controls, prompt testing, app management, model access, and usage telemetry in one admin UI.</p>
           </div>
         </div>
       </section>
@@ -1301,7 +1301,7 @@ export function renderAppShell(input: {
         <div class="section-head">
           <div>
             <h2 class="section-title">${svgIcon('activity')} Guest Overview</h2>
-            <p class="section-copy">Guest view hides prompts, app names and raw key metadata. It shows aggregate usage plus sanitized Gemini API quota state.</p>
+            <p class="section-copy">Guest view hides prompts, app names, secrets, and upstream source URLs. It shows aggregate usage and sanitized routing state.</p>
           </div>
           <div id="public-runtime-pills" class="meta-row"></div>
         </div>
@@ -1311,8 +1311,8 @@ export function renderAppShell(input: {
       <section class="panel section">
         <div class="section-head">
           <div>
-            <h3 class="section-title">${svgIcon('api')} Gemini API Keys and Quota</h3>
-            <p class="section-copy">Configured upstream accounts, local quota ledger, and per-model RPM/TPM/RPD remaining capacity. API keys are never shown.</p>
+            <h3 class="section-title">${svgIcon('api')} Modes and Model Usage</h3>
+            <p class="section-copy">Configured routing modes, available model names, and aggregate usage. Upstream URLs and API secrets are never shown.</p>
           </div>
           <div id="provider-pills" class="meta-row"></div>
         </div>
@@ -1329,13 +1329,13 @@ export function renderAppShell(input: {
                     <th>Health</th>
                   </tr>
                 </thead>
-                <tbody id="gemini-api-keys-table"></tbody>
+                <tbody id="model-api-keys-table"></tbody>
               </table>
             </div>
           </div>
           <div>
-            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Google Quota (Cloud Monitoring)</h4>
-            <p class="section-copy" style="margin-bottom:8px">Real-time usage from Google Cloud Monitoring — all sources, not just this router. RPM = last completed minute; RPD = today's total. ~1-2 min lag.</p>
+            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Account Usage</h4>
+            <p class="section-copy" style="margin-bottom:8px">Usage is grouped by local app, model, route, status, and latency from this router's interaction store.</p>
             <div class="table-wrap">
               <table class="table responsive-table" style="font-size:13px">
                 <thead>
@@ -1367,7 +1367,7 @@ export function renderAppShell(input: {
                     <th>State</th>
                   </tr>
                 </thead>
-                <tbody id="gemini-api-quota-table"></tbody>
+                <tbody id="model-api-quota-table"></tbody>
               </table>
             </div>
           </div>
@@ -1428,7 +1428,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">Backend Routing</h3>
-              <p class="section-copy">Requests stay on official Gemini API keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
+              <p class="section-copy">Requests stay on official Model Provider keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
             </div>
             <div class="section-head-actions">
               <div id="backend-pills" class="meta-row"></div>
@@ -1448,7 +1448,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('api')} Provider Diagnostics</h3>
-              <p class="section-copy">Admin-only raw backend state for the Gemini API key pool and fallback investigation.</p>
+              <p class="section-copy">Admin-only raw backend state for the Model Provider key pool and fallback investigation.</p>
             </div>
             <div class="section-head-actions">
               <button type="button" class="secondary section-toggle" data-section-toggle="provider-section-body" aria-controls="provider-section-body" aria-expanded="false">
@@ -1483,7 +1483,7 @@ export function renderAppShell(input: {
                 <label>
                   Primary surface
                   <select name="defaultSurface">
-                    <option value="gemrouter">gemrouter</option>
+                    <option value="leakrouter">leakrouter</option>
                     <option value="openai">openai</option>
                     <option value="deepseek">deepseek</option>
                     <option value="ollama">ollama</option>
@@ -1746,10 +1746,10 @@ export function renderAppShell(input: {
     </main>
 
     <script>
-      window.__GEMROUTER_BOOTSTRAP__ = ${bootstrap};
+      window.__LEAKROUTER_BOOTSTRAP__ = ${bootstrap};
     </script>
     <script>
-      const bootstrap = window.__GEMROUTER_BOOTSTRAP__;
+      const bootstrap = window.__LEAKROUTER_BOOTSTRAP__;
       const state = {
         apps: [],
         adminRefreshInFlight: false,
@@ -1769,7 +1769,7 @@ export function renderAppShell(input: {
       const PROJECT_QUOTA_REFRESH_MS = 30000;
 
       const root = document.documentElement;
-      const savedTheme = localStorage.getItem('gemrouter-theme') || 'dark';
+      const savedTheme = localStorage.getItem('leakrouter-theme') || 'dark';
       root.setAttribute('data-theme', savedTheme);
 
       const menuToggle = document.getElementById('menu-toggle');
@@ -1796,8 +1796,8 @@ export function renderAppShell(input: {
       const backendHint = document.getElementById('backend-hint');
       const providerPills = document.getElementById('provider-pills');
       const providerOutput = document.getElementById('provider-output');
-      const geminiApiKeysTable = document.getElementById('gemini-api-keys-table');
-      const geminiApiQuotaTable = document.getElementById('gemini-api-quota-table');
+      const modelApiKeysTable = document.getElementById('model-api-keys-table');
+      const modelApiQuotaTable = document.getElementById('model-api-quota-table');
       const googleQuotaTable = document.getElementById('google-quota-table');
       const statsGrid = document.getElementById('stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
@@ -1843,7 +1843,7 @@ export function renderAppShell(input: {
 
       function setTheme(theme) {
         root.setAttribute('data-theme', theme);
-        localStorage.setItem('gemrouter-theme', theme);
+        localStorage.setItem('leakrouter-theme', theme);
         themeToggle.innerHTML = (theme === 'dark' ? '${svgIcon('sun')} Switch to light' : '${svgIcon('moon')} Switch to dark');
       }
 
@@ -1987,9 +1987,9 @@ export function renderAppShell(input: {
       function describeRouteFamily(label) {
         switch (String(label || '')) {
           case 'chat':
-            return { title: 'GemRouter / OpenAI chat', detail: 'Traffic hitting /chat/completions style compatibility routes' };
+            return { title: 'LeakRouter / OpenAI chat', detail: 'Traffic hitting /chat/completions style compatibility routes' };
           case 'images':
-            return { title: 'GemRouter / OpenAI images', detail: 'Traffic hitting /images/generations style compatibility routes' };
+            return { title: 'LeakRouter / OpenAI images', detail: 'Traffic hitting /images/generations style compatibility routes' };
           case 'responses':
             return { title: 'OpenAI responses', detail: 'Traffic hitting the OpenAI-style /responses endpoint' };
           case 'ollama_chat':
@@ -2184,7 +2184,7 @@ export function renderAppShell(input: {
             '<img class="prompt-preview-image" src="' + src + '" data-image-src="' + src + '" alt="Generated image ' + escapeHtml(String(index + 1)) + '" />' +
             '<div class="image-preview-meta">' +
               '<div class="footer-note mono">' + escapeHtml(mimeType) + '</div>' +
-              '<a class="image-download-link" href="' + src + '" download="gemrouter-image-' + escapeHtml(String(index + 1)) + '.' + escapeHtml(extension) + '">Download</a>' +
+              '<a class="image-download-link" href="' + src + '" download="leakrouter-image-' + escapeHtml(String(index + 1)) + '.' + escapeHtml(extension) + '">Download</a>' +
             '</div>' +
           '</div>';
         }).join('') + '</div>';
@@ -2198,7 +2198,7 @@ export function renderAppShell(input: {
         const pills = [];
         const runtime = summary.runtime || {};
         const compatibility = summary.compatibility || {};
-        pills.push('<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'gemrouter') + '</span>');
+        pills.push('<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'leakrouter') + '</span>');
         pills.push('<span class="chip">API surfaces ' + escapeHtml((compatibility.enabledSurfaces || []).join(', ') || 'n/a') + '</span>');
         if (runtime.activeDefaultBackend) {
           pills.push('<span class="chip">Default backend ' + escapeHtml(runtime.activeDefaultBackend) + '</span>');
@@ -2206,8 +2206,8 @@ export function renderAppShell(input: {
         if (runtime.lastBackendUsed) {
           pills.push('<span class="chip">Last backend ' + escapeHtml(runtime.lastBackendUsed) + '</span>');
         }
-        if (runtime.geminiApiAvailable !== undefined) {
-          pills.push('<span class="chip ' + (runtime.geminiApiAvailable ? 'good' : 'warn') + '">' + (runtime.geminiApiAvailable ? 'Gemini API available' : 'Gemini API attention') + '</span>');
+        if (runtime.modelApiAvailable !== undefined) {
+          pills.push('<span class="chip ' + (runtime.modelApiAvailable ? 'good' : 'warn') + '">' + (runtime.modelApiAvailable ? 'Model Provider available' : 'Model Provider attention') + '</span>');
         }
         publicRuntimePills.innerHTML = pills.join('');
       }
@@ -2373,9 +2373,9 @@ export function renderAppShell(input: {
           return '<label class="model-picker-option' + (compatible ? '' : ' is-disabled') + '">' +
             '<div><input type="checkbox" name="allowedModels" value="' + escapeHtml(id) + '"' + (selected.has(id) ? ' checked' : '') + (compatible ? '' : ' disabled') + ' />' +
               '<span class="model-picker-title">' + escapeHtml(id) + '</span></div>' +
-            '<div class="footer-note">' + escapeHtml(notes.join(' · ') || 'Gemini API model') + '</div>' +
+            '<div class="footer-note">' + escapeHtml(notes.join(' · ') || 'Model Provider model') + '</div>' +
           '</label>';
-        }).join('') || '<div class="footer-note" style="padding:12px 14px">No Gemini model catalog available yet.</div>';
+        }).join('') || '<div class="footer-note" style="padding:12px 14px">No model model catalog available yet.</div>';
 
         updateAllowedModelsSummary();
       }
@@ -2435,14 +2435,14 @@ export function renderAppShell(input: {
         const compatibility = data.compatibility || {};
         const routing = data.routing || {};
         const backends = data.backends || {};
-        const geminiApi = backends.geminiApi || {};
+        const modelApi = backends.modelApi || {};
         runtimePills.innerHTML = [
           '<span class="chip good">Admin session</span>',
           '<span class="chip">Backend-only</span>',
-          '<span class="chip ' + (geminiApi.available ? 'good' : 'warn') + '">' + (geminiApi.available ? 'Gemini API available' : 'Gemini API attention') + '</span>',
+          '<span class="chip ' + (modelApi.available ? 'good' : 'warn') + '">' + (modelApi.available ? 'Model Provider available' : 'Model Provider attention') + '</span>',
           '<span class="chip">Default backend ' + escapeHtml(routing.activeDefaultBackend || routing.configuredDefaultBackend || 'auto') + '</span>',
           '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
-          '<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'gemrouter') + '</span>',
+          '<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'leakrouter') + '</span>',
           '<span class="chip">Apps ' + escapeHtml(String(runtime.apps || 0)) + '</span>',
         ].join('');
       }
@@ -2450,10 +2450,10 @@ export function renderAppShell(input: {
       function renderBackendDiagnostics(data) {
         const routing = data.routing || {};
         const backends = data.backends || {};
-        const geminiApi = backends.geminiApi || {};
+        const modelApi = backends.modelApi || {};
         backendPills.innerHTML = [
-          '<span class="chip ' + (geminiApi.available ? 'good' : 'warn') + '">' + (geminiApi.available ? 'Gemini API available' : 'Gemini API attention') + '</span>',
-          '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
+          '<span class="chip ' + (modelApi.available ? 'good' : 'warn') + '">' + (modelApi.available ? 'Model Provider available' : 'Model Provider attention') + '</span>',
+          '<span class="chip">Accounts ' + escapeHtml(String(modelApi.usableKeyCount || 0)) + '/' + escapeHtml(String(modelApi.configuredKeyCount || 0)) + '</span>',
           '<span class="chip">Order ' + escapeHtml((data.backendOrder || []).join(' -> ') || 'n/a') + '</span>',
           '<span class="chip">Last backend ' + escapeHtml(routing.lastBackendUsed || 'n/a') + '</span>',
         ].join('');
@@ -2466,25 +2466,25 @@ export function renderAppShell(input: {
           'last_fallback_reason=' + String(routing.lastFallbackReason || ''),
           'last_resolution_at=' + String(routing.lastResolutionAt || ''),
           '',
-          '[gemini_api]',
-          'enabled=' + String(Boolean(geminiApi.enabled)),
-          'available=' + String(Boolean(geminiApi.available)),
-          'configured_accounts=' + String(geminiApi.configuredKeyCount || 0),
-          'usable_accounts=' + String(geminiApi.usableKeyCount || 0),
-          'default_tier=' + String(geminiApi.defaultTier || ''),
-          'base_url=' + String(geminiApi.baseUrl || ''),
-          'version=' + String(geminiApi.version || ''),
-          'last_account=' + String(geminiApi.lastSelectedKeyId || ''),
-          'last_quota_group=' + String(geminiApi.lastSelectedQuotaGroup || ''),
-          'last_model=' + String(geminiApi.lastResolvedModel || ''),
-          'last_error=' + String(geminiApi.lastError || ''),
-          'last_failure_at=' + String(geminiApi.lastFailureAt || ''),
-          'last_success_at=' + String(geminiApi.lastSuccessAt || ''),
-          'last_latency_ms=' + String(geminiApi.lastLatencyMs || ''),
+          '[model_api]',
+          'enabled=' + String(Boolean(modelApi.enabled)),
+          'available=' + String(Boolean(modelApi.available)),
+          'configured_accounts=' + String(modelApi.configuredKeyCount || 0),
+          'usable_accounts=' + String(modelApi.usableKeyCount || 0),
+          'default_tier=' + String(modelApi.defaultTier || ''),
+          'base_url=' + String(modelApi.baseUrl || ''),
+          'version=' + String(modelApi.version || ''),
+          'last_account=' + String(modelApi.lastSelectedKeyId || ''),
+          'last_quota_group=' + String(modelApi.lastSelectedQuotaGroup || ''),
+          'last_model=' + String(modelApi.lastResolvedModel || ''),
+          'last_error=' + String(modelApi.lastError || ''),
+          'last_failure_at=' + String(modelApi.lastFailureAt || ''),
+          'last_success_at=' + String(modelApi.lastSuccessAt || ''),
+          'last_latency_ms=' + String(modelApi.lastLatencyMs || ''),
         ].join('\\n');
-        backendHint.textContent = geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.message
-          ? 'Last upstream error: ' + geminiApi.lastUpstreamError.message
-          : 'Fallback stays on the Gemini API key pool; there is no browser or CLI backend.';
+        backendHint.textContent = modelApi.lastUpstreamError && modelApi.lastUpstreamError.message
+          ? 'Last upstream error: ' + modelApi.lastUpstreamError.message
+          : 'Fallback stays on the Model Provider key pool; there is no browser or CLI backend.';
       }
 
       function syncProjectQuotaState(quota) {
@@ -2537,7 +2537,7 @@ export function renderAppShell(input: {
 
       function renderProviderState(data) {
         const provider = data.provider || {};
-        const geminiApi = provider.geminiApi || {};
+        const modelApi = provider.modelApi || {};
         const quota = provider.quota || {};
         const projectQuota = resolveProjectQuotaState(quota);
         const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
@@ -2548,35 +2548,35 @@ export function renderAppShell(input: {
         const supportedModelIds = models
           .map(function(model) { return model && typeof model.id === 'string' ? model.id.trim() : ''; })
           .filter(Boolean);
-        const directModels = models.filter(function(model) { return model && model.kind === 'gemini-api'; });
+        const directModels = models.filter(function(model) { return model && model.kind === 'model-api'; });
         const directModelCount = directModels.length || provider.directModelCount || 0;
         providerPills.innerHTML = [
-          '<span class="chip ' + (geminiApi.enabled ? 'good' : 'warn') + '">' + (geminiApi.enabled ? 'Gemini API enabled' : 'Gemini API disabled') + '</span>',
-          '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
+          '<span class="chip ' + (modelApi.enabled ? 'good' : 'warn') + '">' + (modelApi.enabled ? 'Model Provider enabled' : 'Model Provider disabled') + '</span>',
+          '<span class="chip">Accounts ' + escapeHtml(String(modelApi.usableKeyCount || 0)) + '/' + escapeHtml(String(modelApi.configuredKeyCount || 0)) + '</span>',
           '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
-          '<span class="chip">Last API model ' + escapeHtml(String(geminiApi.lastResolvedModel || 'n/a')) + '</span>',
-          '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || 'n/a')) + '</span>',
+          '<span class="chip">Last API model ' + escapeHtml(String(modelApi.lastResolvedModel || 'n/a')) + '</span>',
+          '<span class="chip">Tier ' + escapeHtml(String(modelApi.defaultTier || 'n/a')) + '</span>',
           '<span class="chip">Public models ' + escapeHtml(String(directModelCount)) + '</span>',
           '<span class="chip ' + (projectQuota.authoritative ? 'good' : '') + '">Quota ' + escapeHtml(projectQuota.authoritative ? ('limits live · usage local ' + String(projectQuotaOkCount) + '/' + String(projectQuotas.length || 0)) : 'local only') + '</span>',
           '<span class="chip">Quota refresh ' + escapeHtml(projectQuota.updatedAt ? formatTimestamp(projectQuota.updatedAt) : 'pending') + '</span>',
         ].join('');
 
-        renderGeminiApiKeyTable(apiKeys);
+        rendermodelApiKeyTable(apiKeys);
         renderGoogleQuotaTable(projectQuotas, apiKeys, quotaGroups);
-        renderGeminiApiQuotaTable(quotaGroups, supportedModelIds);
+        rendermodelApiQuotaTable(quotaGroups, supportedModelIds);
 
         providerOutput.textContent = [
-          '[gemini_api]',
-          'enabled=' + String(Boolean(geminiApi.enabled)),
-          'configured_accounts=' + String(geminiApi.configuredKeyCount || 0),
-          'usable_accounts=' + String(geminiApi.usableKeyCount || 0),
-          'default_tier=' + String(geminiApi.defaultTier || ''),
-          'last_account=' + String(geminiApi.lastSelectedKeyId || ''),
-          'last_quota_group=' + String(geminiApi.lastSelectedQuotaGroup || ''),
-          'last_model=' + String(geminiApi.lastResolvedModel || ''),
-          'last_error=' + String(geminiApi.lastError || ''),
-          'model_discovery_last_refresh=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastRefreshAt) || ''),
-          'model_discovery_last_error=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastError) || ''),
+          '[model_api]',
+          'enabled=' + String(Boolean(modelApi.enabled)),
+          'configured_accounts=' + String(modelApi.configuredKeyCount || 0),
+          'usable_accounts=' + String(modelApi.usableKeyCount || 0),
+          'default_tier=' + String(modelApi.defaultTier || ''),
+          'last_account=' + String(modelApi.lastSelectedKeyId || ''),
+          'last_quota_group=' + String(modelApi.lastSelectedQuotaGroup || ''),
+          'last_model=' + String(modelApi.lastResolvedModel || ''),
+          'last_error=' + String(modelApi.lastError || ''),
+          'model_discovery_last_refresh=' + String((modelApi.modelDiscovery && modelApi.modelDiscovery.lastRefreshAt) || ''),
+          'model_discovery_last_error=' + String((modelApi.modelDiscovery && modelApi.modelDiscovery.lastError) || ''),
           '',
           '[project_quota]',
           'source=' + String(projectQuota.source || quota.source || 'local-ledger'),
@@ -2601,18 +2601,18 @@ export function renderAppShell(input: {
             : ['none']),
           '',
           '[upstream]',
-          'status=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.status) || ''),
-          'code=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.code) || ''),
-          'google_status=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.googleStatus) || ''),
-          'google_reason=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.googleReason) || ''),
-          'message=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.message) || ''),
+          'status=' + String((modelApi.lastUpstreamError && modelApi.lastUpstreamError.status) || ''),
+          'code=' + String((modelApi.lastUpstreamError && modelApi.lastUpstreamError.code) || ''),
+          'google_status=' + String((modelApi.lastUpstreamError && modelApi.lastUpstreamError.googleStatus) || ''),
+          'google_reason=' + String((modelApi.lastUpstreamError && modelApi.lastUpstreamError.googleReason) || ''),
+          'message=' + String((modelApi.lastUpstreamError && modelApi.lastUpstreamError.message) || ''),
           '',
           '[models]',
           ...(models.length > 0
             ? models.map(function(model) {
               return [
                 String(model.id || ''),
-                'backend=gemini-api',
+                'backend=model-api',
                 'kind=' + String(model.kind || ''),
                 'available=' + String(Boolean(model.available)),
               ].join(' ');
@@ -2682,8 +2682,8 @@ export function renderAppShell(input: {
         return '<span class="muted">' + escapeHtml(label) + '</span>';
       }
 
-      function renderGeminiApiKeyTable(apiKeys) {
-        geminiApiKeysTable.innerHTML = apiKeys.map(function(key) {
+      function rendermodelApiKeyTable(apiKeys) {
+        modelApiKeysTable.innerHTML = apiKeys.map(function(key) {
           const enabled = key.enabled !== false;
           const accountId = typeof key.id === 'string' && key.id.trim() ? key.id.trim() : '';
           const owner = typeof key.owner === 'string' && key.owner.trim() ? key.owner.trim() : '';
@@ -2697,7 +2697,7 @@ export function renderAppShell(input: {
             '<td data-label="Priority">' + escapeHtml(String(key.priority || 0)) + '</td>' +
             '<td data-label="Health"><span class="chip ' + (enabled ? 'good' : 'warn') + '">' + (enabled ? 'enabled' : 'disabled') + '</span></td>' +
           '</tr>';
-        }).join('') || '<tr><td colspan="4" class="muted">No Gemini API accounts configured.</td></tr>';
+        }).join('') || '<tr><td colspan="4" class="muted">No Model Provider accounts configured.</td></tr>';
       }
 
       function lookupEffectiveLimitFromMetrics(serviceUsageMetrics, quotaMetric, model, isAllocation) {
@@ -2799,8 +2799,8 @@ export function renderAppShell(input: {
           var entries = Object.values(byKey);
 
           if (entries.length === 0) {
-            // quota/* is empty (expected for AI Studio free-tier accounts).
-            // Priority: (1) native free-tier metrics, (2) api/request_count total, (3) local ledger.
+            // quota/* is empty (expected for AI Studio model policy accounts).
+            // Priority: (1) native model policy metrics, (2) api/request_count total, (3) local ledger.
             var freeTierModels = Array.isArray(monitoring.freeTierPerModel) ? monitoring.freeTierPerModel : [];
 
             var quotaGroupId = lookupQuotaGroupByProjectId(apiKeys, project.projectId);
@@ -2838,7 +2838,7 @@ export function renderAppShell(input: {
                 rows.push('<tr>' +
                   '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
                   '<td data-label="Model">' + escapeHtml(displayModel || '-') + '</td>' +
-                  '<td data-label="Metric"><span class="chip good" title="RPD from Google Cloud Monitoring (generate_content_free_tier_requests); RPM/limits from local ledger when GCP omits them">free-tier</span></td>' +
+                  '<td data-label="Metric"><span class="chip good" title="RPD from router telemetry (generate_content_free_tier_requests); RPM/limits from local ledger when GCP omits them">model policy</span></td>' +
                   '<td data-label="RPM used">' + cell(ftRpmUsed, ftRpmLimit, ftRpmLeft) + '</td>' +
                   '<td data-label="RPM limit">' + (ftRpmLimit !== null ? escapeHtml(String(ftRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
                   '<td data-label="RPM left">' + (ftRpmLeft !== null ? ('<span' + (ftRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(ftRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
@@ -2862,7 +2862,7 @@ export function renderAppShell(input: {
                 rows.push('<tr>' +
                   '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
                   '<td data-label="Model">' + escapeHtml(n || '-') + '</td>' +
-                  '<td data-label="Metric"><span class="chip good" title="RPD=0 today (not returned by GCP); RPM from local ledger">free-tier</span></td>' +
+                  '<td data-label="Metric"><span class="chip good" title="RPD=0 today (not returned by GCP); RPM from local ledger">model policy</span></td>' +
                   '<td data-label="RPM used">' + cell(lRpmUsed, lRpmLimit, lRpmLeft) + '</td>' +
                   '<td data-label="RPM limit">' + (lRpmLimit !== null ? escapeHtml(String(lRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
                   '<td data-label="RPM left">' + (lRpmLeft !== null ? ('<span' + (lRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(lRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
@@ -2878,7 +2878,7 @@ export function renderAppShell(input: {
               rows.push('<tr>' +
                 '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
                 '<td data-label="Model"><span class="muted">all</span></td>' +
-                '<td data-label="Metric"><span title="Google Cloud Monitoring api/request_count (all Gemini calls)">google total</span></td>' +
+                '<td data-label="Metric"><span title="router telemetry api/request_count (all model calls)">router total</span></td>' +
                 '<td data-label="RPM used">' + (reqRpm !== null ? escapeHtml(String(reqRpm)) : '<span class="muted">-</span>') + '</td>' +
                 '<td data-label="RPM limit"><span class="muted">-</span></td>' +
                 '<td data-label="RPM left"><span class="muted">-</span></td>' +
@@ -2899,7 +2899,7 @@ export function renderAppShell(input: {
                 rows.push('<tr>' +
                   '<td data-label="Account"><strong>' + escapeHtml(accountId) + '</strong></td>' +
                   '<td data-label="Model">' + escapeHtml(String(lm.model || '-')) + '</td>' +
-                  '<td data-label="Metric"><span class="chip" title="Usage tracked by GemRouter (RPM: 1-min rolling, RPD: resets UTC midnight). Limits from local rate config.">local</span></td>' +
+                  '<td data-label="Metric"><span class="chip" title="Usage tracked by LeakRouter (RPM: 1-min rolling, RPD: resets UTC midnight). Limits from local rate config.">local</span></td>' +
                   '<td data-label="RPM used">' + cell(lmRpmUsed, lmRpmLimit, lmRpmLeft) + '</td>' +
                   '<td data-label="RPM limit">' + (lmRpmLimit !== null ? escapeHtml(String(lmRpmLimit)) : '<span class="muted">-</span>') + '</td>' +
                   '<td data-label="RPM left">' + (lmRpmLeft !== null ? ('<span' + (lmRpmLeft <= 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(String(lmRpmLeft)) + '</span>') : '<span class="muted">-</span>') + '</td>' +
@@ -2947,7 +2947,7 @@ export function renderAppShell(input: {
         googleQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="9" class="muted">No Cloud Monitoring data available.</td></tr>';
       }
 
-      function renderGeminiApiQuotaTable(quotaGroups, supportedModelIds) {
+      function rendermodelApiQuotaTable(quotaGroups, supportedModelIds) {
         const rows = [];
         const supported = Array.isArray(supportedModelIds) && supportedModelIds.length > 0
           ? new Set(supportedModelIds)
@@ -2967,16 +2967,16 @@ export function renderAppShell(input: {
           const groupLabel = groupId ? escapeHtml(groupId) : renderHiddenLabel('hidden in guest view');
           models.slice(0, 12).forEach(function(model) {
             const cooldown = formatRetryAfter(model.cooldownUntil, model.cooldownSource);
-            // If upstream headers were captured from the Gemini API response, prefer those for RPM/RPD display
+            // If upstream headers were captured from the Model Provider response, prefer those for RPM/RPD display
             const hasUpstream = model.upstreamRpmLimit !== null || model.upstreamRpdLimit !== null;
             const rpmDisplay = hasUpstream && model.upstreamRpmRemaining !== null
-              ? '<span title="From Gemini API response headers (authoritative)">' +
+              ? '<span title="From Model Provider response headers (authoritative)">' +
                   escapeHtml(String(model.upstreamRpmRemaining)) + ' left / ' +
                   (model.upstreamRpmLimit !== null ? escapeHtml(String(model.upstreamRpmLimit)) : '-') +
                   ' <span class="chip good" style="font-size:0.7em">upstream</span></span>'
               : formatQuotaMetric(model.rpm);
             const rpdDisplay = hasUpstream && model.upstreamRpdRemaining !== null
-              ? '<span title="From Gemini API response headers (authoritative)">' +
+              ? '<span title="From Model Provider response headers (authoritative)">' +
                   escapeHtml(String(model.upstreamRpdRemaining)) + ' left / ' +
                   (model.upstreamRpdLimit !== null ? escapeHtml(String(model.upstreamRpdLimit)) : '-') +
                   ' <span class="chip good" style="font-size:0.7em">upstream</span></span>'
@@ -2994,7 +2994,7 @@ export function renderAppShell(input: {
             '</tr>');
           });
         });
-        geminiApiQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No quota activity recorded yet.</td></tr>';
+        modelApiQuotaTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No quota activity recorded yet.</td></tr>';
       }
 
       function renderStats(summary) {
@@ -3017,12 +3017,12 @@ export function renderAppShell(input: {
           return;
         }
         const endpoints = compatibility.endpoints || {};
-        compatibilityForm.elements.defaultSurface.value = compatibility.defaultSurface || 'gemrouter';
+        compatibilityForm.elements.defaultSurface.value = compatibility.defaultSurface || 'leakrouter';
         if (!compatibilityStatus.textContent.trim()) {
           compatibilityStatus.textContent = 'Changes apply automatically when you switch the surface.';
         }
 
-        const gemrouter = endpoints.gemrouter || { enabled: false, routes: {} };
+        const leakrouter = endpoints.leakrouter || { enabled: false, routes: {} };
         const openai = endpoints.openai || { enabled: false, routes: {} };
         const deepseek = endpoints.deepseek || { enabled: false, routes: {} };
         const ollama = endpoints.ollama || { enabled: false, routes: {} };
@@ -3030,15 +3030,15 @@ export function renderAppShell(input: {
         const ollamaAuthExample = ollamaServerUrl ? ollamaServerUrl.replace(/^https?:\\/\\//, function(prefix) { return prefix + '<API_KEY>@'; }) : '';
 
         compatibilityOutput.textContent = [
-          'default_surface=' + (compatibility.defaultSurface || 'gemrouter'),
+          'default_surface=' + (compatibility.defaultSurface || 'leakrouter'),
           'enabled_surfaces=' + (compatibility.enabledSurfaces || []).join(','),
           '',
-          '[gemrouter]',
-          'enabled=' + String(Boolean(gemrouter.enabled)),
-          'GEMROUTER_API_URL=' + String(gemrouter.routes && gemrouter.routes.baseUrl || ''),
-          'models=' + String(gemrouter.routes && gemrouter.routes.models || ''),
-          'chat=' + String(gemrouter.routes && gemrouter.routes.chat || ''),
-          'images=' + String(gemrouter.routes && gemrouter.routes.images || ''),
+          '[leakrouter]',
+          'enabled=' + String(Boolean(leakrouter.enabled)),
+          'LEAKROUTER_API_URL=' + String(leakrouter.routes && leakrouter.routes.baseUrl || ''),
+          'models=' + String(leakrouter.routes && leakrouter.routes.models || ''),
+          'chat=' + String(leakrouter.routes && leakrouter.routes.chat || ''),
+          'images=' + String(leakrouter.routes && leakrouter.routes.images || ''),
           '',
           '[openai]',
           'enabled=' + String(Boolean(openai.enabled)),
@@ -3121,7 +3121,7 @@ export function renderAppShell(input: {
 
       function describePolicyRemap(item) {
         const reason = (item && item.policyFallbackReason) || (item && item.fallbackReason) || '';
-        if (reason === 'non_free_or_unsupported_model') return 'free-tier';
+        if (reason === 'non_free_or_unsupported_model') return 'model policy';
         if (reason === 'app_model_not_allowed') return 'app';
         return 'policy';
       }
@@ -3143,21 +3143,21 @@ export function renderAppShell(input: {
             return 'rpd full';
           case 'local_cooldown_unavailable':
             return 'cooldown';
-          case 'gemini_api_auth_failed':
+          case 'model_api_auth_failed':
             return 'auth';
-          case 'gemini_api_model_not_found':
+          case 'model_api_model_not_found':
             return 'model missing';
-          case 'gemini_api_rate_limited':
+          case 'model_api_rate_limited':
             return 'rate limit';
-          case 'gemini_api_high_demand':
+          case 'model_api_high_demand':
             return 'busy';
-          case 'gemini_api_upstream_error':
+          case 'model_api_upstream_error':
             return 'upstream';
-          case 'gemini_api_timeout':
+          case 'model_api_timeout':
             return 'timeout';
-          case 'gemini_api_quota_unavailable':
+          case 'model_api_quota_unavailable':
             return 'no quota';
-          case 'gemini_api_no_key_for_model':
+          case 'model_api_no_key_for_model':
             return 'no key';
           default:
             return reason ? reason.replace(/_/g, ' ') : 'attempt failed';
@@ -3314,7 +3314,7 @@ export function renderAppShell(input: {
         }
         state.projectQuotaRefreshInFlight = true;
         try {
-          const data = await request('/admin/provider/gemini-api/refresh-quota', {
+          const data = await request('/admin/provider/model-api/refresh-quota', {
             method: 'POST',
             body: JSON.stringify({}),
           });

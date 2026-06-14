@@ -68,11 +68,11 @@ export function isGemRouterCompatibleModelCapabilities(capabilities: ModelCapabi
 }
 
 function unique(ids: string[]): string[] {
-  return [...new Set(ids.map((id) => id.trim().toLowerCase()).filter(Boolean))];
+  return [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
 }
 
 export function normalizePublicModelId(input: string | undefined): string {
-  const value = String(input ?? '').trim().toLowerCase();
+  const value = String(input ?? '').trim();
   if (!value) throw new Error('model is required');
   return value.replace(/^models\//, '');
 }

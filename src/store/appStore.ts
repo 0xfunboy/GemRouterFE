@@ -129,7 +129,7 @@ export class AppStore {
   }
 
   create(input: CreateAppInput): { record: ApiAppRecord; rawKey: string } {
-    const rawKey = input.rawKey?.trim() || `barb_${randomBytes(24).toString('base64url')}`;
+    const rawKey = input.rawKey?.trim() || `leak_${randomBytes(24).toString('base64url')}`;
     const timestamp = nowIso();
     const record: ApiAppRecord = {
       id: `app_${randomBytes(8).toString('hex')}`,
@@ -152,7 +152,7 @@ export class AppStore {
   rotate(id: string): { record: ApiAppRecord; rawKey: string } | null {
     const current = this.findById(id);
     if (!current || current.revokedAt) return null;
-    const rawKey = `barb_${randomBytes(24).toString('base64url')}`;
+    const rawKey = `leak_${randomBytes(24).toString('base64url')}`;
     current.apiKeyHash = hashApiKey(rawKey);
     current.keyPreview = maskKey(rawKey);
     current.updatedAt = nowIso();

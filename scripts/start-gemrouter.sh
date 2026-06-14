@@ -15,7 +15,7 @@ if [[ -f "$HOME/.nvm/nvm.sh" ]]; then
 fi
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "[gemrouter] node not found in PATH" >&2
+  echo "[leakrouter] node not found in PATH" >&2
   exit 1
 fi
 
@@ -26,7 +26,7 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 if ! command -v pnpm >/dev/null 2>&1; then
-  echo "[gemrouter] pnpm not found in PATH" >&2
+  echo "[leakrouter] pnpm not found in PATH" >&2
   exit 1
 fi
 

@@ -7,3 +7,7 @@ data/
 profiles/
 coverage/
 *.log
+ollama-model-inventory.md
+ollama-model-inventory.json
+authorized_owned_ollama_urls.txt
+authorized_ollama_urls.txt

@@ -51,12 +51,12 @@ function shouldFallback(
   if (opts?.backendPreference && opts.backendPreference !== 'auto') return false;
   if (remainingBackends.length === 0) return false;
   if (error.options.fallbackEligible !== true) return false;
-  return backend === 'gemini-api';
+  return backend === 'ollama' || backend === 'deepseek-api' || backend === 'gemini-api';
 }
 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
-  if (preference === 'gemini-api') return [preference];
+  if (preference !== 'auto') return [preference];
   return [...new Set(config.backendOrder)];
 }
 
@@ -75,7 +75,9 @@ async function* singleResponseStream(
 export function createLlmRouter(
   config: LLMRouterConfig,
   backends: {
-    geminiApi: BackendClient;
+    ollama?: BackendClient;
+    deepseekApi?: BackendClient;
+    geminiApi?: BackendClient;
   },
 ): LLMClient {
   const state: RouterState = {
@@ -86,6 +88,12 @@ export function createLlmRouter(
     lastError: null,
   };
 
+  function getBackendClient(backend: LLMBackendId): BackendClient | undefined {
+    if (backend === 'ollama') return backends.ollama;
+    if (backend === 'deepseek-api') return backends.deepseekApi;
+    return backends.geminiApi;
+  }
+
   async function dispatchChat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
     const sequence = resolveBackendSequence(config, opts);
     let lastError: LLMProviderError | null = null;
@@ -93,8 +101,15 @@ export function createLlmRouter(
     for (let index = 0; index < sequence.length; index++) {
       const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
-        try {
-        const rawResponse = await backends.geminiApi.chat(messages, opts);
+      try {
+        const client = getBackendClient(backend);
+        if (!client) {
+          throw new LLMProviderError('backend_disabled', backend, `Backend ${backend} is not configured.`, {
+            statusCode: 503,
+            fallbackEligible: true,
+          });
+        }
+        const rawResponse = await client.chat(messages, opts);
         const response = annotateResponse(rawResponse, backend, lastError?.backend, lastError?.code);
         state.lastBackendUsed = response.backend ?? backend;
         state.lastFallbackFrom = response.fallbackFrom ?? null;
@@ -128,7 +143,7 @@ export function createLlmRouter(
 
     const error = lastError ?? new LLMProviderError(
       'backend_unavailable',
-      sequence[0] ?? 'gemini-api',
+      sequence[0] ?? 'ollama',
       'No backend could satisfy the request.',
       { statusCode: 503 },
     );
@@ -142,7 +157,7 @@ export function createLlmRouter(
 
   return {
     provider: 'router',
-    model: 'gemini-router',
+    model: 'leak-router',
 
     async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
       return await dispatchChat(messages, opts);
@@ -156,7 +171,13 @@ export function createLlmRouter(
         const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
-          const client = backends.geminiApi;
+          const client = getBackendClient(backend);
+          if (!client) {
+            throw new LLMProviderError('backend_disabled', backend, `Backend ${backend} is not configured.`, {
+              statusCode: 503,
+              fallbackEligible: true,
+            });
+          }
           const stream = client.streamChat ? client.streamChat(messages, opts) : singleResponseStream(client, messages, opts);
           let finalResponse: LLMResponse | null = null;
           while (true) {
@@ -172,7 +193,7 @@ export function createLlmRouter(
             finalResponse ?? {
               content: '',
               provider: backend,
-              model: opts?.model ?? backends.geminiApi.model,
+              model: opts?.model ?? client.model,
             },
             backend,
             lastError?.backend,
@@ -210,7 +231,7 @@ export function createLlmRouter(
 
       const error = lastError ?? new LLMProviderError(
         'backend_unavailable',
-        sequence[0] ?? 'gemini-api',
+        sequence[0] ?? 'ollama',
         'No backend could satisfy the request.',
         { statusCode: 503 },
       );
@@ -223,20 +244,25 @@ export function createLlmRouter(
     },
 
     getDiagnostics(): Record<string, unknown> {
-      const geminiApi = backends.geminiApi.health
-        ? (backends.geminiApi.health() as Record<string, unknown>)
-        : backends.geminiApi.getDiagnostics?.() ?? null;
+      const diagnosticsFor = (client?: BackendClient): Record<string, unknown> | null => {
+        if (!client) return null;
+        return client.health
+          ? (client.health() as Record<string, unknown>)
+          : client.getDiagnostics?.() ?? null;
+      };
       return {
         provider: 'router',
-        model: 'gemini-router',
+        model: 'leak-router',
         backendOrder: config.backendOrder,
-        configuredDefaultBackend: config.backendOrder[0] ?? 'gemini-api',
+        configuredDefaultBackend: config.backendOrder[0] ?? 'ollama',
         lastBackendUsed: state.lastBackendUsed,
         lastFallbackFrom: state.lastFallbackFrom,
         lastFallbackReason: state.lastFallbackReason,
         lastResolutionAt: state.lastResolutionAt,
         lastError: state.lastError,
-        geminiApi,
+        ollama: diagnosticsFor(backends.ollama),
+        deepseekApi: diagnosticsFor(backends.deepseekApi),
+        geminiApi: diagnosticsFor(backends.geminiApi),
       };
     },
   };
