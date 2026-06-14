@@ -10,6 +10,10 @@ export interface DeepSeekApiConfig {
   timeoutMs: number;
 }
 
+interface DeepSeekApiDeps {
+  fetch?: typeof fetch;
+}
+
 function parseOpenAiContent(body: unknown): string {
   if (!body || typeof body !== 'object') return '';
   const choices = (body as Record<string, unknown>).choices;
@@ -43,7 +47,11 @@ function mapStatus(status: number): LLMProviderError['code'] {
   return 'deepseek_api_upstream_error';
 }
 
-export function createDeepSeekApiClient(config: DeepSeekApiConfig): LLMClient & { health(): Record<string, unknown> } {
+export function createDeepSeekApiClient(
+  config: DeepSeekApiConfig,
+  deps: DeepSeekApiDeps = {},
+): LLMClient & { health(): Record<string, unknown> } {
+  const outboundFetch = deps.fetch ?? fetch;
   let lastSuccessAt: string | null = null;
   let lastFailureAt: string | null = null;
   let lastModel: string | null = null;
@@ -64,7 +72,7 @@ export function createDeepSeekApiClient(config: DeepSeekApiConfig): LLMClient & 
     lastModel = model;
 
     try {
-      const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      const response = await outboundFetch(`${config.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
           authorization: `Bearer ${config.apiKey}`,

@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 
+import "dotenv/config";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 
 const DEFAULT_INPUT = "authorized_ollama_urls.txt";
 const DEFAULT_MARKDOWN_OUTPUT = "ollama-model-inventory.md";
 const DEFAULT_JSON_OUTPUT = "ollama-model-inventory.json";
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_CONCURRENCY = 6;
+const DEFAULT_MIN_PARAMETERS = 20;
+const DEFAULT_EXCLUDE_CLOUD = true;
 
 const args = parseArgs(process.argv.slice(2));
 
@@ -21,6 +25,9 @@ const markdownOutputPath = args.output ?? DEFAULT_MARKDOWN_OUTPUT;
 const jsonOutputPath = args.json ?? DEFAULT_JSON_OUTPUT;
 const timeoutMs = positiveInteger(args.timeout, DEFAULT_TIMEOUT_MS);
 const concurrency = positiveInteger(args.concurrency, DEFAULT_CONCURRENCY);
+const minParameters = positiveNumber(args["min-parameters"] ?? args.minParameters, DEFAULT_MIN_PARAMETERS);
+const excludeCloud = args["include-cloud"] ? false : DEFAULT_EXCLUDE_CLOUD;
+const proxyDispatcher = createProxyDispatcher();
 
 const urls = await readServerUrls(inputPath);
 
@@ -29,17 +36,19 @@ if (urls.length === 0) {
 }
 
 const results = await mapConcurrent(urls, concurrency, (url) =>
-  inspectOllamaServer(url, timeoutMs),
+  inspectOllamaServer(url, timeoutMs, minParameters, excludeCloud),
 );
 
-const sorted = results.toSorted(compareServers);
+const sorted = results
+  .filter((server) => server.ok && server.models.length > 0)
+  .toSorted(compareServers);
 
 await writeJson(jsonOutputPath, sorted);
 await writeMarkdown(markdownOutputPath, sorted);
 
 const reachable = sorted.filter((server) => server.ok).length;
 console.log(
-  `Wrote ${markdownOutputPath} and ${jsonOutputPath} for ${sorted.length} servers (${reachable} reachable).`,
+  `Wrote ${markdownOutputPath} and ${jsonOutputPath} for ${sorted.length} useful servers (${reachable} reachable, min ${minParameters}B).`,
 );
 
 function parseArgs(argv) {
@@ -91,6 +100,8 @@ Options:
   --json <file>         JSON output path. Default: ${DEFAULT_JSON_OUTPUT}
   --timeout <ms>        Request timeout per server. Default: ${DEFAULT_TIMEOUT_MS}
   --concurrency <n>     Parallel server checks. Default: ${DEFAULT_CONCURRENCY}
+  --min-parameters <n>  Keep only models at or above this B-size. Default: ${DEFAULT_MIN_PARAMETERS}
+  --include-cloud       Keep :cloud / -cloud models. Default: excluded.
 
 The script uses Ollama's /api/tags endpoint, which is the HTTP equivalent of
 running "ollama list" against a remote Ollama host.`);
@@ -181,16 +192,22 @@ function trimUrlPunctuation(value) {
   return value.replace(/[.,;:]+$/g, "");
 }
 
-async function inspectOllamaServer(baseUrl, timeoutMs) {
+function isCloudModelName(modelName) {
+  return /(:cloud|-cloud)(?:$|[^a-z0-9])/i.test(String(modelName));
+}
+
+async function inspectOllamaServer(baseUrl, timeoutMs, minParameters, excludeCloud) {
   const startedAt = Date.now();
   const tagsUrl = `${baseUrl}/api/tags`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(tagsUrl, {
+    const fetchImpl = proxyDispatcher ? undiciFetch : fetch;
+    const response = await fetchImpl(tagsUrl, {
       headers: { accept: "application/json" },
       signal: controller.signal,
+      ...(proxyDispatcher ? { dispatcher: proxyDispatcher } : {}),
     });
 
     const latencyMs = Date.now() - startedAt;
@@ -209,7 +226,11 @@ async function inspectOllamaServer(baseUrl, timeoutMs) {
 
     const body = await response.json();
     const models = Array.isArray(body.models)
-      ? body.models.map(normalizeModel).toSorted(compareModels)
+      ? body.models
+        .map(normalizeModel)
+        .filter((model) => !excludeCloud || !isCloudModelName(model.name))
+        .filter((model) => model.parameterScore >= minParameters)
+        .toSorted(compareModels)
       : [];
     const bestModel = models[0] ?? null;
 
@@ -253,6 +274,7 @@ function normalizeModel(model) {
     size: formatBytes(sizeBytes),
     family: details.family ?? null,
     parameterSize: details.parameter_size ?? inferParameterLabel(name),
+    parameterScore,
     quantization: details.quantization_level ?? null,
     score: Number(score.toFixed(3)),
   };
@@ -410,4 +432,39 @@ function positiveInteger(value, fallback) {
     throw new Error(`Expected a positive integer, got: ${value}`);
   }
   return parsed;
+}
+
+function positiveNumber(value, fallback) {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Expected a positive number, got: ${value}`);
+  }
+  return parsed;
+}
+
+function createProxyDispatcher() {
+  if (!isTruthy(process.env.LEAKROUTER_OUTBOUND_PROXY_ENABLED)) return null;
+  const urls = readEnvList(process.env.LEAKROUTER_OUTBOUND_PROXY_URLS);
+  const single = process.env.LEAKROUTER_OUTBOUND_PROXY_URL?.trim();
+  const proxyUrl = urls[0] ?? single;
+  if (!proxyUrl) {
+    if (isTruthy(process.env.LEAKROUTER_OUTBOUND_PROXY_REQUIRED ?? "true")) {
+      throw new Error("Outbound proxy is enabled/required but no proxy URL is configured.");
+    }
+    return null;
+  }
+  return new ProxyAgent({ uri: proxyUrl });
+}
+
+function readEnvList(value) {
+  if (!value) return [];
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function isTruthy(value) {
+  return ["1", "true", "yes", "on"].includes(String(value ?? "").toLowerCase());
 }

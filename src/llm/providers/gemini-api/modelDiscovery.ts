@@ -3,6 +3,10 @@ import path from 'node:path';
 
 import type { GeminiApiModelInfo, GeminiApiProviderConfig } from './types.js';
 
+interface GeminiApiModelDiscoveryDeps {
+  fetch?: typeof fetch;
+}
+
 interface GeminiModelApiShape {
   name?: string;
   displayName?: string;
@@ -30,7 +34,10 @@ function modelIdFromName(name: string): string {
 export class GeminiApiModelDiscovery {
   private cache: GeminiModelCacheFile;
 
-  constructor(private readonly config: GeminiApiProviderConfig) {
+  private readonly outboundFetch: typeof fetch;
+
+  constructor(private readonly config: GeminiApiProviderConfig, deps: GeminiApiModelDiscoveryDeps = {}) {
+    this.outboundFetch = deps.fetch ?? fetch;
     this.cache = this.load();
   }
 
@@ -66,7 +73,7 @@ export class GeminiApiModelDiscovery {
 
     const endpoint = `${this.config.baseUrl.replace(/\/+$/, '')}/${this.config.version}/models?key=${encodeURIComponent(key.key)}`;
     try {
-      const response = await fetch(endpoint, { signal: AbortSignal.timeout(this.config.timeoutMs) });
+      const response = await this.outboundFetch(endpoint, { signal: AbortSignal.timeout(this.config.timeoutMs) });
       if (!response.ok) {
         throw new Error(`Gemini model discovery failed with HTTP ${response.status}`);
       }
@@ -106,4 +113,3 @@ export class GeminiApiModelDiscovery {
     await this.refresh();
   }
 }
-

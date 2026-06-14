@@ -1,6 +1,6 @@
 # Configuration
 
-LeakRouter uses `.env` variables with the `LEAKROUTER_` prefix. Older `GEMROUTER_` variables are tolerated only as migration fallbacks.
+LeakRouter uses `.env` variables with the `LEAKROUTER_` prefix.
 
 ## Server
 
@@ -32,15 +32,14 @@ LeakRouter uses `.env` variables with the `LEAKROUTER_` prefix. Older `GEMROUTER
 ## Routing
 
 ```env
-LEAKROUTER_BACKEND_ORDER=ollama,deepseek-api
+LEAKROUTER_BACKEND_ORDER=ollama
 ```
 
-Supported modes:
+Supported upstream modes for this deployment:
 
 | Mode | Description |
 |---|---|
 | `ollama` | Routes to authorized Ollama endpoints from the local inventory |
-| `deepseek-api` | Routes to the DeepSeek OpenAI-compatible API |
 
 ## Ollama
 
@@ -48,26 +47,49 @@ Supported modes:
 |---|---:|---|
 | `LEAKROUTER_OLLAMA_ENABLED` | `true` when inventory exists | Enable Ollama routing |
 | `LEAKROUTER_OLLAMA_INVENTORY_PATH` | `ollama-model-inventory.json` | Private inventory file |
+| `LEAKROUTER_OLLAMA_EXCLUDE_CLOUD_MODELS` | `true` | Hide and skip `:cloud` / `-cloud` models |
 | `LEAKROUTER_OLLAMA_TIMEOUT_MS` | `120000` | Request timeout |
 | `LEAKROUTER_OLLAMA_STREAM_TIMEOUT_MS` | `180000` | Streaming timeout |
 
 The admin UI and model endpoints expose model names and aggregate counts only. Upstream endpoint URLs stay server-side.
 
-## DeepSeek API
+## Optional DeepSeek API Upstream
 
 | Variable | Default | Description |
 |---|---:|---|
-| `LEAKROUTER_DEEPSEEK_ENABLED` | based on key presence | Enable DeepSeek API |
+| `LEAKROUTER_DEEPSEEK_ENABLED` | `false` | Enable DeepSeek API upstream fallback |
 | `LEAKROUTER_DEEPSEEK_API_KEY` | — | DeepSeek secret |
 | `LEAKROUTER_DEEPSEEK_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI-compatible base URL |
 | `LEAKROUTER_DEEPSEEK_MODELS` | `deepseek-chat,deepseek-reasoner` | Public model list |
 | `LEAKROUTER_DEEPSEEK_DEFAULT_MODEL` | `deepseek-chat` | Fallback model |
 
+Keep this disabled for the Ollama-only deployment. The DeepSeek-style client surface still works without this upstream mode; it routes authenticated client requests to the Ollama inventory.
+
+## Outbound Proxy
+
+Outbound proxying applies only to LeakRouter's upstream inference calls from this Node process. It does not configure system-wide `HTTP_PROXY`, change the default gateway, or affect unrelated services.
+
+| Variable | Default | Description |
+|---|---:|---|
+| `LEAKROUTER_OUTBOUND_PROXY_ENABLED` | `false` | Enable proxied upstream inference requests |
+| `LEAKROUTER_OUTBOUND_PROXY_REQUIRED` | `true` | Fail closed instead of falling back direct |
+| `LEAKROUTER_OUTBOUND_PROXY_URL` | — | Single proxy URL |
+| `LEAKROUTER_OUTBOUND_PROXY_URLS` | — | Comma-separated proxy URLs; preferred over `URL` |
+| `LEAKROUTER_OUTBOUND_PROXY_STRATEGY` | `single` | `single`, `round-robin`, or `random` |
+| `LEAKROUTER_PROXY_CONNECT_TIMEOUT_MS` | `10000` | Proxy connect timeout |
+| `LEAKROUTER_PROXY_REQUEST_TIMEOUT_MS` | `120000` | Proxied request timeout |
+| `LEAKROUTER_OUTBOUND_PROXY_BYPASS_HOSTS` | `localhost,127.0.0.1,::1` | Safety bypass hostnames |
+| `LEAKROUTER_OUTBOUND_PROXY_BYPASS_PRIVATE_IPS` | `true` | Safety bypass for private IP literals |
+
+When proxying is enabled and required, public upstream inference requests never retry direct. Proxy credentials are redacted in diagnostics.
+
+For testing, Webshare Free is a reasonable first option because it offers 10 free proxies, no credit card, HTTP/SOCKS5 support, and a claimed 99.97% uptime. Decodo and Oxylabs are better-quality trial/premium options. IPRoyal Free Proxy List and ProxyScrape Free Proxy List are fallback/testing sources only, not stable production infrastructure. Do not hardcode public free proxy IPs; treat them as dynamic and unreliable.
+
 ## Compatibility Surfaces
 
 ```env
 LEAKROUTER_COMPAT_DEFAULT_SURFACE=ollama
-LEAKROUTER_COMPAT_ENABLED_SURFACES=openai,deepseek,ollama
+LEAKROUTER_COMPAT_ENABLED_SURFACES=leakrouter,openai,deepseek,ollama
 ```
 
 Routes:
