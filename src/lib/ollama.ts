@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 
 import type { LLMMessage } from '../llm/types.js';
 import { normalizeModelId, type UsageSummary } from './openai.js';
-import { describePublicModel } from './models.js';
 
 export interface OllamaChatRequest {
   model?: string;
@@ -198,18 +197,22 @@ export function buildOllamaTagsResponse(models: string[]): {
   const uniqueModels = [...new Set(models)];
   return {
     models: uniqueModels.map((model) => {
-      const descriptor = describePublicModel(model);
+      const family = inferOllamaFamily(model);
       return {
-        ...descriptor,
+        id: model,
+        kind: 'remote-ollama',
+        family,
+        label: model,
+        experimental: /preview|experimental|exp/i.test(model),
         name: model,
         model,
         modified_at: nowIso(),
         size: 0,
         digest: buildDigest(model),
         details: {
-          format: 'gemrouter',
-          family: descriptor.family,
-          families: [descriptor.family],
+          format: 'leakrouter',
+          family,
+          families: [family],
           parameter_size: 'remote',
           quantization_level: 'remote',
         },
@@ -218,18 +221,30 @@ export function buildOllamaTagsResponse(models: string[]): {
   };
 }
 
+function inferOllamaFamily(model: string): string {
+  const normalized = model.toLowerCase();
+  if (normalized.includes('/')) return normalized.split('/')[0] || 'ollama';
+  return normalized.split(/[:-]/)[0] || 'ollama';
+}
+
 export function buildOllamaShowResponse(model: string): Record<string, unknown> {
-  const descriptor = describePublicModel(model);
+  const family = inferOllamaFamily(model);
   return {
-    license: 'GemRouter remote surface',
+    license: 'LeakRouter remote surface',
     modelfile: `FROM ${model}`,
     parameters: 'temperature 0.7',
     template: '{{ .Prompt }}',
-    model_descriptor: descriptor,
+    model_descriptor: {
+      id: model,
+      kind: 'remote-ollama',
+      family,
+      label: model,
+      experimental: /preview|experimental|exp/i.test(model),
+    },
     details: {
-      format: 'gemrouter',
-      family: descriptor.family,
-      families: [descriptor.family],
+      format: 'leakrouter',
+      family,
+      families: [family],
       parameter_size: 'remote',
       quantization_level: 'remote',
     },
