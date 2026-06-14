@@ -10,8 +10,8 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 
-API_KEY="${GEMROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
-ADMIN_TOKEN="${GEMROUTER_ADMIN_TOKEN:-}"
+API_KEY="${LEAKROUTER_BOOTSTRAP_API_KEY:-${BAIRBI_BOOTSTRAP_API_KEY:-${BARIBI_BOOTSTRAP_API_KEY:-}}}"
+ADMIN_TOKEN="${LEAKROUTER_ADMIN_TOKEN:-}"
 SMOKE_BACKEND="${SMOKE_BACKEND:-auto}"
 SMOKE_MODEL="${SMOKE_MODEL:-${GEMINI_DIRECT_MODEL:-gemini-2.5-flash-lite}}"
 SMOKE_IMAGE_MODEL="${SMOKE_IMAGE_MODEL:-gemini-2.5-flash-image}"
@@ -82,9 +82,9 @@ build_api_candidates
 API_BASE="$(resolve_api_base)"
 SMOKE_PRIMARY_MODEL="$(resolve_primary_model)"
 
-if [[ "${SMOKE_BACKEND}" == "gemini-api" && -z "${GEMROUTER_GEMINI_API_KEYS:-}" && -z "${GEMROUTER_GEMINI_API_KEYS_JSON:-}" ]]; then
+if [[ "${SMOKE_BACKEND}" == "gemini-api" && -z "${LEAKROUTER_GEMINI_API_KEYS:-}" && -z "${LEAKROUTER_GEMINI_API_KEYS_JSON:-}" ]]; then
   echo "[smoke] SMOKE_BACKEND=gemini-api requested, but no Gemini API keys are configured."
-  echo "[smoke] Set GEMROUTER_GEMINI_API_KEYS or GEMROUTER_GEMINI_API_KEYS_JSON to run API-key smoke tests."
+  echo "[smoke] Set LEAKROUTER_GEMINI_API_KEYS or LEAKROUTER_GEMINI_API_KEYS_JSON to run API-key smoke tests."
   exit 0
 fi
 

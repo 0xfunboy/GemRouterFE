@@ -1,4 +1,4 @@
-export const API_SURFACES = ['gemrouter', 'openai', 'deepseek', 'ollama'] as const;
+export const API_SURFACES = ['leakrouter', 'openai', 'deepseek', 'ollama'] as const;
 
 export type ApiSurface = (typeof API_SURFACES)[number];
 
@@ -63,7 +63,7 @@ function withoutTrailingSlash(value: string): string {
 export function buildCompatibilityRoutes(baseUrl: string): Record<ApiSurface, CompatibilityRoutes> {
   const root = withoutTrailingSlash(baseUrl);
   return {
-    gemrouter: {
+    leakrouter: {
       baseUrl: root,
       models: `${root}/models`,
       chat: `${root}/chat/completions`,

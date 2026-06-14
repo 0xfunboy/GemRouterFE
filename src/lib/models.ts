@@ -63,7 +63,7 @@ export interface DiscoveredModelCatalogEntry {
   capabilities: ModelCapabilityFlags;
 }
 
-export function isGemRouterCompatibleModelCapabilities(capabilities: ModelCapabilityFlags): boolean {
+export function isLeakRouterCompatibleModelCapabilities(capabilities: ModelCapabilityFlags): boolean {
   return capabilities.chat || capabilities.imageGeneration;
 }
 

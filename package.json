@@ -13,7 +13,8 @@
     "dev": "pnpm run dev:app",
     "dev:app": "tsx watch src/index.ts",
     "inventory:ollama": "node scripts/inventory-ollama-models.mjs",
-    "setup:systemd": "bash ./ops/systemd/install-gemrouter-services.sh",
+    "proxy:test": "tsx scripts/proxy-test.ts",
+    "setup:systemd": "bash ./ops/systemd/install-leakrouter-services.sh",
     "start": "pnpm run start:app",
     "start:app": "node dist/index.js",
     "smoke": "pnpm build && bash ./scripts/smoke.sh",
@@ -21,12 +22,13 @@
   },
   "dependencies": {
     "dotenv": "^16.6.1",
-    "fastify": "^4.29.1"
+    "fastify": "^4.29.1",
+    "undici": "^8.4.1"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
-    "turbo": "^2.5.0",
     "tsx": "^4.20.6",
+    "turbo": "^2.5.0",
     "typescript": "^5.9.3"
   }
 }

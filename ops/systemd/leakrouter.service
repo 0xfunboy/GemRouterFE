@@ -1,25 +1,27 @@
 [Unit]
-Description=GemRouter
+Description=LeakRouter
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=funboy
-WorkingDirectory=/home/funboy/GemRouter
-EnvironmentFile=/home/funboy/GemRouter/.env
+WorkingDirectory=/home/funboy/leakrouter
+EnvironmentFile=/home/funboy/leakrouter/.env
 Environment=HOME=/home/funboy
 Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=4024
 Environment=PNPM_HOME=/home/funboy/.local/share/pnpm
 Environment=NVM_DIR=/home/funboy/.nvm
 Environment=PATH=/home/funboy/.nvm/versions/node/v23.3.0/bin:/home/funboy/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStartPre=/bin/bash -lc "pnpm build"
 ExecStart=/bin/bash -lc "exec node dist/index.js"
-Restart=always
+Restart=on-failure
 RestartSec=10
 TimeoutStopSec=30
+NoNewPrivileges=true
 StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

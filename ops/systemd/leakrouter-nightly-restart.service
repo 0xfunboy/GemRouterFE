@@ -1,0 +1,6 @@
+[Unit]
+Description=Nightly restart of LeakRouter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user restart leakrouter.service
