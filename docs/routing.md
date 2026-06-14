@@ -1,17 +1,16 @@
 # Routing
 
-LeakRouter routes authenticated requests across two modes:
+LeakRouter routes authenticated requests to the Ollama upstream inventory:
 
 1. `ollama`
-2. `deepseek-api`
 
 The default order is:
 
 ```env
-LEAKROUTER_BACKEND_ORDER=ollama,deepseek-api
+LEAKROUTER_BACKEND_ORDER=ollama
 ```
 
-If the first backend returns a fallback-eligible error, the router tries the next backend when the requested model can be satisfied there.
+If the requested Ollama endpoint fails, the router tries another endpoint for the same model, then smaller or lower-priority Ollama models when needed.
 
 ## Ollama Mode
 
@@ -29,14 +28,35 @@ Public responses do not expose:
 - upstream host
 - source inventory row
 
-## DeepSeek API Mode
+Set `LEAKROUTER_OLLAMA_EXCLUDE_CLOUD_MODELS=true` to remove `:cloud` and `-cloud` models from routing, `/api/tags`, admin model pickers, and benchmarks.
 
-DeepSeek API mode uses an OpenAI-compatible `/chat/completions` API:
+## Fallback Order
 
-```env
-LEAKROUTER_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-LEAKROUTER_DEEPSEEK_API_KEY=...
+For Ollama mode, LeakRouter tries:
+
+1. the requested model on the preferred endpoint
+2. the same model on slower/alternate endpoints
+3. smaller or less powerful models, preferring the same family when possible
+
+The admin benchmark records local response latency and output tokens per second. These runtime results are combined with a static family-priority catalog informed by public benchmark sources.
+
+## Outbound Privacy
+
+Inbound exposure and outbound privacy are separate:
+
+```text
+client machines
+-> Cloudflare Tunnel / private access
+-> LeakRouter
+-> outbound proxy
+-> internet Ollama upstreams
 ```
+
+Cloudflare Tunnel only protects inbound access to LeakRouter. Upstream Ollama servers would still see the LeakRouter host IP unless outbound proxying is enabled. Set `LEAKROUTER_OUTBOUND_PROXY_ENABLED=true` and keep `LEAKROUTER_OUTBOUND_PROXY_REQUIRED=true` in production to fail closed if the proxy is unavailable.
+
+## Client Compatibility
+
+Client machines can call LeakRouter through Ollama-compatible, OpenAI-compatible, DeepSeek-style, or root LeakRouter routes. All of those routes require the client bearer secret and resolve to the configured Ollama upstream inventory.
 
 ## Auth
 

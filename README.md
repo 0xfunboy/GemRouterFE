@@ -1,15 +1,30 @@
 # LeakRouter
 
-LeakRouter is a small authenticated router for Ollama-compatible inference and optional DeepSeek API fallback. It exposes OpenAI-compatible, DeepSeek-compatible, and Ollama-compatible HTTP surfaces while keeping upstream Ollama endpoint URLs private.
+LeakRouter is a small authenticated router for Ollama-compatible inference. It exposes OpenAI-compatible, DeepSeek-compatible, LeakRouter, and Ollama-compatible HTTP surfaces to client machines while keeping upstream Ollama endpoint URLs private.
 
 ## What It Does
 
 - Reads an authorized Ollama inventory from `ollama-model-inventory.json`.
 - Exposes model names without exposing source server URLs.
-- Routes inference in two selectable modes: `ollama` and `deepseek-api`.
+- Routes upstream inference through Ollama inventory servers.
+- Serves client requests through selectable compatibility surfaces: Ollama, OpenAI-style, DeepSeek-style, and LeakRouter root routes.
 - Requires a client bearer secret for inference and an admin secret/session for operations.
 - Tracks per-app request usage, success/failure, latency, and token estimates.
 - Provides an admin UI at `/admin` for app keys, model access, routing state, and usage.
+- Includes an admin benchmark runner for Ollama models, measuring latency and output tokens/sec without exposing source URLs.
+- Supports selective outbound proxying for upstream inference calls, so internet Ollama servers see the proxy IP instead of the LeakRouter host IP.
+
+## Intended Topology
+
+```text
+client machines
+-> Cloudflare Tunnel / private access
+-> LeakRouter
+-> outbound proxy
+-> internet Ollama upstreams
+```
+
+Cloudflare Tunnel is only for inbound traffic. It does not hide LeakRouter's outbound IP from upstream Ollama servers; `LEAKROUTER_OUTBOUND_PROXY_*` is the feature that does that.
 
 ## Requirements
 
@@ -32,7 +47,28 @@ LEAKROUTER_DASHBOARD_ADMIN_USERS=admin:...
 LEAKROUTER_BOOTSTRAP_API_KEY=...
 ```
 
-For Ollama mode, keep `ollama-model-inventory.json` in the repo root. For DeepSeek API mode, set `LEAKROUTER_DEEPSEEK_API_KEY` and enable it.
+For the Ollama-only deployment, keep `ollama-model-inventory.json` in the repo root. Upstream Ollama servers do not use authentication; client machines authenticate to LeakRouter with `LEAKROUTER_BOOTSTRAP_API_KEY`.
+
+Cloud-tagged inventory models are excluded by default:
+
+```env
+LEAKROUTER_OLLAMA_EXCLUDE_CLOUD_MODELS=true
+```
+
+Outbound proxying is disabled by default. To force inference traffic through one proxy:
+
+```env
+LEAKROUTER_OUTBOUND_PROXY_ENABLED=true
+LEAKROUTER_OUTBOUND_PROXY_REQUIRED=true
+LEAKROUTER_OUTBOUND_PROXY_URL=http://USERNAME:PASSWORD@HOST:PORT
+LEAKROUTER_OUTBOUND_PROXY_STRATEGY=single
+```
+
+Test proxy egress without a direct leak:
+
+```bash
+pnpm proxy:test
+```
 
 ## Start
 

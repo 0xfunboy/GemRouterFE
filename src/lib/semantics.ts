@@ -26,7 +26,7 @@ function buildBaseInstruction(profile: SemanticProfile): string {
   ];
 
   switch (profile.surface) {
-    case 'gemrouter':
+    case 'leakrouter':
     case 'deepseek':
       common.unshift(
         'Simulate the final assistant content of a DeepSeek-style compatible chat model.',

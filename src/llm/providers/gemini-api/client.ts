@@ -14,6 +14,10 @@ import { GeminiApiQuotaLedger } from './quotaLedger.js';
 import type { GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../../types.js';
 
+interface GeminiApiClientDeps {
+  fetch?: typeof fetch;
+}
+
 interface GeminiGenerateResponse {
   candidates?: Array<{
     content?: {
@@ -558,10 +562,11 @@ function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Ar
   return [...byId.values()];
 }
 
-export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClient {
+export function createGeminiApiClient(config: GeminiApiProviderConfig, deps: GeminiApiClientDeps = {}): LLMClient {
+  const outboundFetch = deps.fetch ?? fetch;
   const ledger = new GeminiApiQuotaLedger(config);
   const keyPool = new GeminiApiKeyPool(config, ledger);
-  const discovery = new GeminiApiModelDiscovery(config);
+  const discovery = new GeminiApiModelDiscovery(config, { fetch: outboundFetch });
   let lastSelectedKeyId: string | null = null;
   let lastSelectedQuotaGroup: string | null = null;
   let lastResolvedModel: string | null = null;
@@ -634,7 +639,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         const endpoint = buildEndpoint(config, model);
 
         try {
-          const response = await fetch(withKey(endpoint, reservation.key.key), {
+          const response = await outboundFetch(withKey(endpoint, reservation.key.key), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(toGenerationBody(messages, attemptOptions)),

@@ -15,7 +15,7 @@ import {
   describePublicModel,
   inferModelCapabilities,
   isGeminiImageGenerationModelId,
-  isGemRouterCompatibleModelCapabilities,
+  isLeakRouterCompatibleModelCapabilities,
 } from './lib/models.js';
 import {
   buildChatCompletionResponse,
@@ -52,6 +52,7 @@ import {
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
 import { createDeepSeekApiClient } from './llm/providers/deepseek-api/client.js';
+import { createProxiedFetch, redactOutboundProxyConfig, OutboundProxyError } from './net/outboundProxy.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -75,9 +76,10 @@ const ADMIN_COOKIE_NAME = 'leakrouter_admin_session';
 const execFileAsync = promisify(execFile);
 
 const config = loadConfig();
-const geminiApiLlm = createGeminiApiClient(config.geminiApi);
-const ollamaLlm = createOllamaRouterClient(config.ollama);
-const deepseekApiLlm = createDeepSeekApiClient(config.deepseekApi);
+const outboundProxy = createProxiedFetch(config.outboundProxy);
+const geminiApiLlm = createGeminiApiClient(config.geminiApi, { fetch: outboundProxy.fetch });
+const ollamaLlm = createOllamaRouterClient(config.ollama, { fetch: outboundProxy.fetch });
+const deepseekApiLlm = createDeepSeekApiClient(config.deepseekApi, { fetch: outboundProxy.fetch });
 const llm = createLlmRouter(config.llmRouting, {
   ollama: ollamaLlm,
   deepseekApi: deepseekApiLlm,
@@ -91,6 +93,19 @@ const compatibility = new CompatibilityStore(config.compatibility.settingsStoreP
   enabledSurfaces: config.compatibility.enabledSurfaces,
 });
 const interactions = new InteractionStore(config.interactionsStorePath);
+
+interface BenchmarkJob {
+  id: string;
+  status: 'running' | 'completed' | 'failed';
+  startedAt: string;
+  completedAt: string | null;
+  expectedCount: number | null;
+  results: Array<Record<string, unknown>>;
+  error: string | null;
+  sources: Array<Record<string, string>>;
+}
+
+const benchmarkJobs = new Map<string, BenchmarkJob>();
 
 interface GeminiProjectQuotaState {
   updatedAt: string | null;
@@ -268,9 +283,9 @@ function getCompatibilitySnapshot(request: FastifyRequest): {
     enabledSurfaces: state.enabledSurfaces,
     updatedAt: state.updatedAt,
     endpoints: {
-      gemrouter: {
-        enabled: state.enabledSurfaces.includes('gemrouter'),
-        routes: routes.gemrouter,
+      leakrouter: {
+        enabled: state.enabledSurfaces.includes('leakrouter'),
+        routes: routes.leakrouter,
       },
       openai: {
         enabled: state.enabledSurfaces.includes('openai'),
@@ -930,6 +945,15 @@ function mapLlmErrorToHttp(error: unknown): {
   code: string;
   message: string;
 } {
+  if (error instanceof OutboundProxyError) {
+    return {
+      statusCode: error.statusCode,
+      type: 'server_error',
+      code: error.code,
+      message: error.message,
+    };
+  }
+
   if (error instanceof LLMProviderError) {
     const statusCode = error.options.statusCode ?? 502;
     const type =
@@ -1004,12 +1028,17 @@ function backendModels(snapshot: Record<string, unknown> | null | undefined): Ar
 function buildAdminModelCatalog(
   diagnostics: Record<string, unknown> = {},
 ): Array<Record<string, unknown>> {
+  const configuredBackends = new Set(config.llmRouting.backendOrder);
   const ollama: Array<Record<string, unknown>> = backendModels(diagnostics.ollama as Record<string, unknown> | null | undefined)
     .map((model) => ({ ...model, provider: model.provider ?? 'ollama' }));
   const deepseek: Array<Record<string, unknown>> = backendModels(diagnostics.deepseekApi as Record<string, unknown> | null | undefined)
     .map((model) => ({ ...model, provider: model.provider ?? 'deepseek-api' }));
   const byId = new Map<string, Record<string, unknown>>();
-  for (const model of [...ollama, ...deepseek]) {
+  const configuredModels = [
+    ...(configuredBackends.has('ollama') ? ollama : []),
+    ...(configuredBackends.has('deepseek-api') ? deepseek : []),
+  ];
+  for (const model of configuredModels) {
     if (!byId.has(String(model.id))) byId.set(String(model.id), model);
   }
   if (byId.size > 0) return [...byId.values()];
@@ -1044,7 +1073,7 @@ function buildCompatibleSurfaceModelCatalog(
     if (capabilities) {
       return mode === 'chat'
         ? capabilities.chat
-        : isGemRouterCompatibleModelCapabilities(capabilities);
+        : isLeakRouterCompatibleModelCapabilities(capabilities);
     }
     return modelSupportsSurface(model, mode);
   });
@@ -1065,18 +1094,25 @@ function buildProviderSnapshot(
   const routedModelIds = buildCompatibleSurfaceModelIds(diagnostics, 'chat');
   const ollama = (diagnostics.ollama as Record<string, unknown> | null) ?? {};
   const deepseekApi = (diagnostics.deepseekApi as Record<string, unknown> | null) ?? {};
+  const modeDetails: Record<string, { label: string; state: Record<string, unknown> }> = {
+    ollama: { label: 'Ollama', state: ollama },
+    'deepseek-api': { label: 'DeepSeek API upstream', state: deepseekApi },
+  };
   return {
     backend: config.llmRouting.backendOrder[0] ?? 'ollama',
     configuredModel: routedModelIds[0] ?? config.modelIds[0] ?? null,
-    modes: [
-      { id: 'ollama', label: 'Ollama', enabled: ollama.enabled === true, available: ollama.available === true },
-      { id: 'deepseek-api', label: 'DeepSeek API', enabled: deepseekApi.enabled === true, available: deepseekApi.available === true },
-    ],
+    modes: config.llmRouting.backendOrder.map((backend) => ({
+      id: backend,
+      label: modeDetails[backend]?.label ?? backend,
+      enabled: modeDetails[backend]?.state.enabled === true,
+      available: modeDetails[backend]?.state.available === true,
+    })),
     ollama: {
       enabled: ollama.enabled ?? false,
       available: ollama.available ?? false,
       configuredEndpointCount: ollama.configuredEndpointCount ?? 0,
       configuredModelCount: ollama.configuredModelCount ?? 0,
+      excludeCloudModels: ollama.excludeCloudModels ?? false,
       defaultModel: ollama.defaultModel ?? null,
       lastModel: ollama.lastModel ?? null,
       lastError: ollama.lastError ?? null,
@@ -1643,6 +1679,7 @@ function getRuntimeSnapshot(
       backendOnly: true,
     },
     provider,
+    outboundProxy: redactOutboundProxyConfig(config.outboundProxy),
     models: buildCompatibleSurfaceModelIds(diagnostics, 'chat-or-image'),
     backends: {
       ollama: sanitizedLlmDiagnostics?.ollama ?? null,
@@ -1665,7 +1702,7 @@ function listPublicEndpoints(): string[] {
   if (isSurfaceEnabled('openai')) {
     endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses', '/v1/images/generations');
   }
-  if (isAnySurfaceEnabled(['gemrouter', 'deepseek'])) {
+  if (isAnySurfaceEnabled(['leakrouter', 'deepseek'])) {
     endpoints.push('/models', '/chat/completions', '/images/generations');
   }
   if (isSurfaceEnabled('ollama')) {
@@ -1677,11 +1714,11 @@ function listPublicEndpoints(): string[] {
 async function handleModelsRequest(
   request: FastifyRequest,
   reply: FastifyReply,
-  surface: 'openai' | 'gemrouter',
+  surface: 'openai' | 'leakrouter',
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (surface === 'openai') {
     if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
-  } else if (!ensureAnySurfaceEnabled(['gemrouter', 'deepseek'], reply, 'gemrouter/deepseek')) {
+  } else if (!ensureAnySurfaceEnabled(['leakrouter', 'deepseek'], reply, 'leakrouter/deepseek')) {
     return reply;
   }
   const access = await ensureClientAccess(request, reply);
@@ -1734,11 +1771,11 @@ function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: Authe
 async function handleChatCompletionsRequest(
   request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
   reply: FastifyReply,
-  surface: 'openai' | 'gemrouter',
+  surface: 'openai' | 'leakrouter',
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (surface === 'openai') {
     if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
-  } else if (!ensureAnySurfaceEnabled(['gemrouter', 'deepseek'], reply, 'gemrouter/deepseek')) {
+  } else if (!ensureAnySurfaceEnabled(['leakrouter', 'deepseek'], reply, 'leakrouter/deepseek')) {
     return reply;
   }
   const access = await ensureClientAccess(request, reply);
@@ -2311,11 +2348,11 @@ async function handleResponsesRequest(
 async function handleImageGenerationsRequest(
   request: FastifyRequest<{ Body: ImageGenerationsRequest }>,
   reply: FastifyReply,
-  surface: 'openai' | 'gemrouter',
+  surface: 'openai' | 'leakrouter',
 ): Promise<FastifyReply | Record<string, unknown>> {
   if (surface === 'openai') {
     if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
-  } else if (!ensureAnySurfaceEnabled(['gemrouter', 'deepseek'], reply, 'gemrouter/deepseek')) {
+  } else if (!ensureAnySurfaceEnabled(['leakrouter', 'deepseek'], reply, 'leakrouter/deepseek')) {
     return reply;
   }
   const access = await ensureClientAccess(request, reply);
@@ -3061,6 +3098,92 @@ app.post('/admin/provider/model-api/refresh-quota', async (request, reply) => {
 
 app.post<{
   Body: {
+    models?: string[];
+    timeoutMs?: number;
+    concurrency?: number;
+  };
+}>('/admin/benchmark', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const client = ollamaLlm as typeof ollamaLlm & {
+    benchmarkModels?: (input?: {
+      models?: string[];
+      timeoutMs?: number;
+      concurrency?: number;
+      onResult?: (result: unknown) => void;
+    }) => Promise<Record<string, unknown>>;
+  };
+  if (typeof client.benchmarkModels !== 'function') {
+    return sendError(reply, 503, {
+      message: 'Ollama benchmark is not available',
+      type: 'server_error',
+      code: 'benchmark_unavailable',
+    });
+  }
+  const id = `bench_${Date.now().toString(36)}_${request.id.replace(/[^a-z0-9]/gi, '').slice(0, 12)}`;
+  const job: BenchmarkJob = {
+    id,
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    expectedCount: null,
+    results: [],
+    error: null,
+    sources: [],
+  };
+  benchmarkJobs.set(id, job);
+  void client.benchmarkModels({
+    models: Array.isArray(request.body?.models) ? request.body.models : undefined,
+    timeoutMs: typeof request.body?.timeoutMs === 'number' ? request.body.timeoutMs : 120_000,
+    concurrency: 1,
+    onResult: (result) => {
+      job.results.push(result as unknown as Record<string, unknown>);
+    },
+  }).then((result) => {
+    job.status = 'completed';
+    job.completedAt = new Date().toISOString();
+    job.expectedCount = typeof result.count === 'number' ? result.count : job.results.length;
+    job.sources = Array.isArray(result.sources) ? result.sources as Array<Record<string, string>> : [];
+    job.results = Array.isArray(result.results) ? result.results as Array<Record<string, unknown>> : job.results;
+  }).catch((error) => {
+    job.status = 'failed';
+    job.completedAt = new Date().toISOString();
+    job.error = error instanceof Error ? error.message : String(error);
+  });
+  return {
+    ok: true,
+    jobId: id,
+    status: job.status,
+    startedAt: job.startedAt,
+    results: job.results,
+  };
+});
+
+app.get<{ Params: { id: string } }>('/admin/benchmark/:id', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const job = benchmarkJobs.get(request.params.id);
+  if (!job) {
+    return sendError(reply, 404, {
+      message: 'Benchmark job not found',
+      type: 'invalid_request_error',
+      code: 'benchmark_not_found',
+    });
+  }
+  return {
+    ok: job.status !== 'failed',
+    jobId: job.id,
+    status: job.status,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    count: job.results.length,
+    expectedCount: job.expectedCount,
+    results: job.results,
+    sources: job.sources,
+    error: job.error,
+  };
+});
+
+app.post<{
+  Body: {
     defaultSurface?: ApiSurface;
     enabledSurfaces?: ApiSurface[];
   };
@@ -3264,7 +3387,7 @@ app.post<{
 });
 
 app.get('/v1/models', async (request, reply) => handleModelsRequest(request, reply, 'openai'));
-app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'gemrouter'));
+app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'leakrouter'));
 app.get('/v1/provider/runtime', async (request, reply) => {
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
@@ -3310,14 +3433,14 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
   handleChatCompletionsRequest(request, reply, 'openai'),
 );
 app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', async (request, reply) =>
-  handleChatCompletionsRequest(request, reply, 'gemrouter'),
+  handleChatCompletionsRequest(request, reply, 'leakrouter'),
 );
 app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => handleResponsesRequest(request, reply));
 app.post<{ Body: ImageGenerationsRequest }>('/v1/images/generations', async (request, reply) =>
   handleImageGenerationsRequest(request, reply, 'openai'),
 );
 app.post<{ Body: ImageGenerationsRequest }>('/images/generations', async (request, reply) =>
-  handleImageGenerationsRequest(request, reply, 'gemrouter'),
+  handleImageGenerationsRequest(request, reply, 'leakrouter'),
 );
 
 app.get('/api/version', async (request, reply) => {

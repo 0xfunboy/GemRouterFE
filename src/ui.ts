@@ -52,7 +52,7 @@ export function renderAppShell(input: {
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
   const pageTitle = `${input.projectName} — Inference Compatibility Router`;
-  const pageDescription = 'LeakRouter routes authorized Ollama inventory models and optional DeepSeek API fallback behind authenticated compatible APIs.';
+  const pageDescription = 'LeakRouter routes authorized Ollama inventory models behind authenticated compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
     : '';
@@ -1288,7 +1288,7 @@ export function renderAppShell(input: {
           </div>
           <div class="source-card">
             <strong>${svgIcon('route')} Fallback Routing</strong>
-            <p>Selects between Ollama and DeepSeek API modes according to backend order, model policy, and upstream availability.</p>
+            <p>Routes authenticated client requests to the configured Ollama inventory according to model policy and upstream availability.</p>
           </div>
           <div class="source-card">
             <strong>${svgIcon('chart')} Operator Surface</strong>
@@ -1306,72 +1306,6 @@ export function renderAppShell(input: {
           <div id="public-runtime-pills" class="meta-row"></div>
         </div>
         <div id="public-stats" class="stats-grid"></div>
-      </section>
-
-      <section class="panel section">
-        <div class="section-head">
-          <div>
-            <h3 class="section-title">${svgIcon('api')} Modes and Model Usage</h3>
-            <p class="section-copy">Configured routing modes, available model names, and aggregate usage. Upstream URLs and API secrets are never shown.</p>
-          </div>
-          <div id="provider-pills" class="meta-row"></div>
-        </div>
-        <div class="shell-grid quota-shell">
-          <div>
-            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('plug')} Configured Accounts</h4>
-            <div class="table-wrap">
-              <table class="table accounts-table responsive-table">
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Quota Group</th>
-                    <th>Priority</th>
-                    <th>Health</th>
-                  </tr>
-                </thead>
-                <tbody id="model-api-keys-table"></tbody>
-              </table>
-            </div>
-          </div>
-          <div>
-            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Account Usage</h4>
-            <p class="section-copy" style="margin-bottom:8px">Usage is grouped by local app, model, route, status, and latency from this router's interaction store.</p>
-            <div class="table-wrap">
-              <table class="table responsive-table" style="font-size:13px">
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Model</th>
-                    <th>Metric</th>
-                    <th>RPM used</th>
-                    <th>RPM limit</th>
-                    <th>RPM left</th>
-                    <th>RPD used</th>
-                    <th>RPD limit</th>
-                    <th>RPD left</th>
-                  </tr>
-                </thead>
-                <tbody id="google-quota-table"></tbody>
-              </table>
-            </div>
-            <h4 class="section-title" style="font-size:15px;margin:16px 0 10px">${svgIcon('chart')} Local Ledger (this router only)</h4>
-            <div class="table-wrap">
-              <table class="table quota-table responsive-table">
-                <thead>
-                  <tr>
-                    <th>Group</th>
-                    <th>Model</th>
-                    <th>RPM</th>
-                    <th>TPM</th>
-                    <th>RPD</th>
-                    <th>State</th>
-                  </tr>
-                </thead>
-                <tbody id="model-api-quota-table"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
       </section>
 
       <section class="panel section">
@@ -1447,8 +1381,8 @@ export function renderAppShell(input: {
         <section class="panel section">
           <div class="section-head">
             <div>
-              <h3 class="section-title">${svgIcon('api')} Provider Diagnostics</h3>
-              <p class="section-copy">Admin-only raw backend state for the Model Provider key pool and fallback investigation.</p>
+              <h3 class="section-title">${svgIcon('api')} Ollama Diagnostics</h3>
+              <p class="section-copy">Admin-only raw routing state for the Ollama inventory and fallback investigation.</p>
             </div>
             <div class="section-head-actions">
               <button type="button" class="secondary section-toggle" data-section-toggle="provider-section-body" aria-controls="provider-section-body" aria-expanded="false">
@@ -1458,8 +1392,38 @@ export function renderAppShell(input: {
             </div>
           </div>
           <div id="provider-section-body" class="section-body hidden">
-            <div id="provider-output" class="mono-box">Loading model and quota snapshot…</div>
+            <div id="provider-output" class="mono-box">Loading model snapshot…</div>
           </div>
+        </section>
+
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('bolt')} Benchmark</h3>
+              <p class="section-copy">Runs a short response test across available Ollama models, measuring latency and output tokens per second. Source URLs stay hidden.</p>
+            </div>
+            <div class="section-head-actions">
+              <button id="benchmark-button" type="button">${svgIcon('bolt')} Benchmark</button>
+            </div>
+          </div>
+          <div id="benchmark-status" class="status">No benchmark run yet.</div>
+          <div class="table-wrap" style="margin-top:12px">
+            <table class="table responsive-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Model</th>
+                  <th>Params</th>
+                  <th>Tok/s</th>
+                  <th>Latency</th>
+                  <th>Endpoints</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="benchmark-table"></tbody>
+            </table>
+          </div>
+          <div id="benchmark-sources" class="footer-note" style="margin-top:10px"></div>
         </section>
 
 
@@ -1654,72 +1618,6 @@ export function renderAppShell(input: {
           </div>
         </section>
       </section>
-      <footer class="panel app-footer">
-        <div class="footer-grid">
-          <div class="footer-brand">
-            <div class="footer-brand-top">
-              <svg class="footer-brand-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M20 4L6 36H14L20 22L26 36H34L20 4Z" fill="currentColor" />
-                <path d="M20 12V22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-              <span>AIRewardrop</span>
-            </div>
-            <p class="footer-brand-copy">Autonomous agent infrastructure for crypto.</p>
-            <a class="footer-blog-link" href="https://airewardrop.xyz/blog" target="_blank" rel="noreferrer">Our Blog →</a>
-          </div>
-          <div class="footer-columns">
-            <div class="footer-column">
-              <h4>Navigate</h4>
-              <a href="https://airewardrop.xyz/products" target="_blank" rel="noreferrer">Products</a>
-              <a href="https://airewardrop.xyz/agents" target="_blank" rel="noreferrer">Agents</a>
-              <a href="https://airewardrop.xyz/roadmap" target="_blank" rel="noreferrer">Roadmap</a>
-              <a href="https://airewardrop.xyz/clients" target="_blank" rel="noreferrer">Clients</a>
-            </div>
-            <div class="footer-column">
-              <h4>Resources</h4>
-              <a href="https://airewardrop.xyz/commands" target="_blank" rel="noreferrer">User Manual</a>
-              <a href="https://airewardrop.xyz/tokenomics" target="_blank" rel="noreferrer">Tokenomics</a>
-              <a href="https://airewardrop.xyz/api-plugins" target="_blank" rel="noreferrer">API &amp; Plugins</a>
-              <a href="https://airewardrop.xyz/faq" target="_blank" rel="noreferrer">FAQ</a>
-            </div>
-            <div class="footer-column">
-              <h4>Community</h4>
-              <a href="https://t.me/AIRewardrop" target="_blank" rel="noreferrer">Telegram Channel</a>
-              <a href="https://t.me/AIR3Community" target="_blank" rel="noreferrer">Telegram Community</a>
-              <a href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer">Discord</a>
-            </div>
-            <div class="footer-column">
-              <h4>Legal</h4>
-              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Terms of Service</a>
-              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Privacy Policy</a>
-              <a href="https://airewardrop.xyz/legal" target="_blank" rel="noreferrer">Cookie Policy</a>
-            </div>
-          </div>
-        </div>
-        <div class="footer-bottom">
-          <div class="footer-legal">
-            <div>© 2025 AIRewardrop. All rights reserved.</div>
-            <div>Disclaimer: Not financial advice. Always do your own research.</div>
-          </div>
-          <div class="footer-socials">
-            <a class="footer-social-link" href="https://x.com/AIRewardrop" target="_blank" rel="noreferrer" aria-label="X / Twitter">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-              </svg>
-            </a>
-            <a class="footer-social-link" href="https://t.me/AIR3Community" target="_blank" rel="noreferrer" aria-label="Telegram">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.043 7.924c-.234-.94-.83-1.21-1.42.21L11.79 12.2l-3.26-1.026c-1.154-.384-1.153-1.144.24-1.523l8.693-2.9c.9-.3 1.623.192 1.348 1.487l-1.9 8.54c-.23 1.053-1.002 1.3-1.802.82l-3.514-2.58-1.7 1.64c-.19.19-.35.35-.69.35-.46 0-.62-.16-.69-.77l.25-2.22 5.02-4.52c.46-.43-.1-.68-.69-.26l-6.3 3.97-3.34-1.04c-1.02-.31-1.05-.98.24-1.42l1.33-.45z" />
-              </svg>
-            </a>
-            <a class="footer-social-link" href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer" aria-label="Discord">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M20.317 4.369A19.791 19.791 0 0016.556 3c-.215.39-.463.917-.636 1.333a18.626 18.626 0 00-3.848 0A12.64 12.64 0 0011.436 3a19.736 19.736 0 00-3.762 1.385c-2.381 3.49-3.025 6.892-2.701 10.24a19.903 19.903 0 003.996 2.02c.33-.452.624-.934.873-1.442a12.815 12.815 0 001.696.136c.6.021 1.2-.02 1.794-.123.253.5.546.98.872 1.432a19.758 19.758 0 004.003-2.03c.332-3.348-.321-6.75-2.703-10.239zM9.845 14.9c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.636 1.606-1.43 1.606zm4.31 0c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.627 1.606-1.43 1.606z" />
-              </svg>
-            </a>
-          </div>
-        </div>
-      </footer>
       <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
         <img id="image-lightbox-media" src="" alt="Expanded generated image" />
       </div>
@@ -1755,6 +1653,8 @@ export function renderAppShell(input: {
         adminRefreshInFlight: false,
         adminSummary: null,
         adminStats: null,
+        benchmark: null,
+        benchmarkInFlight: false,
         compatibility: null,
         authenticated: false,
         interactionLimit: 10,
@@ -1796,6 +1696,10 @@ export function renderAppShell(input: {
       const backendHint = document.getElementById('backend-hint');
       const providerPills = document.getElementById('provider-pills');
       const providerOutput = document.getElementById('provider-output');
+      const benchmarkButton = document.getElementById('benchmark-button');
+      const benchmarkStatus = document.getElementById('benchmark-status');
+      const benchmarkTable = document.getElementById('benchmark-table');
+      const benchmarkSources = document.getElementById('benchmark-sources');
       const modelApiKeysTable = document.getElementById('model-api-keys-table');
       const modelApiQuotaTable = document.getElementById('model-api-quota-table');
       const googleQuotaTable = document.getElementById('google-quota-table');
@@ -2550,16 +2454,12 @@ export function renderAppShell(input: {
           .filter(Boolean);
         const directModels = models.filter(function(model) { return model && model.kind === 'model-api'; });
         const directModelCount = directModels.length || provider.directModelCount || 0;
-        providerPills.innerHTML = [
-          '<span class="chip ' + (modelApi.enabled ? 'good' : 'warn') + '">' + (modelApi.enabled ? 'Model Provider enabled' : 'Model Provider disabled') + '</span>',
-          '<span class="chip">Accounts ' + escapeHtml(String(modelApi.usableKeyCount || 0)) + '/' + escapeHtml(String(modelApi.configuredKeyCount || 0)) + '</span>',
-          '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
-          '<span class="chip">Last API model ' + escapeHtml(String(modelApi.lastResolvedModel || 'n/a')) + '</span>',
-          '<span class="chip">Tier ' + escapeHtml(String(modelApi.defaultTier || 'n/a')) + '</span>',
-          '<span class="chip">Public models ' + escapeHtml(String(directModelCount)) + '</span>',
-          '<span class="chip ' + (projectQuota.authoritative ? 'good' : '') + '">Quota ' + escapeHtml(projectQuota.authoritative ? ('limits live · usage local ' + String(projectQuotaOkCount) + '/' + String(projectQuotas.length || 0)) : 'local only') + '</span>',
-          '<span class="chip">Quota refresh ' + escapeHtml(projectQuota.updatedAt ? formatTimestamp(projectQuota.updatedAt) : 'pending') + '</span>',
-        ].join('');
+        if (providerPills) {
+          providerPills.innerHTML = [
+            '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
+            '<span class="chip">Public models ' + escapeHtml(String(models.length || 0)) + '</span>',
+          ].join('');
+        }
 
         rendermodelApiKeyTable(apiKeys);
         renderGoogleQuotaTable(projectQuotas, apiKeys, quotaGroups);
@@ -2641,6 +2541,39 @@ export function renderAppShell(input: {
         ].join('\\n');
       }
 
+      function renderBenchmark(data) {
+        const payload = data || state.benchmark || {};
+        const results = Array.isArray(payload.results) ? payload.results : [];
+        benchmarkTable.innerHTML = results.map(function(result, index) {
+          const ok = result && result.ok === true;
+          const tokensPerSecond = result && typeof result.tokensPerSecond === 'number'
+            ? result.tokensPerSecond.toFixed(2)
+            : 'n/a';
+          const latency = result && typeof result.latencyMs === 'number'
+            ? String(result.latencyMs) + ' ms'
+            : 'n/a';
+          const params = result && typeof result.parameterScore === 'number'
+            ? result.parameterScore.toFixed(result.parameterScore >= 10 ? 1 : 2) + 'B'
+            : 'n/a';
+          return '<tr>' +
+            '<td data-label="Rank">' + String(index + 1) + '</td>' +
+            '<td data-label="Model"><strong>' + escapeHtml(String(result.model || '')) + '</strong><div class="footer-note">' + escapeHtml(String(result.endpointLabel || 'endpoint')) + '</div></td>' +
+            '<td data-label="Params">' + escapeHtml(params) + '</td>' +
+            '<td data-label="Tok/s">' + escapeHtml(tokensPerSecond) + '</td>' +
+            '<td data-label="Latency">' + escapeHtml(latency) + '</td>' +
+            '<td data-label="Endpoints">' + escapeHtml(String(result.workingEndpointCount || 0)) + '/' + escapeHtml(String(result.endpointCount || 0)) + (result.failedEndpointCount ? '<div class="footer-note warn-text">' + escapeHtml(String(result.failedEndpointCount)) + ' failed</div>' : '') + '</td>' +
+            '<td data-label="Status"><span class="chip ' + (ok ? 'good' : 'bad') + '">' + escapeHtml(ok ? 'ok' : String(result.error || 'failed')) + '</span></td>' +
+          '</tr>';
+        }).join('') || '<tr><td colspan="7" class="muted">No benchmark results yet.</td></tr>';
+
+        const sources = Array.isArray(payload.sources) ? payload.sources : [];
+        benchmarkSources.innerHTML = sources.length > 0
+          ? 'Generic priority sources: ' + sources.map(function(source) {
+            return '<a href="' + escapeHtml(String(source.url || '#')) + '" target="_blank" rel="noreferrer">' + escapeHtml(String(source.name || 'source')) + '</a>';
+          }).join(' · ')
+          : '';
+      }
+
       function quotaMetricUsed(metric) {
         return Boolean(metric && typeof metric.used === 'number' && metric.used > 0);
       }
@@ -2683,6 +2616,7 @@ export function renderAppShell(input: {
       }
 
       function rendermodelApiKeyTable(apiKeys) {
+        if (!modelApiKeysTable) return;
         modelApiKeysTable.innerHTML = apiKeys.map(function(key) {
           const enabled = key.enabled !== false;
           const accountId = typeof key.id === 'string' && key.id.trim() ? key.id.trim() : '';
@@ -2948,6 +2882,7 @@ export function renderAppShell(input: {
       }
 
       function rendermodelApiQuotaTable(quotaGroups, supportedModelIds) {
+        if (!modelApiQuotaTable) return;
         const rows = [];
         const supported = Array.isArray(supportedModelIds) && supportedModelIds.length > 0
           ? new Set(supportedModelIds)
@@ -3116,7 +3051,7 @@ export function renderAppShell(input: {
 
       function formatAttemptTarget(attempt) {
         if (attempt && attempt.keyId) return String(attempt.keyId);
-        return 'no-key';
+        return 'ollama';
       }
 
       function describePolicyRemap(item) {
@@ -3327,6 +3262,41 @@ export function renderAppShell(input: {
         }
       }
 
+      async function runBenchmark() {
+        if (state.benchmarkInFlight) return;
+        state.benchmarkInFlight = true;
+        benchmarkButton.disabled = true;
+        benchmarkStatus.textContent = 'Benchmark started. Testing one model endpoint at a time, up to 120s each.';
+        try {
+          const started = await request('/admin/benchmark', {
+            method: 'POST',
+            body: JSON.stringify({
+              timeoutMs: 120000,
+              concurrency: 1,
+            }),
+          });
+          const jobId = started.jobId;
+          state.benchmark = started;
+          renderBenchmark(started);
+          while (state.benchmarkInFlight) {
+            await new Promise(function(resolve) { window.setTimeout(resolve, 2000); });
+            const data = await request('/admin/benchmark/' + encodeURIComponent(jobId));
+            state.benchmark = data;
+            benchmarkStatus.textContent = data.status === 'running'
+              ? 'Benchmark running: ' + String(data.count || 0) + ' endpoint tests completed.'
+              : 'Benchmark completed: ' + String(data.count || 0) + ' endpoint tests.';
+            renderBenchmark(data);
+            if (data.status === 'completed' || data.status === 'failed') break;
+          }
+          await loadAdminSummary();
+        } catch (error) {
+          benchmarkStatus.textContent = error.message;
+        } finally {
+          state.benchmarkInFlight = false;
+          benchmarkButton.disabled = false;
+        }
+      }
+
       async function refreshSession() {
         const me = await request('/auth/me');
         state.authenticated = me.authenticated === true;
@@ -3371,6 +3341,10 @@ export function renderAppShell(input: {
         } catch (error) {
           authStatus.textContent = error.message;
         }
+      });
+
+      benchmarkButton.addEventListener('click', function() {
+        void runBenchmark();
       });
 
       menuRefreshButton.addEventListener('click', async function() {

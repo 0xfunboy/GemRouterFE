@@ -34,13 +34,9 @@ pnpm inventory:ollama --input authorized_ollama_urls.txt
 
 The router reads endpoint URLs from this file but never exposes those URLs through public model APIs or the admin UI.
 
-## 4. Optional DeepSeek API
+## 4. Client Compatibility
 
-```env
-LEAKROUTER_DEEPSEEK_ENABLED=true
-LEAKROUTER_DEEPSEEK_API_KEY=sk-...
-LEAKROUTER_DEEPSEEK_MODELS=deepseek-chat,deepseek-reasoner
-```
+Client machines can use the same bearer secret with Ollama-compatible routes, OpenAI-compatible routes, DeepSeek-style routes, and root LeakRouter routes. Upstream inference still goes through the Ollama inventory.
 
 ## 5. Build and Start
 
