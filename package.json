@@ -1,8 +1,8 @@
 {
-  "name": "gem-router",
+  "name": "leak-router",
   "version": "0.1.0",
   "private": true,
-  "description": "Lightweight Gemini routing backend with API-key and CLI fallback.",
+  "description": "Authenticated Ollama and DeepSeek API inference router.",
   "type": "module",
   "packageManager": "pnpm@10.26.1",
   "scripts": {
@@ -12,11 +12,12 @@
     "check:app": "tsc --noEmit -p tsconfig.json",
     "dev": "pnpm run dev:app",
     "dev:app": "tsx watch src/index.ts",
+    "inventory:ollama": "node scripts/inventory-ollama-models.mjs",
     "setup:systemd": "bash ./ops/systemd/install-gemrouter-services.sh",
     "start": "pnpm run start:app",
     "start:app": "node dist/index.js",
     "smoke": "pnpm build && bash ./scripts/smoke.sh",
-    "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh"
+    "smoke:ollama": "pnpm build && SMOKE_BACKEND=ollama bash ./scripts/smoke.sh"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
