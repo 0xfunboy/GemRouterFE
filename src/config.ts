@@ -329,12 +329,33 @@ export function loadConfig(
     'LEAKROUTER_DIRECT_MODELS',
   );
 
-  const freeTierTextModelIds = readList(
-    env,
-    configuredModelIds.length > 0 ? configuredModelIds : [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS],
-    'LEAKROUTER_TEXT_MODELS',
-    'LEAKROUTER_FREE_TIER_TEXT_MODELS',
-  );
+  const geminiApiDefaultTier = pick(env, 'LEAKROUTER_GEMINI_API_DEFAULT_TIER') ?? 'tier1';
+  const geminiApiQuotaGroupMode = pick(env, 'LEAKROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE') === 'shared'
+    ? 'shared'
+    : 'per-key';
+  const geminiApiKeys = readGeminiApiKeys(env, geminiApiDefaultTier, geminiApiQuotaGroupMode);
+  // When a Gemini key is configured, ADD the working free-tier Gemini chain to the exposed models.
+  // This is additive: the full Ollama inventory stays exposed (so amoral-gemma and other models keep
+  // working); we only append Gemini on top. Override the chain with LEAKROUTER_GEMINI_TEXT_MODELS.
+  const geminiTextModels = geminiApiKeys.length > 0
+    ? readList(
+        env,
+        ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite', 'gemma-4-31b-it'],
+        'LEAKROUTER_GEMINI_TEXT_MODELS',
+      )
+    : [];
+
+  const freeTierTextModelIds = [
+    ...new Set([
+      ...readList(
+        env,
+        configuredModelIds.length > 0 ? configuredModelIds : [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS],
+        'LEAKROUTER_TEXT_MODELS',
+        'LEAKROUTER_FREE_TIER_TEXT_MODELS',
+      ),
+      ...geminiTextModels,
+    ]),
+  ];
   const freeTierAudioModelIds = readList(
     env,
     [...DEFAULT_FREE_TIER_AUDIO_MODEL_IDS],
@@ -400,11 +421,6 @@ export function loadConfig(
     : singleProxyUrl
       ? [singleProxyUrl]
       : [];
-  const geminiApiDefaultTier = pick(env, 'LEAKROUTER_GEMINI_API_DEFAULT_TIER') ?? 'tier1';
-  const geminiApiQuotaGroupMode = pick(env, 'LEAKROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE') === 'shared'
-    ? 'shared'
-    : 'per-key';
-  const geminiApiKeys = readGeminiApiKeys(env, geminiApiDefaultTier, geminiApiQuotaGroupMode);
 
   return {
     host: pick(env, 'HOST', 'LEAKROUTER_HOST', 'LEAKROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',

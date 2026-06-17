@@ -57,7 +57,20 @@ function shouldFallback(
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
   if (preference !== 'auto') return [preference];
-  return [...new Set(config.backendOrder)];
+  const order = [...new Set(config.backendOrder)];
+  // Model-name aware routing. The Gemini free-tier chain (gemini-*/gemma-*) must be
+  // served by the gemini-api backend first, with Ollama as the final fallback. Every
+  // other model name (Ollama inventory, amoral-gemma NSFW, gpt-oss, deepseek) must stay
+  // off gemini-api entirely so the NSFW/local paths are never hijacked.
+  const model = String(opts?.model ?? '').trim().toLowerCase();
+  const isGeminiModel = /^(gemini|gemma)-/.test(model);
+  if (isGeminiModel) {
+    return [
+      ...order.filter((backend) => backend === 'gemini-api'),
+      ...order.filter((backend) => backend !== 'gemini-api'),
+    ];
+  }
+  return order.filter((backend) => backend !== 'gemini-api');
 }
 
 async function* singleResponseStream(

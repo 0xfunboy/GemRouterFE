@@ -845,9 +845,19 @@ function buildInteractionResponseFromError(error: unknown): Partial<LLMResponse>
 
 function sanitizeLlmDiagnostics(
   input: Record<string, unknown> | null,
-  _options?: { includeSensitive?: boolean },
+  options?: { includeSensitive?: boolean },
 ): Record<string, unknown> | null {
   if (!input) return null;
+  let geminiApi: Record<string, unknown> | null = null;
+  if (input.geminiApi && typeof input.geminiApi === 'object') {
+    const raw = input.geminiApi as Record<string, unknown>;
+    // The gemini client already masks key material to previews, but the public
+    // /health surface should not enumerate keys at all - only enabled/available
+    // and the high-level model/quota state are exposed there.
+    geminiApi = options?.includeSensitive
+      ? raw
+      : { ...raw, keys: undefined, quotaGroups: undefined };
+  }
   return {
     provider: input.provider ?? null,
     model: input.model ?? null,
@@ -860,6 +870,7 @@ function sanitizeLlmDiagnostics(
     lastError: input.lastError ?? null,
     ollama: input.ollama && typeof input.ollama === 'object' ? input.ollama : null,
     deepseekApi: input.deepseekApi && typeof input.deepseekApi === 'object' ? input.deepseekApi : null,
+    geminiApi,
   };
 }
 
@@ -1094,9 +1105,11 @@ function buildProviderSnapshot(
   const routedModelIds = buildCompatibleSurfaceModelIds(diagnostics, 'chat');
   const ollama = (diagnostics.ollama as Record<string, unknown> | null) ?? {};
   const deepseekApi = (diagnostics.deepseekApi as Record<string, unknown> | null) ?? {};
+  const geminiApiState = (diagnostics.geminiApi as Record<string, unknown> | null) ?? {};
   const modeDetails: Record<string, { label: string; state: Record<string, unknown> }> = {
     ollama: { label: 'Ollama', state: ollama },
     'deepseek-api': { label: 'DeepSeek API upstream', state: deepseekApi },
+    'gemini-api': { label: 'Gemini API (free tier)', state: geminiApiState },
   };
   return {
     backend: config.llmRouting.backendOrder[0] ?? 'ollama',
