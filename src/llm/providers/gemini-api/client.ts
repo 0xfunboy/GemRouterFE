@@ -82,13 +82,15 @@ function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Re
   const model = normalizeGeminiApiModel(modelId);
   if (!model.startsWith('gemini-')) return null;
   const includeThoughts = opts?.thinking?.includeThoughts === true;
-  if (/^gemini-3/i.test(model)) {
+  // gemini-3.5-flash rejects thinkingLevel ("Thinking level is not supported for this model"),
+  // so only the gemini-3 reasoning variants (pro / flash-preview / 3.1) get a thinkingLevel.
+  if (/^gemini-3/i.test(model) && !/^gemini-3\.5-flash/i.test(model)) {
     return {
       includeThoughts,
       thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
     };
   }
-  if (/^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
+  if (/^gemini-3\.5-flash/i.test(model) || /^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
     return {
       includeThoughts,
       thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
