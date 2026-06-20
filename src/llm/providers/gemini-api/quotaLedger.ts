@@ -193,6 +193,11 @@ export class GeminiApiQuotaLedger {
     return key;
   }
 
+  getKeyState(keyId: string): GeminiApiKeyLedger {
+    const key = this.getKeyLedger(keyId);
+    return { ...key };
+  }
+
   private pruneCounter(counter: WindowCounter, windowMs: number, now: number): void {
     const cutoff = now - windowMs;
     counter.events = counter.events.filter((event) => event.ts >= cutoff);
