@@ -1026,7 +1026,7 @@ function buildAdminModelCatalog(
   const discovered = Array.isArray(geminiApi.models) ? geminiApi.models as Array<Record<string, unknown>> : [];
   const freeTextModelIds = new Set(config.freeTierPolicy.textModelIds);
   if (discovered.length > 0) {
-    return buildDiscoveredModelCatalog(
+    const discoveredCatalog = buildDiscoveredModelCatalog(
       discovered.map((model) => ({
         id: String(model.id ?? '').trim(),
         displayName: typeof model.displayName === 'string' ? model.displayName : null,
@@ -1034,7 +1034,13 @@ function buildAdminModelCatalog(
           ? model.supportedGenerationMethods.map((method) => String(method))
           : [],
       })).filter((model) => freeTextModelIds.has(model.id)),
-    ) as unknown as Array<Record<string, unknown>>;
+    );
+    const byId = new Map(
+      discoveredCatalog.map((model) => [model.id, model] as const),
+    );
+    return config.freeTierPolicy.textModelIds
+      .map((modelId) => byId.get(modelId))
+      .filter(Boolean) as unknown as Array<Record<string, unknown>>;
   }
 
   return config.freeTierPolicy.textModelIds.map((modelId) => ({
@@ -1139,6 +1145,7 @@ function buildGuestSummary() {
       enabled: key.enabled !== false,
       priority: key.priority ?? 0,
       lastUsedAt: key.lastUsedAt ?? null,
+      lastSuccessAt: key.lastSuccessAt ?? null,
     }))
     : [];
   const publicQuotaGroups = Array.isArray(providerQuota.quotaGroups)
@@ -1244,6 +1251,10 @@ async function readGcloudAccessToken(): Promise<string> {
   const token = stdout.trim();
   if (!token) throw new Error('gcloud returned an empty access token');
   return token;
+}
+
+function normalizeGoogleProjectRef(projectId: string): string {
+  return String(projectId ?? '').trim().replace(/^projects\//, '');
 }
 
 interface MonitoringUsageEntry {
@@ -1361,6 +1372,7 @@ async function fetchGeminiQuotaFromMonitoring(
   projectId: string,
   accessToken: string,
 ): Promise<Record<string, unknown>> {
+  const normalizedProjectId = normalizeGoogleProjectRef(projectId);
   const now = new Date();
   const nowMs = now.getTime();
   // Rate (RPM): GAUGE metric - query last 5 minutes, 60s alignment
@@ -1375,7 +1387,7 @@ async function fetchGeminiQuotaFromMonitoring(
   const headers = { Authorization: `Bearer ${accessToken}` };
 
   const makeUrl = (filter: string, start: Date, alignPeriod: string, aligner: string): URL => {
-    const url = new URL(`https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(projectId)}/timeSeries`);
+    const url = new URL(`https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(normalizedProjectId)}/timeSeries`);
     url.searchParams.set('filter', filter);
     url.searchParams.set('interval.startTime', start.toISOString());
     url.searchParams.set('interval.endTime', now.toISOString());
@@ -1537,7 +1549,8 @@ function summarizeServiceUsageMetrics(payload: Record<string, unknown>): Array<R
 }
 
 async function fetchGeminiProjectQuota(projectId: string, accessToken: string): Promise<Record<string, unknown>> {
-  const url = new URL(`https://serviceusage.googleapis.com/v1beta1/projects/${encodeURIComponent(projectId)}/services/generativelanguage.googleapis.com/consumerQuotaMetrics`);
+  const normalizedProjectId = normalizeGoogleProjectRef(projectId);
+  const url = new URL(`https://serviceusage.googleapis.com/v1beta1/projects/${encodeURIComponent(normalizedProjectId)}/services/generativelanguage.googleapis.com/consumerQuotaMetrics`);
   url.searchParams.set('view', 'FULL');
   url.searchParams.set('pageSize', '200');
   const response = await fetch(url, {
