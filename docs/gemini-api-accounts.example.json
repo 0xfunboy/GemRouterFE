@@ -1,11 +1,23 @@
 [
   {
-    "id": "account1",
-    "owner": "account1",
-    "projectId": "gen-lang-client-0505099368",
-    "quotaGroup": "gen-lang-client-0505099368",
-    "tier": "free",
+    "id": "gemini-api-key",
+    "owner": "Gemini API Key",
+    "projectId": "projects/123456789012",
+    "quotaGroup": "projects/123456789012",
+    "tier": "tier1",
     "priority": 100,
-    "enabled": true
+    "enabled": true,
+    "models": [
+      "gemini-3.5-flash",
+      "gemini-3-flash-preview",
+      "gemini-2.5-flash",
+      "gemma-4-31b-it"
+    ],
+    "limits": {
+      "gemini-3.5-flash": { "rpm": 5, "tpm": 250000, "rpd": 20 },
+      "gemini-3-flash-preview": { "rpm": 5, "tpm": 250000, "rpd": 20 },
+      "gemini-2.5-flash": { "rpm": 5, "tpm": 250000, "rpd": 20 },
+      "gemma-4-31b-it": { "rpm": 15, "tpm": 10000000, "rpd": 1500 }
+    }
   }
 ]
