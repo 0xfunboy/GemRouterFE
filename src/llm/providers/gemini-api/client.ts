@@ -54,7 +54,7 @@ interface GeminiApiGoogleError {
   };
 }
 
-const KEY_RE = /AIza[0-9A-Za-z_-]{10,}/g;
+const KEY_RE = /(?:AIza[0-9A-Za-z_-]{10,}|AQ\.[0-9A-Za-z_-]{20,})/g;
 
 function redact(value: string): string {
   return value.replace(KEY_RE, (match) => `${match.slice(0, 4)}...${match.slice(-4)}`);
@@ -70,7 +70,7 @@ function estimateTokens(messages: LLMMessage[]): number {
 }
 
 function normalizeGeminiApiModel(model: string | undefined): string {
-  const normalized = String(model ?? 'gemini-2.5-flash-lite').trim().toLowerCase();
+  const normalized = String(model ?? 'gemini-3.5-flash').trim().toLowerCase();
   return normalized.replace(/^models\//, '');
 }
 
@@ -820,7 +820,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
 
   return {
     provider: 'gemini-api',
-    model: 'gemini-2.5-flash-lite',
+    model: 'gemini-3.5-flash',
 
     async chat(messages, opts): Promise<LLMResponse> {
       return generate(messages, opts);
@@ -856,6 +856,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           enabled: key.enabled,
           models: key.models ?? [],
           lastUsedAt: quota.apiKeys.find((entry) => entry.keyId === key.id)?.lastUsedAt ?? null,
+          lastSuccessAt: quota.apiKeys.find((entry) => entry.keyId === key.id)?.lastSuccessAt ?? null,
         })),
         quotaGroups,
         quotaUpdatedAt: quota.updatedAt,
