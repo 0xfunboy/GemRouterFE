@@ -15,8 +15,7 @@ function allowsModel(key: GeminiApiKeyConfig, model: string): boolean {
   return !key.models || key.models.length === 0 || key.models.includes(model);
 }
 
-function scoreKey(input: {
-  key: GeminiApiKeyConfig;
+function capacityScore(input: {
   rpmRemaining: number | null;
   tpmRemaining: number | null;
   rpdRemaining: number | null;
@@ -25,7 +24,17 @@ function scoreKey(input: {
   const rpmRatio = input.limit.rpm && input.rpmRemaining !== null ? input.rpmRemaining / input.limit.rpm : 1;
   const tpmRatio = input.limit.tpm && input.tpmRemaining !== null ? input.tpmRemaining / input.limit.tpm : 1;
   const rpdRatio = input.limit.rpd && input.rpdRemaining !== null ? input.rpdRemaining / input.limit.rpd : 1;
-  return input.key.priority + rpmRatio * 30 + tpmRatio * 30 + rpdRatio * 30;
+  return rpmRatio * 30 + tpmRatio * 30 + rpdRatio * 30;
+}
+
+function parseTimestamp(value: string | undefined): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function rotationTimestamp(input: { lastSuccessAt?: string; lastUsedAt?: string }): number {
+  return parseTimestamp(input.lastSuccessAt) || parseTimestamp(input.lastUsedAt);
 }
 
 export class GeminiApiKeyPool {
@@ -55,31 +64,44 @@ export class GeminiApiKeyPool {
     }
 
     const excludedKeyIds = new Set((options?.excludeKeyIds ?? []).map((value) => value.trim()).filter(Boolean));
+    const keyOrder = new Map(this.config.keys.map((key, index) => [key.id, index]));
     const candidates = this.config.keys
       .filter((key) => key.enabled)
       .filter((key) => allowsModel(key, model))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => {
         const availability = this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens);
-        return { key, availability };
+        const keyState = this.ledger.getKeyState(key.id);
+        return {
+          key,
+          availability,
+          keyState,
+          rotationAt: rotationTimestamp(keyState),
+          order: keyOrder.get(key.id) ?? Number.MAX_SAFE_INTEGER,
+        };
       })
       .filter((candidate) => candidate.availability.available)
-      .sort((left, right) => (
-        scoreKey({
-          key: right.key,
+      .sort((left, right) => {
+        if (left.key.priority !== right.key.priority) {
+          return right.key.priority - left.key.priority;
+        }
+        if (left.rotationAt !== right.rotationAt) {
+          return left.rotationAt - right.rotationAt;
+        }
+        const capacityDelta = capacityScore({
           rpmRemaining: right.availability.rpmRemaining,
           tpmRemaining: right.availability.tpmRemaining,
           rpdRemaining: right.availability.rpdRemaining,
           limit: right.availability.limit,
-        }) -
-        scoreKey({
-          key: left.key,
+        }) - capacityScore({
           rpmRemaining: left.availability.rpmRemaining,
           tpmRemaining: left.availability.tpmRemaining,
           rpdRemaining: left.availability.rpdRemaining,
           limit: left.availability.limit,
-        })
-      ));
+        });
+        if (capacityDelta !== 0) return capacityDelta;
+        return left.order - right.order;
+      });
 
     if (candidates.length === 0) {
       const anyForModel = this.config.keys.some((key) => key.enabled && allowsModel(key, model));

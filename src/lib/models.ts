@@ -1,23 +1,15 @@
 export const DEFAULT_DIRECT_MODEL_IDS = [
+  'gemini-3.5-flash',
   'gemini-3-flash-preview',
-  'gemma-4-31b-it',
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-3.1-flash-lite-preview',
-  'gemini-2.5-flash-lite',
-  'gemini-2.0-flash-lite',
+  'gemma-4-31b-it',
 ] as const;
 
 export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
+  'gemini-3.5-flash',
   'gemini-3-flash-preview',
-  'gemma-4-31b-it',
   'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-3.1-flash-lite-preview',
-  'gemini-2.5-flash-lite',
-  'gemini-2.0-flash-lite',
+  'gemma-4-31b-it',
 ] as const;
 
 export const DEFAULT_FREE_TIER_AUDIO_MODEL_IDS = [
@@ -32,9 +24,10 @@ export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
 ] as const;
 
 export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
+  'gemini-3.5-flash',
   'gemini-3-flash-preview',
-  'gemma-4-31b-it',
   'gemini-2.5-flash',
+  'gemma-4-31b-it',
 ] as const;
 
 export interface PublicModelDescriptor {
