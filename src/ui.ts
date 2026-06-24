@@ -813,6 +813,46 @@ export function renderAppShell(input: {
       .quota-table th:nth-child(4), .quota-table td:nth-child(4),
       .quota-table th:nth-child(5), .quota-table td:nth-child(5) { width: 13%; }
       .quota-table th:nth-child(6), .quota-table td:nth-child(6) { width: 23%; }
+      .public-rpd-table {
+        min-width: 0;
+        table-layout: fixed;
+      }
+      .public-rpd-table th:nth-child(1), .public-rpd-table td:nth-child(1) { width: 22%; }
+      .public-rpd-table th:nth-child(2), .public-rpd-table td:nth-child(2) { width: 34%; }
+      .public-rpd-table th:nth-child(3), .public-rpd-table td:nth-child(3) { width: 18%; }
+      .public-rpd-table th:nth-child(4), .public-rpd-table td:nth-child(4) { width: 26%; }
+      .quota-meter {
+        width: 76px;
+        height: 7px;
+        overflow: hidden;
+        border-radius: 2px;
+        background: var(--surface-muted);
+        border: 1px solid var(--line);
+      }
+      .quota-meter > span {
+        display: block;
+        height: 100%;
+        min-width: 2px;
+        background: var(--good);
+      }
+      .quota-meter.warn > span { background: var(--warn); }
+      .quota-meter.bad > span { background: var(--bad); }
+      .interactions-table {
+        min-width: 0;
+        table-layout: fixed;
+      }
+      .interactions-table th:nth-child(1), .interactions-table td:nth-child(1) { width: 10%; }
+      .interactions-table th:nth-child(2), .interactions-table td:nth-child(2) { width: 8%; }
+      .interactions-table th:nth-child(3), .interactions-table td:nth-child(3) { width: 17%; }
+      .interactions-table th:nth-child(4), .interactions-table td:nth-child(4) { width: 21%; }
+      .interactions-table th:nth-child(5), .interactions-table td:nth-child(5) { width: 26%; }
+      .interactions-table th:nth-child(6), .interactions-table td:nth-child(6) { width: 8%; }
+      .interactions-table th:nth-child(7), .interactions-table td:nth-child(7) { width: 10%; }
+      .interactions-table td {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
       @media (max-width: 980px) {
         .table.responsive-table,
         .table.responsive-table thead,
@@ -1316,14 +1356,12 @@ export function renderAppShell(input: {
           </div>
         </div>
         <div class="table-wrap">
-          <table class="table responsive-table quota-table">
+          <table class="table responsive-table quota-table public-rpd-table">
             <thead>
               <tr>
                 <th>Account</th>
                 <th>Model</th>
-                <th>RPD Used</th>
-                <th>RPD Limit</th>
-                <th>RPD Left</th>
+                <th>RPD</th>
                 <th>State</th>
               </tr>
             </thead>
@@ -1624,7 +1662,7 @@ export function renderAppShell(input: {
           </div>
           <div id="interactions-section-body" class="section-body">
           <div class="table-wrap">
-            <table class="table">
+            <table class="table responsive-table interactions-table">
               <thead>
                 <tr>
                   <th>When</th>
@@ -2174,7 +2212,7 @@ export function renderAppShell(input: {
         });
 
         const resetAt = quota.rpdResetAt ? formatTimestamp(quota.rpdResetAt) : 'the next Pacific midnight';
-        publicRpdCopy.textContent = 'Observed by LeakRouter since the current Pacific day. Reset: ' + resetAt + '. Limits are the configured Gemini free-tier limits; no credentials are exposed.';
+        publicRpdCopy.textContent = 'Observed by LeakRouter since the current Pacific day. Reset: ' + resetAt + '.';
 
         const rows = [];
         const groups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
@@ -2187,20 +2225,19 @@ export function renderAppShell(input: {
             const rpd = model && model.rpd ? model.rpd : null;
             if (!rpd || rpd.limit === null || rpd.limit === undefined) return;
             const used = typeof rpd.used === 'number' ? rpd.used : 0;
+            if (used <= 0) return;
             const limit = typeof rpd.limit === 'number' ? rpd.limit : null;
-            const remaining = limit === null ? null : Math.max(0, limit - used);
-            const cooldown = formatRetryAfter(model.cooldownUntil, model.cooldownSource);
+            const percent = limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+            const meterClass = percent >= 100 ? 'bad' : percent > 75 ? 'warn' : 'good';
             rows.push('<tr>' +
-              '<td data-label="Account"><strong>' + escapeHtml(accountLabel) + '</strong><div class="footer-note">quota group ' + escapeHtml(groupId) + '</div></td>' +
+              '<td data-label="Account"><strong>' + escapeHtml(accountLabel) + '</strong></td>' +
               '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong></td>' +
-              '<td data-label="RPD Used">' + escapeHtml(fmtNumber(used)) + '</td>' +
-              '<td data-label="RPD Limit">' + escapeHtml(fmtNumber(limit)) + '</td>' +
-              '<td data-label="RPD Left"><span' + (remaining === 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(fmtNumber(remaining)) + '</span></td>' +
-              '<td data-label="State"><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span></td>' +
+              '<td data-label="RPD">' + escapeHtml(fmtNumber(used)) + ' / ' + escapeHtml(fmtNumber(limit)) + '</td>' +
+              '<td data-label="State"><div class="quota-meter ' + meterClass + '" title="' + escapeHtml(String(percent)) + '% used"><span style="width:' + escapeHtml(String(percent)) + '%"></span></div></td>' +
             '</tr>');
           });
         });
-        publicRpdTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No Gemini RPD limits are configured.</td></tr>';
+        publicRpdTable.innerHTML = rows.join('') || '<tr><td colspan="4" class="muted">No Gemini RPD usage in the current Pacific day.</td></tr>';
       }
 
       function renderHourlyChart(summary) {
