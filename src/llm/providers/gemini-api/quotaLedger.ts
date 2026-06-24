@@ -22,7 +22,7 @@ export interface GeminiApiModelQuotaLedger {
   tpm: WindowCounter;
   rpd: WindowCounter;
   cooldownUntil?: string;
-  cooldownSource?: 'retry-after';
+  cooldownSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset';
   last429At?: string;
   lastSuccessAt?: string;
   lastFailureAt?: string;
@@ -73,7 +73,7 @@ export interface GeminiApiQuotaModelSnapshot {
   tpm: GeminiApiQuotaMetricSnapshot;
   rpd: GeminiApiQuotaMetricSnapshot;
   cooldownUntil: string | null;
-  cooldownSource: 'retry-after' | null;
+  cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | null;
   last429At: string | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
@@ -97,6 +97,54 @@ export interface GeminiApiQuotaGroupSnapshot {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+const PACIFIC_TIME_ZONE = 'America/Los_Angeles';
+
+function pacificDateParts(epochMs: number): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: PACIFIC_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(epochMs));
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return { year: value('year'), month: value('month'), day: value('day') };
+}
+
+function pacificOffsetMs(epochMs: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: PACIFIC_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(epochMs));
+  const value = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return Date.UTC(
+    value('year'),
+    value('month') - 1,
+    value('day'),
+    value('hour'),
+    value('minute'),
+    value('second'),
+  ) - epochMs;
+}
+
+/** Gemini RPD resets at midnight in America/Los_Angeles, including PST/PDT changes. */
+export function pacificDayStartMs(now = Date.now()): number {
+  const { year, month, day } = pacificDateParts(now);
+  const nominalUtcMidnight = Date.UTC(year, month - 1, day);
+  return nominalUtcMidnight - pacificOffsetMs(nominalUtcMidnight);
+}
+
+export function nextPacificDayStartMs(now = Date.now()): number {
+  const tomorrow = pacificDateParts(now + 30 * 60 * 60_000);
+  const nominalUtcMidnight = Date.UTC(tomorrow.year, tomorrow.month - 1, tomorrow.day);
+  return nominalUtcMidnight - pacificOffsetMs(nominalUtcMidnight);
 }
 
 function parseHeaderInt(headers: Record<string, string>, ...names: string[]): number | undefined {
@@ -198,11 +246,9 @@ export class GeminiApiQuotaLedger {
     counter.events = counter.events.filter((event) => event.ts >= cutoff);
   }
 
-  // RPD resets at UTC midnight, matching Google's quota reset behavior
+  // Google Gemini RPD resets at midnight Pacific time, not UTC.
   private pruneRpdCounter(counter: WindowCounter, now: number): void {
-    const d = new Date(now);
-    const midnightUtc = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-    counter.events = counter.events.filter((event) => event.ts >= midnightUtc);
+    counter.events = counter.events.filter((event) => event.ts >= pacificDayStartMs(now));
   }
 
   private pruneModel(model: GeminiApiModelQuotaLedger, now: number): void {
@@ -226,7 +272,7 @@ export class GeminiApiQuotaLedger {
     tpmRemaining: number | null;
     rpdRemaining: number | null;
     cooldownUntil: string | null;
-    cooldownSource: 'retry-after' | null;
+    cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | null;
     limit: GeminiApiRateLimit;
   } {
     const now = Date.now();
@@ -307,6 +353,7 @@ export class GeminiApiQuotaLedger {
     status?: number;
     rateLimited?: boolean;
     retryAfterMs?: number;
+    rateLimitScope?: 'minute' | 'day' | 'unknown';
   }): void {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = Date.now();
@@ -320,9 +367,12 @@ export class GeminiApiQuotaLedger {
       if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0) {
         ledger.cooldownUntil = new Date(now + input.retryAfterMs).toISOString();
         ledger.cooldownSource = 'retry-after';
+      } else if (input.rateLimitScope === 'day') {
+        ledger.cooldownUntil = new Date(nextPacificDayStartMs(now)).toISOString();
+        ledger.cooldownSource = 'pacific-reset';
       } else {
-        delete ledger.cooldownUntil;
-        delete ledger.cooldownSource;
+        ledger.cooldownUntil = new Date(now + this.config.quotaCooldownMs).toISOString();
+        ledger.cooldownSource = 'upstream-rate-limit';
       }
       if (!this.config.countFailed429AsUsage) {
         for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {

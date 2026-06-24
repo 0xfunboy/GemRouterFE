@@ -65,6 +65,23 @@ The admin UI and model endpoints expose model names and aggregate counts only. U
 
 Keep this disabled for the Ollama-only deployment. The DeepSeek-style client surface still works without this upstream mode; it routes authenticated client requests to the Ollama inventory.
 
+## Gemini API Quota Ledger
+
+| Variable | Default | Description |
+|---|---:|---|
+| `LEAKROUTER_GEMINI_API_LIMITS_JSON` | built-in table | Exact RPM, TPM, and RPD limits for the current AI Studio project, keyed by model. |
+| `LEAKROUTER_GEMINI_API_GROUP_LIMITS_JSON` | — | Per-quota-group override of those limits. |
+| `LEAKROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE` | `false` | Keep false: a rejected request is not treated as confirmed daily usage. |
+| `LEAKROUTER_GEMINI_API_QUOTA_COOLDOWN_MS` | `600000` | Conservative cooldown when Gemini returns a 429 without `RetryInfo`. |
+| `LEAKROUTER_GEMINI_API_ACCOUNTS_PATH` | — | Optional account metadata file containing the real Google Cloud `projectId`. |
+
+The ledger is an observed router ledger, not a Google balance API: it can account exactly for
+successful requests made through LeakRouter after a reset, but it cannot see requests made outside
+the router. Gemini RPD resets at midnight `America/Los_Angeles` (PST/PDT). Google AI Studio does not
+publish an API for exact real-time remaining RPM, TPM, or RPD; Cloud Monitoring is delayed telemetry,
+and Service Usage exposes limits rather than an authoritative free-tier balance. The admin refresh
+endpoint labels this distinction instead of reporting an inferred balance as authoritative.
+
 ## Outbound Proxy
 
 Outbound proxying applies only to LeakRouter's upstream inference calls from this Node process. It does not configure system-wide `HTTP_PROXY`, change the default gateway, or affect unrelated services.

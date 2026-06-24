@@ -540,7 +540,7 @@ export function loadConfig(
       rpmWindowMs: readNumber(env, 60_000, 'LEAKROUTER_GEMINI_API_RPM_WINDOW_MS'),
       tpmWindowMs: readNumber(env, 60_000, 'LEAKROUTER_GEMINI_API_TPM_WINDOW_MS'),
       countTokensPreflight: readBoolean(env, false, 'LEAKROUTER_GEMINI_API_COUNT_TOKENS_PREFLIGHT'),
-      countFailed429AsUsage: readBoolean(env, true, 'LEAKROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE'),
+      countFailed429AsUsage: readBoolean(env, false, 'LEAKROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE'),
       timeoutMs: readNumber(env, 120_000, 'LEAKROUTER_GEMINI_API_TIMEOUT_MS'),
       streamTimeoutMs: readNumber(env, 180_000, 'LEAKROUTER_GEMINI_API_STREAM_TIMEOUT_MS'),
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
