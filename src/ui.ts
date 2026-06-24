@@ -1376,7 +1376,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">${svgIcon('chart')} 24h Throughput</h3>
-              <p class="section-copy">Hourly request volume. Failed requests are highlighted when present.</p>
+              <p class="section-copy">Last 24 clock hours of request volume. Failed requests are highlighted when present.</p>
             </div>
             </div>
             <div class="chart-frame">
@@ -2182,13 +2182,18 @@ export function renderAppShell(input: {
 
       function renderPublicStats(summary) {
         const stats = summary.stats || {};
+        const completeWindow = stats.windowComplete === true;
+        const windowLabel = completeWindow ? '24h' : 'tracking';
+        const requestDetail = completeWindow
+          ? 'Successful and failed requests'
+          : 'Precise telemetry started ' + formatTimestamp(stats.windowStartedAt);
         if (activityLabel) {
-          activityLabel.textContent = fmtNumber(stats.requests) + ' req / 24h · ' + escapeHtml(String(stats.successRatePct || 0)) + '% ok';
+          activityLabel.textContent = fmtNumber(stats.requests) + ' req / ' + windowLabel + ' · ' + escapeHtml(String(stats.successRatePct || 0)) + '% ok';
         }
         const speed = Math.max(4.4, Math.min(9.4, 9.4 - Math.log10((stats.requests || 0) + 1) * 1.15));
         root.style.setProperty('--heartbeat-speed', speed.toFixed(2) + 's');
         publicStats.innerHTML = [
-          ['Requests', fmtNumber(stats.requests), 'Successful and failed requests'],
+          ['Requests (' + windowLabel + ')', fmtNumber(stats.requests), requestDetail],
           ['Success Rate', escapeHtml(String(stats.successRatePct || 0)) + '%', 'Calculated from logged requests'],
           ['Avg Latency', fmtNumber(stats.avgLatencyMs) + ' ms', 'Router-side average'],
           ['Token Volume', fmtNumber(stats.totalTokens), 'Prompt and completion tokens'],
