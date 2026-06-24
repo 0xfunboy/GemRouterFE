@@ -39,6 +39,8 @@ export interface GeminiApiProviderConfig {
   timeoutMs: number;
   streamTimeoutMs: number;
   fallbackModelIds: string[];
+  /** Explicit model ids that must never spill into another Gemini model on upstream failure. */
+  strictModelIds: string[];
 }
 
 export interface GeminiApiModelInfo {

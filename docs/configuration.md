@@ -73,6 +73,7 @@ Keep this disabled for the Ollama-only deployment. The DeepSeek-style client sur
 | `LEAKROUTER_GEMINI_API_GROUP_LIMITS_JSON` | — | Per-quota-group override of those limits. |
 | `LEAKROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE` | `false` | Keep false: a rejected request is not treated as confirmed daily usage. |
 | `LEAKROUTER_GEMINI_API_QUOTA_COOLDOWN_MS` | `600000` | Conservative cooldown when Gemini returns a 429 without `RetryInfo`. |
+| `LEAKROUTER_GEMINI_API_STRICT_MODELS` | — | Models that must fail rather than fall through to another Gemini model. |
 | `LEAKROUTER_GEMINI_API_ACCOUNTS_PATH` | — | Optional account metadata file containing the real Google Cloud `projectId`. |
 
 The ledger is an observed router ledger, not a Google balance API: it can account exactly for
