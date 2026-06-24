@@ -168,8 +168,14 @@ type AuthenticatedClientAccess = {
   app: AuthenticatedClientApp;
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function concurrencyPriority(request: FastifyRequest, app: AuthenticatedClientApp): number {
+  // Only the bootstrap credential belongs to GoonersBot. Other API clients cannot
+  // self-upgrade their queue position by supplying this header.
+  if (app.id !== bootstrapApp.id) return 0;
+  const plan = String(request.headers['x-leakrouter-group-plan'] ?? '').trim().toLowerCase();
+  if (plan === 'pro') return 2;
+  if (plan === 'plus') return 1;
+  return 0;
 }
 
 function getStartedAt(request: FastifyRequest): number {
@@ -464,14 +470,11 @@ async function ensureClientAccess(
     return null;
   }
 
-  let release = appStore.acquireConcurrency(clientApp);
-  if (!release && clientApp.maxConcurrency > 0 && config.bootstrapApp.concurrencyWaitMs > 0) {
-    const deadline = Date.now() + config.bootstrapApp.concurrencyWaitMs;
-    while (!release && Date.now() < deadline) {
-      await sleep(250);
-      release = appStore.acquireConcurrency(clientApp);
-    }
-  }
+  const release = await appStore.acquireConcurrency(
+    clientApp,
+    concurrencyPriority(request, clientApp),
+    config.bootstrapApp.concurrencyWaitMs,
+  );
 
   if (!release) {
     sendError(reply, 429, {
