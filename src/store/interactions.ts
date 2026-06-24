@@ -33,6 +33,7 @@ export interface InteractionRecord {
   origin?: string;
   provider?: string;
   fallbackReason?: string;
+  finishReason?: 'stop' | 'length' | 'content_filter';
   policyFallbackReason?: string;
   fallbackAttempts?: Array<{
     model: string;
@@ -72,6 +73,7 @@ interface RecordInteractionInput {
   origin?: string;
   provider?: string;
   fallbackReason?: string;
+  finishReason?: InteractionRecord['finishReason'];
   policyFallbackReason?: string;
   fallbackAttempts?: InteractionRecord['fallbackAttempts'];
   error?: string;
@@ -130,6 +132,7 @@ export class InteractionStore {
       origin: input.origin,
       provider: input.provider,
       fallbackReason: input.fallbackReason,
+      finishReason: input.finishReason,
       policyFallbackReason: input.policyFallbackReason,
       fallbackAttempts: input.fallbackAttempts,
       error: input.error,
