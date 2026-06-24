@@ -1301,7 +1301,7 @@ export function renderAppShell(input: {
         <div class="section-head">
           <div>
             <h2 class="section-title">${svgIcon('activity')} Guest Overview</h2>
-            <p class="section-copy">Guest view hides prompts, app names and raw key metadata. It shows aggregate usage plus sanitized Gemini API quota state.</p>
+            <p class="section-copy">Guest view hides prompts, app names, secrets, and raw key metadata. It shows aggregate usage, sanitized routing state, and Gemini quota state.</p>
           </div>
           <div id="public-runtime-pills" class="meta-row"></div>
         </div>
@@ -1368,6 +1368,25 @@ export function renderAppShell(input: {
                   </tr>
                 </thead>
                 <tbody id="gemini-api-quota-table"></tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <h4 class="section-title" style="font-size:15px;margin:16px 0 10px">${svgIcon('chart')} Gemini RPD by Account</h4>
+            <p id="public-rpd-copy" class="section-copy" style="margin-bottom:8px">Loading the router quota ledger.</p>
+            <div class="table-wrap">
+              <table class="table responsive-table quota-table">
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Model</th>
+                    <th>RPD Used</th>
+                    <th>RPD Limit</th>
+                    <th>RPD Left</th>
+                    <th>State</th>
+                  </tr>
+                </thead>
+                <tbody id="public-rpd-table"></tbody>
               </table>
             </div>
           </div>
@@ -1783,6 +1802,8 @@ export function renderAppShell(input: {
       const activityLabel = document.getElementById('activity-label');
       const publicRuntimePills = document.getElementById('public-runtime-pills');
       const publicStats = document.getElementById('public-stats');
+      const publicRpdCopy = document.getElementById('public-rpd-copy');
+      const publicRpdTable = document.getElementById('public-rpd-table');
       const hourlyChart = document.getElementById('hourly-chart');
       const routeChart = document.getElementById('route-chart');
       const adminDashboard = document.getElementById('admin-dashboard');
@@ -2227,6 +2248,50 @@ export function renderAppShell(input: {
         ].map(function(entry) {
           return '<div class="card"><div class="label">' + escapeHtml(entry[0]) + '</div><div class="metric">' + entry[1] + '</div><div class="metric-sub">' + escapeHtml(entry[2]) + '</div></div>';
         }).join('');
+      }
+
+      function renderPublicRpd(summary) {
+        if (!publicRpdTable || !publicRpdCopy) return;
+        const quota = summary && summary.provider && summary.provider.quota ? summary.provider.quota : {};
+        const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
+        const accountLabelsByGroup = new Map();
+        apiKeys.forEach(function(key) {
+          const group = typeof key.quotaGroup === 'string' && key.quotaGroup.trim() ? key.quotaGroup.trim() : '';
+          const account = typeof key.id === 'string' && key.id.trim() ? key.id.trim() : '';
+          if (!group || !account) return;
+          const labels = accountLabelsByGroup.get(group) || [];
+          if (!labels.includes(account)) labels.push(account);
+          accountLabelsByGroup.set(group, labels);
+        });
+
+        const resetAt = quota.rpdResetAt ? formatTimestamp(quota.rpdResetAt) : 'the next Pacific midnight';
+        publicRpdCopy.textContent = 'Observed by GemRouter since the current Pacific day. Reset: ' + resetAt + '. Limits are the configured Gemini free-tier limits; no credentials are exposed.';
+
+        const rows = [];
+        const groups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
+        groups.forEach(function(group) {
+          const groupId = typeof group.id === 'string' && group.id.trim() ? group.id.trim() : 'account';
+          const accounts = accountLabelsByGroup.get(groupId);
+          const accountLabel = accounts && accounts.length > 0 ? accounts.join(', ') : groupId;
+          const models = Array.isArray(group.models) ? group.models : [];
+          models.forEach(function(model) {
+            const rpd = model && model.rpd ? model.rpd : null;
+            if (!rpd || rpd.limit === null || rpd.limit === undefined) return;
+            const used = typeof rpd.used === 'number' ? rpd.used : 0;
+            const limit = typeof rpd.limit === 'number' ? rpd.limit : null;
+            const remaining = limit === null ? null : Math.max(0, limit - used);
+            const cooldown = formatRetryAfter(model.cooldownUntil, model.cooldownSource);
+            rows.push('<tr>' +
+              '<td data-label="Account"><strong>' + escapeHtml(accountLabel) + '</strong><div class="footer-note">quota group ' + escapeHtml(groupId) + '</div></td>' +
+              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong></td>' +
+              '<td data-label="RPD Used">' + escapeHtml(fmtNumber(used)) + '</td>' +
+              '<td data-label="RPD Limit">' + escapeHtml(fmtNumber(limit)) + '</td>' +
+              '<td data-label="RPD Left"><span' + (remaining === 0 ? ' style="color:var(--warn)"' : '') + '>' + escapeHtml(fmtNumber(remaining)) + '</span></td>' +
+              '<td data-label="State"><span class="chip ' + (model.cooldownUntil ? 'warn' : 'good') + '">' + escapeHtml(cooldown) + '</span></td>' +
+            '</tr>');
+          });
+        });
+        publicRpdTable.innerHTML = rows.join('') || '<tr><td colspan="6" class="muted">No Gemini RPD limits are configured.</td></tr>';
       }
 
       function renderHourlyChart(summary) {
@@ -2986,7 +3051,7 @@ export function renderAppShell(input: {
               : (model.upstreamHeadersRaw === null ? '<div class="footer-note muted">no upstream headers yet</div>' : '');
             rows.push('<tr>' +
               '<td data-label="Group">' + groupLabel + '</td>' +
-              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">RPD resets UTC midnight</div>' + headerNote + '</td>' +
+              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong><div class="footer-note">RPD resets at Pacific midnight</div>' + headerNote + '</td>' +
               '<td data-label="RPM">' + rpmDisplay + '</td>' +
               '<td data-label="TPM">' + formatQuotaMetric(model.tpm) + '</td>' +
               '<td data-label="RPD">' + rpdDisplay + '</td>' +
@@ -3246,6 +3311,7 @@ export function renderAppShell(input: {
           state.publicSummary = data;
           renderPublicPills(data);
           renderPublicStats(data);
+          renderPublicRpd(data);
           if (!state.authenticated) {
             renderProviderState(data);
           }
