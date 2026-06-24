@@ -22,9 +22,19 @@ export const GEMINI_API_TIER1_LIMITS = {
     rpd: 200,
   },
   'gemini-2.5-flash-lite': {
-    rpm: 15,
+    rpm: 10,
     tpm: 250_000,
-    rpd: 1_000,
+    rpd: 20,
+  },
+  'gemini-3-flash': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
+  },
+  'gemini-3.5-flash': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
   },
   'gemini-3-flash-preview': {
     rpm: 5,
@@ -34,12 +44,12 @@ export const GEMINI_API_TIER1_LIMITS = {
   'gemini-3.1-flash-lite': {
     rpm: 15,
     tpm: 250_000,
-    rpd: 1_000,
+    rpd: 500,
   },
   'gemini-3.1-flash-lite-preview': {
     rpm: 15,
     tpm: 250_000,
-    rpd: 1_000,
+    rpd: 500,
   },
   'gemma-4-31b-it': {
     rpm: 15,

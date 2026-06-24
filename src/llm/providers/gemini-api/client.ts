@@ -76,7 +76,11 @@ function normalizeGeminiApiModel(model: string | undefined): string {
 
 function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
-  if (!model.startsWith('gemini-')) return null;
+  // Gemma 4 and Gemini 3.5 reject any thinkingConfig, including an otherwise harmless
+  // `includeThoughts: false`. Omit the field entirely for those models.
+  if (!model.startsWith('gemini-') || /^gemma-/i.test(model) || /^gemini-3\.5-flash/i.test(model)) {
+    return null;
+  }
   const includeThoughts = opts?.thinking?.includeThoughts === true;
   // gemini-3.5-flash rejects thinkingLevel ("Thinking level is not supported for this model"),
   // so only the gemini-3 reasoning variants (pro / flash-preview / 3.1) get a thinkingLevel.
@@ -86,7 +90,7 @@ function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Re
       thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
     };
   }
-  if (/^gemini-3\.5-flash/i.test(model) || /^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
+  if (/^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
     return {
       includeThoughts,
       thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
@@ -231,13 +235,52 @@ function mapErrorCode(
   return { code: 'gemini_api_upstream_error', fallbackEligible: true };
 }
 
-function retryAfterMs(response: Response): number | undefined {
+function parseDurationMs(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)s$/i);
+  if (!match?.[1]) return undefined;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds * 1000) : undefined;
+}
+
+function googleRetryDelayMs(payload: unknown): number | undefined {
+  const details = (payload as GeminiApiGoogleError | null)?.error?.details;
+  if (!Array.isArray(details)) return undefined;
+  for (const detail of details) {
+    if (!detail || typeof detail !== 'object') continue;
+    const value = detail as Record<string, unknown>;
+    const delay = parseDurationMs(value.retryDelay ?? value.retry_delay);
+    if (delay !== undefined) return delay;
+  }
+  return undefined;
+}
+
+function retryAfterMs(response: Response, payload: unknown): number | undefined {
   const value = response.headers.get('retry-after');
-  if (!value) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : undefined;
+  if (value) {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return Math.max(0, timestamp - Date.now());
+  }
+  return googleRetryDelayMs(payload);
+}
+
+function rateLimitScope(payload: unknown, googleError: ReturnType<typeof parseGoogleError>): 'minute' | 'day' | 'unknown' {
+  const text = [
+    googleError.message,
+    googleError.status,
+    googleError.reason,
+    JSON.stringify((payload as GeminiApiGoogleError | null)?.error?.details ?? []),
+  ]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .toLowerCase();
+  if (/per.?day|requestsperday|rpd|daily/.test(text)) return 'day';
+  if (/per.?minute|requestsperminute|tokensperminute|rpm|tpm|minute/.test(text)) {
+    return 'minute';
+  }
+  return 'unknown';
 }
 
 // Capture any header whose name contains quota/ratelimit keywords — works regardless of exact names Gemini uses
@@ -761,7 +804,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       reason: googleError.reason ?? googleError.status ?? response.statusText,
       status: response.status,
       rateLimited: response.status === 429,
-      retryAfterMs: retryAfterMs(response),
+      retryAfterMs: retryAfterMs(response, payload),
+      ...(response.status === 429 ? { rateLimitScope: rateLimitScope(payload, googleError) } : {}),
     });
     throw new GeminiApiProviderError(
       mapped.code,
