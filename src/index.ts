@@ -80,7 +80,10 @@ const outboundProxy = createProxiedFetch(config.outboundProxy);
 const geminiApiLlm = createGeminiApiClient(config.geminiApi, { fetch: outboundProxy.fetch });
 const ollamaLlm = createOllamaRouterClient(config.ollama, { fetch: outboundProxy.fetch });
 const deepseekApiLlm = createDeepSeekApiClient(config.deepseekApi, { fetch: outboundProxy.fetch });
-const llm = createLlmRouter(config.llmRouting, {
+const llm = createLlmRouter({
+  ...config.llmRouting,
+  strictModelIds: config.geminiApi.strictModelIds,
+}, {
   ollama: ollamaLlm,
   deepseekApi: deepseekApiLlm,
   geminiApi: geminiApiLlm,

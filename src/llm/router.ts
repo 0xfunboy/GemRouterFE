@@ -7,6 +7,8 @@ interface BackendClient extends LLMClient {
 
 export interface LLMRouterConfig {
   backendOrder: LLMBackendId[];
+  /** Models that must never silently spill into another backend. */
+  strictModelIds?: string[];
 }
 
 interface RouterState {
@@ -43,12 +45,15 @@ function annotateResponse(
 }
 
 function shouldFallback(
+  config: LLMRouterConfig,
   backend: LLMBackendId,
   error: LLMProviderError,
   remainingBackends: LLMBackendId[],
   opts?: LLMOptions,
 ): boolean {
   if (opts?.backendPreference && opts.backendPreference !== 'auto') return false;
+  const model = String(opts?.model ?? '').replace(/^models\//, '').trim().toLowerCase();
+  if (config.strictModelIds?.includes(model)) return false;
   if (remainingBackends.length === 0) return false;
   if (error.options.fallbackEligible !== true) return false;
   return backend === 'ollama' || backend === 'deepseek-api' || backend === 'gemini-api';
@@ -132,7 +137,7 @@ export function createLlmRouter(
         return response;
       } catch (error) {
         const normalized = normalizeBackendError(backend, error);
-        if (shouldFallback(backend, normalized, remaining, opts)) {
+        if (shouldFallback(config, backend, normalized, remaining, opts)) {
           state.lastFallbackFrom = normalized.backend;
           state.lastFallbackReason = normalized.code;
           lastError = normalized;
@@ -220,7 +225,7 @@ export function createLlmRouter(
           return response;
         } catch (error) {
           const normalized = normalizeBackendError(backend, error);
-          if (shouldFallback(backend, normalized, remaining, opts)) {
+          if (shouldFallback(config, backend, normalized, remaining, opts)) {
             state.lastFallbackFrom = normalized.backend;
             state.lastFallbackReason = normalized.code;
             lastError = normalized;
