@@ -631,16 +631,18 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig, deps: Gem
     void discovery.refreshIfStale();
     const started = Date.now();
     const requestedModel = normalizeGeminiApiModel(opts?.model);
-    const modelAttempts = [
-      requestedModel,
-      ...buildTextFallbackModels(
-        requestedModel,
-        opts?.allowedModelIds,
-        config.fallbackModelIds,
-        discovery.snapshot().models,
-        opts,
-      ),
-    ];
+    const modelAttempts = config.strictModelIds.includes(requestedModel)
+      ? [requestedModel]
+      : [
+          requestedModel,
+          ...buildTextFallbackModels(
+            requestedModel,
+            opts?.allowedModelIds,
+            config.fallbackModelIds,
+            discovery.snapshot().models,
+            opts,
+          ),
+        ];
     const estimatedTokens = estimateTokens(messages);
     let lastProviderError: GeminiApiProviderError | null = null;
     const fallbackAttempts: NonNullable<LLMResponse['fallbackAttempts']> = [];

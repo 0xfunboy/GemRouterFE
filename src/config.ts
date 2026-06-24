@@ -544,6 +544,8 @@ export function loadConfig(
       timeoutMs: readNumber(env, 120_000, 'LEAKROUTER_GEMINI_API_TIMEOUT_MS'),
       streamTimeoutMs: readNumber(env, 180_000, 'LEAKROUTER_GEMINI_API_STREAM_TIMEOUT_MS'),
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
+      strictModelIds: readList(env, [], 'LEAKROUTER_GEMINI_API_STRICT_MODELS')
+        .map((model) => model.replace(/^models\//, '').toLowerCase()),
     },
     ollama: {
       enabled: readBoolean(env, ollamaModelIds.length > 0, 'LEAKROUTER_OLLAMA_ENABLED', 'LEAKROUTER_OLLAMA_ENABLED'),
