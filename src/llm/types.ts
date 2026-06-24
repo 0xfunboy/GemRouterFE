@@ -48,6 +48,8 @@ export interface LLMOptions {
 
 export interface LLMResponse {
   content: string;
+  /** OpenAI-compatible completion reason, normalized from the upstream provider. */
+  finishReason?: 'stop' | 'length' | 'content_filter';
   images?: Array<{
     mimeType: string;
     data: string;
