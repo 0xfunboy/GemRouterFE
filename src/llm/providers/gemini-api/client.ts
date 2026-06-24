@@ -580,29 +580,33 @@ function effectiveRequestTimeoutMs(timeoutMs: number): number {
 function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const byId = new Map(ledgerGroups.map((group) => [String(group.id), group]));
   const modelIds = Object.keys(config.limits);
+  const configuredModel = (model: string): Record<string, unknown> => {
+    const limit = config.limits[model] ?? { rpm: null, tpm: null, rpd: null };
+    return {
+      model,
+      rpm: { used: 0, limit: limit.rpm, remaining: limit.rpm },
+      tpm: { used: 0, limit: limit.tpm, remaining: limit.tpm },
+      rpd: { used: 0, limit: limit.rpd, remaining: limit.rpd },
+      cooldownUntil: null,
+      last429At: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastFailureCode: null,
+      lastFailureReason: null,
+      lastFailureStatus: null,
+      source: 'static-config',
+      authoritative: false,
+    };
+  };
   for (const key of config.keys) {
-    if (byId.has(key.quotaGroup)) continue;
-    byId.set(key.quotaGroup, {
-      id: key.quotaGroup,
-      models: modelIds.map((model) => {
-        const limit = config.limits[model] ?? { rpm: null, tpm: null, rpd: null };
-        return {
-          model,
-          rpm: { used: 0, limit: limit.rpm, remaining: limit.rpm },
-          tpm: { used: 0, limit: limit.tpm, remaining: limit.tpm },
-          rpd: { used: 0, limit: limit.rpd, remaining: limit.rpd },
-          cooldownUntil: null,
-          last429At: null,
-          lastSuccessAt: null,
-          lastFailureAt: null,
-          lastFailureCode: null,
-          lastFailureReason: null,
-          lastFailureStatus: null,
-          source: 'static-config',
-          authoritative: false,
-        };
-      }),
-    });
+    const existing = byId.get(key.quotaGroup);
+    if (!existing) {
+      byId.set(key.quotaGroup, { id: key.quotaGroup, models: modelIds.map(configuredModel) });
+      continue;
+    }
+    const models = Array.isArray(existing.models) ? existing.models as Record<string, unknown>[] : [];
+    const knownModels = new Set(models.map((model) => String(model.model)));
+    existing.models = [...models, ...modelIds.filter((model) => !knownModels.has(model)).map(configuredModel)];
   }
   return [...byId.values()];
 }
