@@ -162,6 +162,13 @@ function extractText(payload: GeminiGenerateResponse): string {
     .trim();
 }
 
+function normalizeFinishReason(payload: GeminiGenerateResponse): 'stop' | 'length' | 'content_filter' {
+  const reason = payload.candidates?.[0]?.finishReason?.trim().toUpperCase() ?? '';
+  if (reason === 'MAX_TOKENS') return 'length';
+  if (reason === 'SAFETY' || reason === 'RECITATION' || reason === 'BLOCKLIST') return 'content_filter';
+  return 'stop';
+}
+
 function extractImages(payload: GeminiGenerateResponse): Array<{ mimeType: string; data: string }> {
   return extractParts(payload)
     .map((part) => {
@@ -697,6 +704,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           }
           const gemini = payload as GeminiGenerateResponse;
           const content = normalizeSemanticOutput(extractText(gemini), attemptOptions?.semanticProfile);
+          const finishReason = normalizeFinishReason(gemini);
           const images = extractImages(gemini);
           const usage = gemini.usageMetadata;
           ledger.markSuccess({
@@ -713,6 +721,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           lastLatencyMs = Date.now() - started;
           return {
             content,
+            finishReason,
             images,
             provider: 'gemini-api',
             model: opts?.model ?? model,
