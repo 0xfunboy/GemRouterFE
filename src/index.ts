@@ -50,6 +50,7 @@ import {
   type OllamaGenerateRequest,
 } from './lib/ollama.js';
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
+import { nextPacificDayStartMs } from './llm/providers/gemini-api/quotaLedger.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -1147,14 +1148,18 @@ function resolveActiveDefaultBackend(
 }
 
 function buildGuestSummary() {
-  const runtime = getRuntimeSnapshot();
+  // Read the complete diagnostics only on the server, then explicitly project the
+  // small quota view that is safe to expose on the unauthenticated dashboard.
+  const runtime = getRuntimeSnapshot(undefined, { includeSensitiveLlm: true });
   const routing = (runtime.routing as Record<string, unknown> | undefined) ?? {};
-  const backends = (runtime.backends as Record<string, unknown> | undefined) ?? {};
-  const geminiApi = (backends.geminiApi as Record<string, unknown> | undefined) ?? {};
+  const llm = (runtime.llm as Record<string, unknown> | undefined) ?? {};
+  const geminiApi = (llm.geminiApi as Record<string, unknown> | undefined) ?? {};
   const provider = (runtime.provider as Record<string, unknown> | undefined) ?? {};
-  const providerQuota = (provider.quota as Record<string, unknown> | undefined) ?? {};
-  const publicApiKeys = Array.isArray(providerQuota.apiKeys)
-    ? (providerQuota.apiKeys as Record<string, unknown>[]).map((key) => ({
+  const providerQuota = geminiApi;
+  const publicApiKeys = Array.isArray(providerQuota.keys)
+    ? (providerQuota.keys as Record<string, unknown>[]).map((key) => ({
+      id: key.id ?? 'account',
+      quotaGroup: key.quotaGroup ?? null,
       enabled: key.enabled !== false,
       priority: key.priority ?? 0,
       lastUsedAt: key.lastUsedAt ?? null,
@@ -1163,6 +1168,7 @@ function buildGuestSummary() {
     : [];
   const publicQuotaGroups = Array.isArray(providerQuota.quotaGroups)
     ? (providerQuota.quotaGroups as Record<string, unknown>[]).map((group) => ({
+      id: group.id ?? 'account',
       models: Array.isArray(group.models)
         ? (group.models as Record<string, unknown>[]).map((model) => ({
           model: model.model ?? 'unknown',
@@ -1234,6 +1240,8 @@ function buildGuestSummary() {
       quota: {
         apiKeys: publicApiKeys,
         quotaGroups: publicQuotaGroups,
+        rpdResetAt: new Date(nextPacificDayStartMs()).toISOString(),
+        rpdWindow: 'America/Los_Angeles',
       },
     },
     stats: {
