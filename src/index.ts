@@ -834,6 +834,7 @@ function recordInteraction(input: {
     origin: getRequestOrigin(input.request),
     provider: input.provider ?? response?.provider,
     fallbackReason: response?.fallbackReason,
+    finishReason: response?.finishReason,
     policyFallbackReason: input.policyFallbackReason,
     fallbackAttempts: response?.fallbackAttempts,
     error: input.error,
@@ -1899,7 +1900,12 @@ async function handleChatCompletionsRequest(
         latencyMs: Date.now() - getStartedAt(request),
         details: buildAuditDetailsFromResponse(response),
       });
-      return buildChatCompletionResponse({ model: parsed.model, text: response.content, usage });
+      return buildChatCompletionResponse({
+        model: parsed.model,
+        text: response.content,
+        usage,
+        finishReason: response.finishReason,
+      });
     }
 
     reply.raw.writeHead(200, buildStreamResponseHeaders(request));
@@ -1971,7 +1977,7 @@ async function handleChatCompletionsRequest(
         object: 'chat.completion.chunk',
         created,
         model: parsed.model,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        choices: [{ index: 0, delta: {}, finish_reason: finalResponse?.finishReason ?? 'stop' }],
         usage: null,
       });
       if (parsed.includeUsageChunk) {
