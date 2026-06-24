@@ -1208,41 +1208,24 @@ function buildGuestSummary() {
     }))
     : [];
   const providerModels = Array.isArray(provider.models) ? provider.models as Record<string, unknown>[] : [];
-  const stats = interactions.summary(24);
+  const usageWindow = interactions.hourlyWindow(24);
+  const stats = usageWindow.totals;
   const recent = interactions.list(240);
-  const now = Date.now();
-  const currentHour = Math.floor(now / (60 * 60_000)) * (60 * 60_000);
-  const start = currentHour - 23 * 60 * 60_000;
-  const hourBuckets = Array.from({ length: 24 }, (_, index) => {
-    const bucketStart = start + index * 60 * 60_000;
-    return {
-      key: Math.floor(bucketStart / (60 * 60_000)),
-      label: formatHourLabel(bucketStart),
-      requests: 0,
-      failed: 0,
-    };
-  });
-  const hourlyIndex = new Map(hourBuckets.map((bucket) => [bucket.key, bucket]));
+  const hourBuckets = usageWindow.buckets.map((bucket) => ({
+    label: formatHourLabel(bucket.hourStartMs),
+    requests: bucket.requests,
+    failed: bucket.failed,
+  }));
   const routeCounts = new Map<string, number>();
 
   for (const record of recent) {
-    const createdAt = Date.parse(record.createdAt);
-    if (Number.isFinite(createdAt) && createdAt >= start) {
-      const key = Math.floor(createdAt / (60 * 60_000));
-      const bucket = hourlyIndex.get(key);
-      if (bucket) {
-        bucket.requests += 1;
-        if (record.status === 'failed') bucket.failed += 1;
-      }
-    }
-
     const routeKey = classifyInteractionRoute(record.route);
     routeCounts.set(routeKey, (routeCounts.get(routeKey) ?? 0) + 1);
   }
 
-  const totalRequests = stats.totals.requests || 0;
-  const totalSucceeded = stats.totals.succeeded || 0;
-  const totalFailed = stats.totals.failed || 0;
+  const totalRequests = stats.requests || 0;
+  const totalSucceeded = stats.succeeded || 0;
+  const totalFailed = stats.failed || 0;
   const successRatePct = totalRequests > 0 ? Math.round((totalSucceeded / totalRequests) * 1000) / 10 : 0;
 
   return {
@@ -1275,10 +1258,12 @@ function buildGuestSummary() {
       succeeded: totalSucceeded,
       failed: totalFailed,
       successRatePct,
-      avgLatencyMs: stats.totals.avgLatencyMs,
-      totalTokens: stats.totals.totalTokens,
-      promptTokens: stats.totals.promptTokens,
-      completionTokens: stats.totals.completionTokens,
+      avgLatencyMs: stats.avgLatencyMs,
+      totalTokens: stats.totalTokens,
+      promptTokens: stats.promptTokens,
+      completionTokens: stats.completionTokens,
+      windowStartedAt: new Date(usageWindow.startedAtMs).toISOString(),
+      windowComplete: usageWindow.complete,
     },
     charts: {
       hourly: hourBuckets,
