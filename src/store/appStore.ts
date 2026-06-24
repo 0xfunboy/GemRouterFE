@@ -81,7 +81,15 @@ function stableCompare(left: string, right: string): boolean {
 export class AppStore {
   private state: PersistedState = { apps: [] };
   private readonly rateWindows = new Map<string, { startedAt: number; count: number }>();
-  private readonly inFlight = new Map<string, number>();
+  private readonly concurrency = new Map<string, {
+    inFlight: number;
+    waiting: Array<{
+      priority: number;
+      queuedAt: number;
+      resolve: (release: (() => void) | null) => void;
+      timer?: ReturnType<typeof setTimeout>;
+    }>;
+  }>();
 
   constructor(private readonly filePath: string) {
     mkdirSync(path.dirname(filePath), { recursive: true });
@@ -209,22 +217,73 @@ export class AppStore {
     return true;
   }
 
-  acquireConcurrency(app: ApiAppRecord): (() => void) | null {
+  async acquireConcurrency(
+    app: ApiAppRecord,
+    priority: number,
+    waitMs: number,
+  ): Promise<(() => void) | null> {
     if (app.maxConcurrency <= 0) return () => undefined;
-    const current = this.inFlight.get(app.id) ?? 0;
-    if (current >= app.maxConcurrency) return null;
-    this.inFlight.set(app.id, current + 1);
+    const state = this.concurrencyState(app.id);
+    if (state.waiting.length === 0 && state.inFlight < app.maxConcurrency) {
+      return this.grantConcurrency(app);
+    }
+    if (waitMs <= 0) return null;
+    return new Promise((resolve) => {
+      const entry: typeof state.waiting[number] = {
+        priority,
+        queuedAt: Date.now(),
+        resolve,
+      };
+      entry.timer = setTimeout(() => {
+        const index = state.waiting.indexOf(entry);
+        if (index < 0) return;
+        state.waiting.splice(index, 1);
+        entry.resolve(null);
+      }, waitMs);
+      state.waiting.push(entry);
+      this.dispatchConcurrency(app);
+    });
+  }
+
+  private concurrencyState(appId: string): { inFlight: number; waiting: Array<{
+    priority: number;
+    queuedAt: number;
+    resolve: (release: (() => void) | null) => void;
+    timer?: ReturnType<typeof setTimeout>;
+  }> } {
+    const current = this.concurrency.get(appId);
+    if (current) return current;
+    const created = { inFlight: 0, waiting: [] as Array<{
+      priority: number;
+      queuedAt: number;
+      resolve: (release: (() => void) | null) => void;
+      timer?: ReturnType<typeof setTimeout>;
+    }> };
+    this.concurrency.set(appId, created);
+    return created;
+  }
+
+  private grantConcurrency(app: ApiAppRecord): () => void {
+    const state = this.concurrencyState(app.id);
+    state.inFlight += 1;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      const next = Math.max(0, (this.inFlight.get(app.id) ?? 1) - 1);
-      if (next === 0) {
-        this.inFlight.delete(app.id);
-      } else {
-        this.inFlight.set(app.id, next);
-      }
+      state.inFlight = Math.max(0, state.inFlight - 1);
+      this.dispatchConcurrency(app);
     };
+  }
+
+  private dispatchConcurrency(app: ApiAppRecord): void {
+    const state = this.concurrencyState(app.id);
+    while (state.inFlight < app.maxConcurrency && state.waiting.length > 0) {
+      state.waiting.sort((left, right) => right.priority - left.priority || left.queuedAt - right.queuedAt);
+      const next = state.waiting.shift();
+      if (!next) return;
+      if (next.timer) clearTimeout(next.timer);
+      next.resolve(this.grantConcurrency(app));
+    }
   }
 
   update(id: string, input: UpdateAppInput): ApiAppRecord | null {
