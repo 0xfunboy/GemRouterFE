@@ -74,7 +74,10 @@ const execFileAsync = promisify(execFile);
 
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
-const llm = createLlmRouter(config.llmRouting, {
+const llm = createLlmRouter({
+  ...config.llmRouting,
+  strictModelIds: config.geminiApi.strictModelIds,
+}, {
   geminiApi: geminiApiLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
