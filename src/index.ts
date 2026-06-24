@@ -110,6 +110,11 @@ const benchmarkJobs = new Map<string, BenchmarkJob>();
 interface GeminiProjectQuotaState {
   updatedAt: string | null;
   source: 'google-service-usage+cloud-monitoring+local-ledger' | 'google-service-usage+local-ledger' | 'local-ledger';
+  /** Service Usage can report effective configured limits. */
+  limitsAuthoritative: boolean;
+  /** AI Studio does not expose exact current RPM/TPM/RPD remaining through these APIs. */
+  remainingAuthoritative: false;
+  /** Monitoring is delayed telemetry, never an admission authority for AI Studio free tier. */
   authoritative: boolean;
   monitoringAuthoritative: boolean;
   projectQuotas: Array<Record<string, unknown>>;
@@ -120,6 +125,8 @@ const GEMINI_PROJECT_QUOTA_REFRESH_MS = 30_000;
 let geminiProjectQuotaState: GeminiProjectQuotaState = {
   updatedAt: null,
   source: 'local-ledger',
+  limitsAuthoritative: false,
+  remainingAuthoritative: false,
   authoritative: false,
   monitoringAuthoritative: false,
   projectQuotas: [],
@@ -1637,8 +1644,10 @@ async function refreshGeminiProjectQuotaState(force = false): Promise<GeminiProj
       source: anyServiceUsageOk && anyMonitoringOk
         ? 'google-service-usage+cloud-monitoring+local-ledger'
         : anyServiceUsageOk ? 'google-service-usage+local-ledger' : 'local-ledger',
-      authoritative: anyServiceUsageOk,
-      monitoringAuthoritative: anyMonitoringOk,
+      limitsAuthoritative: anyServiceUsageOk,
+      remainingAuthoritative: false,
+      authoritative: false,
+      monitoringAuthoritative: false,
       projectQuotas,
       lastError,
     };
@@ -1652,6 +1661,8 @@ function resetGeminiProjectQuotaState(): GeminiProjectQuotaState {
   geminiProjectQuotaState = {
     updatedAt: null,
     source: 'local-ledger',
+    limitsAuthoritative: false,
+    remainingAuthoritative: false,
     authoritative: false,
     monitoringAuthoritative: false,
     projectQuotas: [],
@@ -3100,13 +3111,32 @@ app.post('/admin/reset-telemetry', async (request, reply) => {
 
 app.post('/admin/provider/model-api/refresh-quota', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
+  const geminiProjectQuota = await refreshGeminiProjectQuotaState(true);
   const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   return {
     ok: true,
     provider: runtime.provider,
     backends: runtime.backends,
     usage: interactions.summary(60),
+    geminiProjectQuota,
   };
+});
+
+app.post('/admin/provider/model-api/reset-quota', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const client = geminiApiLlm as typeof geminiApiLlm & {
+    resetTelemetry?: () => Record<string, unknown>;
+  };
+  if (typeof client.resetTelemetry !== 'function') {
+    return sendError(reply, 503, {
+      message: 'Gemini quota ledger is unavailable.',
+      type: 'server_error',
+      code: 'gemini_quota_ledger_unavailable',
+    });
+  }
+  const quota = client.resetTelemetry();
+  const geminiProjectQuota = resetGeminiProjectQuotaState();
+  return { ok: true, quota, geminiProjectQuota };
 });
 
 app.post<{
