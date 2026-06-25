@@ -11,7 +11,7 @@ import { GeminiApiProviderError } from './errors.js';
 import { GeminiApiKeyPool, type GeminiApiKeyReservation } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
 import { GeminiApiQuotaLedger } from './quotaLedger.js';
-import type { GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
+import type { GeminiApiKeyConfig, GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../../types.js';
 
 interface GeminiGenerateResponse {
@@ -616,7 +616,7 @@ function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Ar
 
 export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClient {
   const ledger = new GeminiApiQuotaLedger(config);
-  const keyPool = new GeminiApiKeyPool(config, ledger);
+  let keyPool = new GeminiApiKeyPool(config, ledger);
   const discovery = new GeminiApiModelDiscovery(config);
   let lastSelectedKeyId: string | null = null;
   let lastSelectedQuotaGroup: string | null = null;
@@ -982,11 +982,58 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         quota: ledger.snapshot(),
       };
     },
+
+    // Hot-swap the account list (add/remove/enable/priority/allowed-models) without a
+    // process restart. The ledger is keyed by quotaGroup+keyId so usage history survives.
+    reloadAccounts(keys: GeminiApiKeyConfig[]): Record<string, unknown> {
+      config.keys = keys;
+      keyPool = new GeminiApiKeyPool(config, ledger);
+      return { ok: true, configuredKeyCount: keys.length, usableKeyCount: keys.filter((key) => key.enabled).length };
+    },
+
+    // Query Google's model catalog with one account's own key and return the chat/text
+    // models it can actually serve, annotated with the limits configured for that account.
+    async listAccountModels(accountId: string): Promise<Record<string, unknown>> {
+      const account = config.keys.find((key) => key.id === accountId);
+      if (!account) {
+        return { ok: false, error: 'account_not_found', accountId };
+      }
+      const url = `${config.baseUrl}/${config.version}/models?key=${encodeURIComponent(account.key)}&pageSize=1000`;
+      try {
+        const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+        const payload = await response.json().catch(() => ({})) as { models?: Array<Record<string, unknown>>; error?: { message?: string } };
+        if (!response.ok) {
+          return { ok: false, accountId, status: response.status, error: redact(String(payload.error?.message ?? response.statusText)) };
+        }
+        const models = (Array.isArray(payload.models) ? payload.models : [])
+          .map((model) => {
+            const id = String(model.name ?? '').replace(/^models\//, '');
+            const methods = Array.isArray(model.supportedGenerationMethods)
+              ? (model.supportedGenerationMethods as unknown[]).map((method) => String(method))
+              : [];
+            const limit = config.groupLimits?.[account.quotaGroup]?.[id] ?? config.limits[id] ?? null;
+            return {
+              id,
+              displayName: typeof model.displayName === 'string' ? model.displayName : id,
+              supportedGenerationMethods: methods,
+              chat: methods.includes('generateContent'),
+              limit,
+            };
+          })
+          .filter((model) => model.chat)
+          .sort((left, right) => left.id.localeCompare(right.id));
+        return { ok: true, accountId, quotaGroup: account.quotaGroup, models };
+      } catch (error) {
+        return { ok: false, accountId, error: redact(error instanceof Error ? error.message : String(error)) };
+      }
+    },
   } as LLMClient & {
     health: () => Record<string, unknown>;
     discoverModels: () => Promise<Record<string, unknown>>;
     listModels: () => Promise<Record<string, unknown>>;
     clearCooldown: () => Record<string, unknown>;
     resetTelemetry: () => Record<string, unknown>;
+    reloadAccounts: (keys: GeminiApiKeyConfig[]) => Record<string, unknown>;
+    listAccountModels: (accountId: string) => Promise<Record<string, unknown>>;
   };
 }
