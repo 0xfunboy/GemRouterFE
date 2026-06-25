@@ -73,6 +73,13 @@ export interface RuntimeConfig {
     thinkingBudget?: number;
     thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
   };
+  outboundProxy: {
+    enabled: boolean;
+    strategy: 'round-robin' | 'random';
+    urls: string[];
+    bypassHosts: string[];
+    storePath: string;
+  };
   auditLogPath: string;
   appsStorePath: string;
   interactionsStorePath: string;
@@ -528,6 +535,17 @@ export function loadConfig(
       timeoutMs: readNumber(env, 120_000, 'GEMROUTER_OLLAMA_TIMEOUT_MS'),
       streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_OLLAMA_STREAM_TIMEOUT_MS'),
       defaultModel: configuredOllamaModels[0] ?? ollamaModelIds[0],
+    },
+    outboundProxy: {
+      enabled: readBoolean(env, false, 'GEMROUTER_OUTBOUND_PROXY_ENABLED'),
+      strategy: pick(env, 'GEMROUTER_OUTBOUND_PROXY_STRATEGY') === 'random' ? 'random' : 'round-robin',
+      urls: readList(env, [], 'GEMROUTER_OUTBOUND_PROXY_URLS'),
+      bypassHosts: readList(
+        env,
+        ['localhost', '127.0.0.1', '::1', 'generativelanguage.googleapis.com', '*.googleapis.com'],
+        'GEMROUTER_OUTBOUND_PROXY_BYPASS_HOSTS',
+      ),
+      storePath: path.resolve(rootDir, pick(env, 'GEMROUTER_OUTBOUND_PROXY_PATH') ?? 'data/proxy-config.json'),
     },
     ollamaLocal: {
       enabled: readBoolean(env, false, 'GEMROUTER_OLLAMA_LOCAL_ENABLED'),

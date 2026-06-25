@@ -1522,6 +1522,40 @@ export function renderAppShell(input: {
           </div>
         </section>
 
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('plug')} Outbound Proxy</h3>
+              <p class="section-copy">Manage the outbound proxy pool. Disabled by default and not yet applied to upstream calls (Gemini runs direct from the host IP); configure it here so it is ready when needed.</p>
+            </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="proxy-section-body" aria-controls="proxy-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
+          </div>
+          <div id="proxy-section-body" class="section-body hidden">
+            <form id="proxy-form" class="stack" autocomplete="off">
+              <label class="model-picker-option"><div><input type="checkbox" id="proxy-enabled" /> <span class="model-picker-title">Enable outbound proxy</span></div></label>
+              <label class="footer-note">Strategy
+                <select class="input" id="proxy-strategy">
+                  <option value="round-robin">round-robin</option>
+                  <option value="random">random</option>
+                </select>
+              </label>
+              <label class="footer-note">Proxy URLs (one per line, e.g. http://user:pass@host:port)
+                <textarea class="input" id="proxy-urls" rows="4" placeholder="http://user:pass@host:port"></textarea>
+              </label>
+              <label class="footer-note">Bypass hosts (one per line; supports *.suffix)
+                <textarea class="input" id="proxy-bypass" rows="3"></textarea>
+              </label>
+              <button type="submit" class="primary">Save proxy config</button>
+              <div id="proxy-status" class="footer-note"></div>
+            </form>
+          </div>
+        </section>
+
 
         <section class="panel section">
           <div class="section-head">
@@ -2220,6 +2254,49 @@ export function renderAppShell(input: {
             accountModelsOutput.textContent = lines.join('\\n') || 'No chat models returned.';
           } catch (error) {
             accountModelsOutput.textContent = 'Error: ' + (error.message || 'request failed');
+          }
+        });
+      }
+
+      // ---- Outbound proxy management (admin) ----
+      const proxyForm = document.getElementById('proxy-form');
+      const proxyEnabled = document.getElementById('proxy-enabled');
+      const proxyStrategy = document.getElementById('proxy-strategy');
+      const proxyUrls = document.getElementById('proxy-urls');
+      const proxyBypass = document.getElementById('proxy-bypass');
+      const proxyStatus = document.getElementById('proxy-status');
+
+      async function loadProxyConfig() {
+        if (!proxyForm) return;
+        try {
+          const data = await request('/admin/provider/proxy');
+          proxyEnabled.checked = data.enabled === true;
+          proxyStrategy.value = data.strategy === 'random' ? 'random' : 'round-robin';
+          proxyUrls.value = (data.urls || []).join('\\n');
+          proxyBypass.value = (data.bypassHosts || []).join('\\n');
+        } catch (error) {
+          if (proxyStatus) proxyStatus.textContent = error.message || 'Failed to load proxy config.';
+        }
+      }
+
+      if (proxyForm) {
+        proxyForm.addEventListener('submit', async function(event) {
+          event.preventDefault();
+          const splitLines = function(value) { return String(value || '').split('\\n').map(function(line) { return line.trim(); }).filter(Boolean); };
+          try {
+            const data = await request('/admin/provider/proxy', {
+              method: 'POST',
+              body: JSON.stringify({
+                enabled: proxyEnabled.checked,
+                strategy: proxyStrategy.value,
+                urls: splitLines(proxyUrls.value),
+                bypassHosts: splitLines(proxyBypass.value),
+              }),
+            });
+            proxyUrls.value = (data.urls || []).join('\\n');
+            if (proxyStatus) { proxyStatus.style.color = 'var(--muted)'; proxyStatus.textContent = 'Proxy config saved' + (data.enabled ? ' (enabled)' : ' (disabled)') + '.'; }
+          } catch (error) {
+            if (proxyStatus) { proxyStatus.style.color = 'var(--bad)'; proxyStatus.textContent = error.message || 'Save failed.'; }
           }
         });
       }
@@ -3570,6 +3647,7 @@ export function renderAppShell(input: {
           renderProviderState(data);
           renderStats(data.stats);
           loadAccounts();
+          loadProxyConfig();
           renderCompatibility(data.compatibility);
           renderApps(data.apps);
           renderInteractions(state.adminStats);
