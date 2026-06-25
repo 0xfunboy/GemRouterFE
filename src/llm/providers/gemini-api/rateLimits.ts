@@ -1,11 +1,6 @@
 import type { GeminiApiRateLimit } from './types.js';
 
 export const GEMINI_API_TIER1_LIMITS = {
-  'gemini-3.5-flash': {
-    rpm: 5,
-    tpm: 250_000,
-    rpd: 20,
-  },
   'gemini-2.5-flash': {
     rpm: 5,
     tpm: 250_000,
