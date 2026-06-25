@@ -820,6 +820,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       status: response.status,
       rateLimited: response.status === 429,
       retryAfterMs: retryAfterMs(response, payload),
+      highDemand: mapped.code === 'gemini_api_high_demand',
       ...(response.status === 429 ? { rateLimitScope: rateLimitScope(payload, googleError) } : {}),
     });
     throw new GeminiApiProviderError(

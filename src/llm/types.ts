@@ -20,7 +20,7 @@ export interface LLMFallbackAttempt {
   reason: string;
   statusCode?: number | null;
   availableAfter?: string | null;
-  availableAfterSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | null;
+  availableAfterSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | null;
 }
 
 export interface LLMOptions {

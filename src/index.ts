@@ -710,8 +710,13 @@ async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPoli
       );
       const discoveredFree = new Set([...textModelIds, ...audioModelIds, ...embeddingModelIds]);
       const configuredFree = new Set(config.freeTierPolicy.allModelIds);
+      // A model is only "new" if we have never catalogued it. Models already present in the
+      // curated rate-limit table are known on purpose (some we route, some we deliberately
+      // skip because they have no usable free quota), so they must not raise a false alarm.
+      const knownModelIds = new Set(Object.keys(config.geminiApi.limits).map((modelId) => modelId.toLowerCase()));
       const addedModelIds = [...discoveredFree]
         .filter((modelId) => !configuredFree.has(modelId))
+        .filter((modelId) => !knownModelIds.has(modelId))
         .filter((modelId) => rawApiModelIds.has(modelId))
         .filter((modelId) => isParsedFreeTierRouterCandidate(modelId))
         .filter((modelId) => !audioModelIds.includes(modelId) && !embeddingModelIds.includes(modelId));
