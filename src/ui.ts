@@ -817,10 +817,11 @@ export function renderAppShell(input: {
         min-width: 0;
         table-layout: fixed;
       }
-      .public-rpd-table th:nth-child(1), .public-rpd-table td:nth-child(1) { width: 22%; }
-      .public-rpd-table th:nth-child(2), .public-rpd-table td:nth-child(2) { width: 34%; }
-      .public-rpd-table th:nth-child(3), .public-rpd-table td:nth-child(3) { width: 18%; }
-      .public-rpd-table th:nth-child(4), .public-rpd-table td:nth-child(4) { width: 26%; }
+      .public-rpd-table th:nth-child(1), .public-rpd-table td:nth-child(1) { width: 34%; }
+      .public-rpd-table th:nth-child(2), .public-rpd-table td:nth-child(2) { width: 14%; }
+      .public-rpd-table th:nth-child(3), .public-rpd-table td:nth-child(3) { width: 22%; }
+      .public-rpd-table th:nth-child(4), .public-rpd-table td:nth-child(4) { width: 16%; }
+      .public-rpd-table th:nth-child(5), .public-rpd-table td:nth-child(5) { width: 14%; }
       .quota-meter {
         width: 76px;
         height: 7px;
@@ -980,6 +981,14 @@ export function renderAppShell(input: {
         transition: transform 0.18s ease;
       }
       .section-toggle[aria-expanded="true"] .section-toggle-arrow {
+        transform: rotate(90deg);
+      }
+      .rpd-toggle-arrow {
+        display: inline-block;
+        line-height: 1;
+        transition: transform 0.18s ease;
+      }
+      .rpd-toggle[aria-expanded="true"] .rpd-toggle-arrow {
         transform: rotate(90deg);
       }
       .model-picker-title {
@@ -1351,82 +1360,40 @@ export function renderAppShell(input: {
       <section class="panel section">
         <div class="section-head">
           <div>
-            <h3 class="section-title">${svgIcon('api')} Gemini API Keys and Quota</h3>
-            <p class="section-copy">Configured upstream accounts, local quota ledger, and per-model RPM/TPM/RPD remaining capacity. API keys are never shown.</p>
+            <h3 class="section-title">${svgIcon('api')} Gemini RPD Capacity</h3>
           </div>
           <div id="provider-pills" class="meta-row"></div>
         </div>
-        <div class="shell-grid quota-shell">
-          <div>
-            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('plug')} Configured Accounts</h4>
-            <div class="table-wrap">
-              <table class="table accounts-table responsive-table">
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Quota Group</th>
-                    <th>Priority</th>
-                    <th>Health</th>
-                  </tr>
-                </thead>
-                <tbody id="gemini-api-keys-table"></tbody>
-              </table>
-            </div>
+        <div>
+          <p id="public-rpd-copy" class="section-copy" style="margin-bottom:8px">Loading router quota ledger.</p>
+          <div class="table-wrap">
+            <table class="table responsive-table quota-table public-rpd-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Accounts</th>
+                  <th>RPD left</th>
+                  <th>Used / limit</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="public-rpd-table"></tbody>
+            </table>
           </div>
-          <div>
-            <h4 class="section-title" style="font-size:15px;margin-bottom:10px">${svgIcon('chart')} Google Quota (Cloud Monitoring)</h4>
-            <p class="section-copy" style="margin-bottom:8px">Real-time usage from Google Cloud Monitoring — all sources, not just this router. RPM = last completed minute; RPD = today's total. ~1-2 min lag.</p>
-            <div class="table-wrap">
-              <table class="table responsive-table" style="font-size:13px">
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Model</th>
-                    <th>Metric</th>
-                    <th>RPM used</th>
-                    <th>RPM limit</th>
-                    <th>RPM left</th>
-                    <th>RPD used</th>
-                    <th>RPD limit</th>
-                    <th>RPD left</th>
-                  </tr>
-                </thead>
-                <tbody id="google-quota-table"></tbody>
-              </table>
-            </div>
-            <h4 class="section-title" style="font-size:15px;margin:16px 0 10px">${svgIcon('chart')} Local Ledger (this router only)</h4>
-            <div class="table-wrap">
-              <table class="table quota-table responsive-table">
-                <thead>
-                  <tr>
-                    <th>Group</th>
-                    <th>Model</th>
-                    <th>RPM</th>
-                    <th>TPM</th>
-                    <th>RPD</th>
-                    <th>State</th>
-                  </tr>
-                </thead>
-                <tbody id="gemini-api-quota-table"></tbody>
-              </table>
-            </div>
-          </div>
-          <div>
-            <h4 class="section-title" style="font-size:15px;margin:16px 0 10px">${svgIcon('chart')} Gemini RPD by Account</h4>
-            <p id="public-rpd-copy" class="section-copy" style="margin-bottom:8px">Loading the router quota ledger.</p>
-            <div class="table-wrap">
-              <table class="table responsive-table quota-table public-rpd-table">
-                <thead>
-                  <tr>
-                    <th>Account</th>
-                    <th>Model</th>
-                    <th>RPD</th>
-                    <th>State</th>
-                  </tr>
-                </thead>
-                <tbody id="public-rpd-table"></tbody>
-              </table>
-            </div>
+          <p class="section-copy" style="margin:18px 0 8px">Per account &mdash; daily request capacity from the same ledger used by routing. RPD resets at the next Pacific midnight.</p>
+          <div class="table-wrap">
+            <table class="table responsive-table quota-table public-rpd-table">
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>Model</th>
+                  <th>RPD left</th>
+                  <th>Used / limit</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="public-rpd-account-table"></tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -1469,17 +1436,6 @@ export function renderAppShell(input: {
             <button id="logout-button" type="button" class="warn">Log out</button>
           </div>
         </div>
-
-        <section class="panel section">
-          <div class="section-head">
-            <div>
-              <h2 class="section-title">Runtime Diagnostics</h2>
-              <p class="section-copy">Router counters, backend routing state, token volume, and operator feedback.</p>
-            </div>
-            <div id="runtime-pills" class="meta-row"></div>
-          </div>
-          <div id="stats-grid" class="stats-grid"></div>
-        </section>
 
         <section class="panel section">
           <div class="section-head">
@@ -1842,6 +1798,7 @@ export function renderAppShell(input: {
       const publicStats = document.getElementById('public-stats');
       const publicRpdCopy = document.getElementById('public-rpd-copy');
       const publicRpdTable = document.getElementById('public-rpd-table');
+      const publicRpdAccountTable = document.getElementById('public-rpd-account-table');
       const hourlyChart = document.getElementById('hourly-chart');
       const routeChart = document.getElementById('route-chart');
       const adminDashboard = document.getElementById('admin-dashboard');
@@ -1855,9 +1812,6 @@ export function renderAppShell(input: {
       const backendHint = document.getElementById('backend-hint');
       const providerPills = document.getElementById('provider-pills');
       const providerOutput = document.getElementById('provider-output');
-      const geminiApiKeysTable = document.getElementById('gemini-api-keys-table');
-      const geminiApiQuotaTable = document.getElementById('gemini-api-quota-table');
-      const googleQuotaTable = document.getElementById('google-quota-table');
       const statsGrid = document.getElementById('stats-grid');
       const compatibilityForm = document.getElementById('compatibility-form');
       const compatibilityStatus = document.getElementById('compatibility-status');
@@ -2110,6 +2064,25 @@ export function renderAppShell(input: {
         });
       });
 
+      // Delegated handler: expand/collapse the idle (untouched) quota rows in any RPD table.
+      document.addEventListener('click', function(event) {
+        const button = event.target.closest ? event.target.closest('[data-rpd-toggle]') : null;
+        if (!button) return;
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        const toggleRow = button.closest('tr');
+        let sibling = toggleRow ? toggleRow.nextElementSibling : null;
+        while (sibling && sibling.classList.contains('rpd-idle')) {
+          sibling.classList.toggle('hidden', expanded);
+          sibling = sibling.nextElementSibling;
+        }
+        const labelArrow = button.querySelector('.rpd-toggle-arrow');
+        const count = button.textContent.replace(/[^0-9]/g, '');
+        button.innerHTML = '<span class="rpd-toggle-arrow">&#9656;</span> ' +
+          (expanded ? 'Show ' : 'Hide ') + count + ' idle model' + (count === '1' ? '' : 's');
+        void labelArrow;
+      });
+
       function autosizeTextarea(textarea) {
         if (!textarea || !textarea.classList || !textarea.classList.contains('compact-textarea')) return;
         const minHeight = Math.max(46, Number(textarea.dataset.minHeight || 46) || 46);
@@ -2256,17 +2229,8 @@ export function renderAppShell(input: {
       function renderPublicPills(summary) {
         const pills = [];
         const runtime = summary.runtime || {};
-        const compatibility = summary.compatibility || {};
-        pills.push('<span class="chip">Primary surface ' + escapeHtml(compatibility.defaultSurface || 'gemrouter') + '</span>');
-        pills.push('<span class="chip">API surfaces ' + escapeHtml((compatibility.enabledSurfaces || []).join(', ') || 'n/a') + '</span>');
-        if (runtime.activeDefaultBackend) {
-          pills.push('<span class="chip">Default backend ' + escapeHtml(runtime.activeDefaultBackend) + '</span>');
-        }
         if (runtime.lastBackendUsed) {
           pills.push('<span class="chip">Last backend ' + escapeHtml(runtime.lastBackendUsed) + '</span>');
-        }
-        if (runtime.geminiApiAvailable !== undefined) {
-          pills.push('<span class="chip ' + (runtime.geminiApiAvailable ? 'good' : 'warn') + '">' + (runtime.geminiApiAvailable ? 'Gemini API available' : 'Gemini API attention') + '</span>');
         }
         publicRuntimePills.innerHTML = pills.join('');
       }
@@ -2293,6 +2257,51 @@ export function renderAppShell(input: {
         }).join('');
       }
 
+      // Strongest -> weakest. Anything not listed sorts after, alphabetically.
+      const MODEL_POWER_ORDER = [
+        'gemini-3.5-flash',
+        'gemini-3-flash-preview',
+        'gemini-3-flash',
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-3.1-flash-lite',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-lite',
+        'gemma-4-31b-it',
+        'gemma-4-26b-a4b-it',
+      ];
+      function modelPowerRank(id) {
+        const index = MODEL_POWER_ORDER.indexOf(String(id || '').toLowerCase());
+        return index === -1 ? MODEL_POWER_ORDER.length : index;
+      }
+      function byModelPower(left, right) {
+        const delta = modelPowerRank(left.model) - modelPowerRank(right.model);
+        return delta !== 0 ? delta : String(left.model).localeCompare(String(right.model));
+      }
+      function quotaMeterCell(used, limit) {
+        const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+        const meterClass = percent >= 100 ? 'bad' : percent > 75 ? 'warn' : 'good';
+        return '<td data-label=""><div class="quota-meter ' + meterClass + '" title="' + escapeHtml(String(percent)) + '% used"><span style="width:' + escapeHtml(String(percent)) + '%"></span></div></td>';
+      }
+      // Render consumed rows first; collapse the idle (untouched) ones behind a toggle.
+      function renderRpdRows(tableEl, rows, idleColspan) {
+        const consumed = rows.filter(function(r) { return r.html.used > 0; }).map(function(r) { return r.row; });
+        const idle = rows.filter(function(r) { return r.html.used <= 0; }).map(function(r) { return r.row; });
+        let out = consumed.join('');
+        if (idle.length > 0) {
+          out += '<tr class="rpd-toggle-row"><td colspan="' + idleColspan + '">' +
+            '<button type="button" class="secondary rpd-toggle" data-rpd-toggle aria-expanded="false">' +
+            '<span class="rpd-toggle-arrow">&#9656;</span> Show ' + idle.length + ' idle model' + (idle.length === 1 ? '' : 's') +
+            '</button></td></tr>';
+          out += idle.map(function(row) { return row.replace('<tr>', '<tr class="rpd-idle hidden">'); }).join('');
+        }
+        tableEl.innerHTML = consumed.length + idle.length > 0
+          ? out
+          : '<tr><td colspan="' + idleColspan + '" class="muted">No Gemini RPD limits are configured.</td></tr>';
+      }
+
       function renderPublicRpd(summary) {
         if (!publicRpdTable || !publicRpdCopy) return;
         const quota = summary && summary.provider && summary.provider.quota ? summary.provider.quota : {};
@@ -2308,32 +2317,76 @@ export function renderAppShell(input: {
         });
 
         const resetAt = quota.rpdResetAt ? formatTimestamp(quota.rpdResetAt) : 'the next Pacific midnight';
-        publicRpdCopy.textContent = 'Observed by GemRouter since the current Pacific day. Reset: ' + resetAt + '.';
+        publicRpdCopy.textContent = 'Cumulative daily request capacity from the same ledger used by routing. RPD resets at ' + resetAt + '.';
 
-        const rows = [];
+        const byModel = new Map();
+        const perAccount = [];
         const groups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
         groups.forEach(function(group) {
           const groupId = typeof group.id === 'string' && group.id.trim() ? group.id.trim() : 'account';
           const accounts = accountLabelsByGroup.get(groupId);
-          const accountLabel = accounts && accounts.length > 0 ? accounts.join(', ') : groupId;
+          const accountLabels = accounts && accounts.length > 0 ? accounts : [groupId];
           const models = Array.isArray(group.models) ? group.models : [];
           models.forEach(function(model) {
+            const modelId = String(model && model.model || '').trim();
+            if (!modelId) return;
             const rpd = model && model.rpd ? model.rpd : null;
             if (!rpd || rpd.limit === null || rpd.limit === undefined) return;
             const used = typeof rpd.used === 'number' ? rpd.used : 0;
-            if (used <= 0) return;
             const limit = typeof rpd.limit === 'number' ? rpd.limit : null;
-            const percent = limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-            const meterClass = percent >= 100 ? 'bad' : percent > 75 ? 'warn' : 'good';
-            rows.push('<tr>' +
-              '<td data-label="Account"><strong>' + escapeHtml(accountLabel) + '</strong></td>' +
-              '<td data-label="Model"><strong>' + escapeHtml(String(model.model || 'unknown')) + '</strong></td>' +
-              '<td data-label="RPD">' + escapeHtml(fmtNumber(used)) + ' / ' + escapeHtml(fmtNumber(limit)) + '</td>' +
-              '<td data-label="State"><div class="quota-meter ' + meterClass + '" title="' + escapeHtml(String(percent)) + '% used"><span style="width:' + escapeHtml(String(percent)) + '%"></span></div></td>' +
-            '</tr>');
+            if (limit === null) return;
+            const entry = byModel.get(modelId) || {
+              model: modelId, accounts: new Set(), used: 0, limit: 0, remaining: 0,
+            };
+            accountLabels.forEach(function(label) { entry.accounts.add(label); });
+            entry.used += used;
+            entry.limit += limit;
+            entry.remaining += Math.max(0, limit - used);
+            byModel.set(modelId, entry);
+            accountLabels.forEach(function(label) {
+              perAccount.push({ account: label, model: modelId, used: used, limit: limit, remaining: Math.max(0, limit - used) });
+            });
           });
         });
-        publicRpdTable.innerHTML = rows.join('') || '<tr><td colspan="4" class="muted">No Gemini RPD usage in the current Pacific day.</td></tr>';
+
+        const modelRows = Array.from(byModel.values())
+          .sort(byModelPower)
+          .map(function(entry) {
+            const accountCount = entry.accounts.size;
+            const accountLabel = accountCount + ' ' + (accountCount === 1 ? 'account' : 'accounts');
+            return {
+              html: { used: entry.used },
+              row: '<tr>' +
+                '<td data-label="Model"><strong>' + escapeHtml(entry.model) + '</strong></td>' +
+                '<td data-label="Accounts">' + escapeHtml(accountLabel) + '</td>' +
+                '<td data-label="RPD left"><strong>' + escapeHtml(fmtNumber(entry.remaining)) + '</strong></td>' +
+                '<td data-label="Used / limit">' + escapeHtml(fmtNumber(entry.used)) + ' / ' + escapeHtml(fmtNumber(entry.limit)) + '</td>' +
+                quotaMeterCell(entry.used, entry.limit) +
+              '</tr>',
+            };
+          });
+        renderRpdRows(publicRpdTable, modelRows, 5);
+
+        if (publicRpdAccountTable) {
+          const accountRows = perAccount
+            .sort(function(left, right) {
+              const accountDelta = String(left.account).localeCompare(String(right.account));
+              return accountDelta !== 0 ? accountDelta : byModelPower(left, right);
+            })
+            .map(function(entry) {
+              return {
+                html: { used: entry.used },
+                row: '<tr>' +
+                  '<td data-label="Account"><strong>' + escapeHtml(entry.account) + '</strong></td>' +
+                  '<td data-label="Model">' + escapeHtml(entry.model) + '</td>' +
+                  '<td data-label="RPD left"><strong>' + escapeHtml(fmtNumber(entry.remaining)) + '</strong></td>' +
+                  '<td data-label="Used / limit">' + escapeHtml(fmtNumber(entry.used)) + ' / ' + escapeHtml(fmtNumber(entry.limit)) + '</td>' +
+                  quotaMeterCell(entry.used, entry.limit) +
+                '</tr>',
+              };
+            });
+          renderRpdRows(publicRpdAccountTable, accountRows, 5);
+        }
       }
 
       function renderHourlyChart(summary) {
@@ -2538,6 +2591,7 @@ export function renderAppShell(input: {
       }
 
       function renderRuntimePills(data) {
+        if (!runtimePills) return;
         const runtime = data.runtime || {};
         const compatibility = data.compatibility || {};
         const routing = data.routing || {};
@@ -2646,31 +2700,10 @@ export function renderAppShell(input: {
         const provider = data.provider || {};
         const geminiApi = provider.geminiApi || {};
         const quota = provider.quota || {};
-        const projectQuota = resolveProjectQuotaState(quota);
-        const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
-        const quotaGroups = Array.isArray(quota.quotaGroups) ? quota.quotaGroups : [];
-        const projectQuotas = Array.isArray(projectQuota.projectQuotas) ? projectQuota.projectQuotas : [];
-        const projectQuotaOkCount = projectQuotas.filter(function(entry) { return entry && entry.ok === true; }).length;
         const models = Array.isArray(provider.models) ? provider.models : [];
-        const supportedModelIds = models
-          .map(function(model) { return model && typeof model.id === 'string' ? model.id.trim() : ''; })
-          .filter(Boolean);
         const directModels = models.filter(function(model) { return model && model.kind === 'gemini-api'; });
         const directModelCount = directModels.length || provider.directModelCount || 0;
-        providerPills.innerHTML = [
-          '<span class="chip ' + (geminiApi.enabled ? 'good' : 'warn') + '">' + (geminiApi.enabled ? 'Gemini API enabled' : 'Gemini API disabled') + '</span>',
-          '<span class="chip">Accounts ' + escapeHtml(String(geminiApi.usableKeyCount || 0)) + '/' + escapeHtml(String(geminiApi.configuredKeyCount || 0)) + '</span>',
-          '<span class="chip">Configured model ' + escapeHtml(String(provider.configuredModel || 'n/a')) + '</span>',
-          '<span class="chip">Last API model ' + escapeHtml(String(geminiApi.lastResolvedModel || 'n/a')) + '</span>',
-          '<span class="chip">Tier ' + escapeHtml(String(geminiApi.defaultTier || 'n/a')) + '</span>',
-          '<span class="chip">Public models ' + escapeHtml(String(directModelCount)) + '</span>',
-          '<span class="chip ' + (projectQuota.authoritative ? 'good' : '') + '">Quota ' + escapeHtml(projectQuota.authoritative ? ('limits live · usage local ' + String(projectQuotaOkCount) + '/' + String(projectQuotas.length || 0)) : 'local only') + '</span>',
-          '<span class="chip">Quota refresh ' + escapeHtml(projectQuota.updatedAt ? formatTimestamp(projectQuota.updatedAt) : 'pending') + '</span>',
-        ].join('');
-
-        renderGeminiApiKeyTable(apiKeys);
-        renderGoogleQuotaTable(projectQuotas, apiKeys, quotaGroups);
-        renderGeminiApiQuotaTable(quotaGroups, supportedModelIds);
+        providerPills.innerHTML = '';
 
         providerOutput.textContent = [
           '[gemini_api]',
@@ -2684,28 +2717,6 @@ export function renderAppShell(input: {
           'last_error=' + String(geminiApi.lastError || ''),
           'model_discovery_last_refresh=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastRefreshAt) || ''),
           'model_discovery_last_error=' + String((geminiApi.modelDiscovery && geminiApi.modelDiscovery.lastError) || ''),
-          '',
-          '[project_quota]',
-          'source=' + String(projectQuota.source || quota.source || 'local-ledger'),
-          'authoritative=' + String(Boolean(projectQuota.authoritative)),
-          'updated_at=' + String(projectQuota.updatedAt || ''),
-          'last_error=' + String(projectQuota.lastError || ''),
-          ...(projectQuotas.length > 0
-            ? projectQuotas.map(function(entry) {
-              const accountId = lookupAccountIdByProjectId(apiKeys, entry.projectId);
-              const predictRpm = extractProjectQuotaPredictRpm(entry);
-              return [
-                'account=' + accountId,
-                'project=' + String(entry.projectId || ''),
-                'ok=' + String(Boolean(entry.ok)),
-                'metrics=' + String(Array.isArray(entry.metrics) ? entry.metrics.length : 0),
-                predictRpm ? 'predict_rpm=' + predictRpm : '',
-                entry.statusCode ? 'status=' + String(entry.statusCode) : '',
-                entry.error ? 'error=' + String(entry.error) : '',
-                entry.message ? 'message=' + String(entry.message) : '',
-              ].filter(Boolean).join(' ');
-            })
-            : ['none']),
           '',
           '[upstream]',
           'status=' + String((geminiApi.lastUpstreamError && geminiApi.lastUpstreamError.status) || ''),
@@ -2725,26 +2736,6 @@ export function renderAppShell(input: {
               ].join(' ');
             })
             : ['none']),
-          '',
-          '[free_tier_metrics]',
-          ...(projectQuotas.length > 0
-            ? projectQuotas.map(function(entry) {
-              const m = entry && entry.monitoring && typeof entry.monitoring === 'object' ? entry.monitoring : {};
-              const dbg = m.debug && typeof m.debug === 'object' ? m.debug : {};
-              const ftModels = Array.isArray(m.freeTierPerModel) ? m.freeTierPerModel : [];
-              return [
-                'project=' + String(entry.projectId || ''),
-                'ok=' + String(Boolean(m.freeTierOk)),
-                'models=' + String(ftModels.length),
-                'rpm_status=' + String(dbg.freeTierRpmStatus || '?'),
-                'rpd_status=' + String(dbg.freeTierRpdStatus || '?'),
-                'limit_status=' + String(dbg.freeTierLimitStatus || '?'),
-                ftModels.length > 0
-                  ? ftModels.map(function(fm) { return String(fm.model || '') + '(rpm=' + String(fm.rpmUsed ?? '-') + '/' + String(fm.rpmLimit ?? '-') + ' rpd=' + String(fm.rpdUsed ?? '-') + '/' + String(fm.rpdLimit ?? '-') + ')'; }).join(' ')
-                  : 'no_data',
-              ].join(' | ');
-            })
-            : ['no project quota data']),
         ].join('\\n');
       }
 
@@ -3105,6 +3096,7 @@ export function renderAppShell(input: {
       }
 
       function renderStats(summary) {
+        if (!statsGrid) return;
         const totals = summary.totals;
         const feedback = summary.feedback;
         statsGrid.innerHTML = [
