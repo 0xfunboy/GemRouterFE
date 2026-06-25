@@ -1,10 +1,8 @@
 import 'dotenv/config';
 
-import { execFile } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
@@ -72,8 +70,6 @@ import { renderAppShell } from './ui.js';
 const PROJECT_NAME = 'GemRouter';
 const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
-const execFileAsync = promisify(execFile);
-
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
@@ -92,33 +88,6 @@ const compatibility = new CompatibilityStore(config.compatibility.settingsStoreP
   enabledSurfaces: config.compatibility.enabledSurfaces,
 });
 const interactions = new InteractionStore(config.interactionsStorePath);
-
-interface GeminiProjectQuotaState {
-  updatedAt: string | null;
-  source: 'google-service-usage+cloud-monitoring+local-ledger' | 'google-service-usage+local-ledger' | 'local-ledger';
-  /** Service Usage can report effective configured limits. */
-  limitsAuthoritative: boolean;
-  /** AI Studio does not expose exact current RPM/TPM/RPD remaining through these APIs. */
-  remainingAuthoritative: false;
-  /** Monitoring is delayed telemetry, never an admission authority for AI Studio free tier. */
-  authoritative: boolean;
-  monitoringAuthoritative: boolean;
-  projectQuotas: Array<Record<string, unknown>>;
-  lastError: string | null;
-}
-
-const GEMINI_PROJECT_QUOTA_REFRESH_MS = 30_000;
-let geminiProjectQuotaState: GeminiProjectQuotaState = {
-  updatedAt: null,
-  source: 'local-ledger',
-  limitsAuthoritative: false,
-  remainingAuthoritative: false,
-  authoritative: false,
-  monitoringAuthoritative: false,
-  projectQuotas: [],
-  lastError: null,
-};
-let geminiProjectQuotaRefresh: Promise<GeminiProjectQuotaState> | null = null;
 
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
@@ -1161,12 +1130,6 @@ function buildProviderSnapshot(
       apiKeys: geminiApi.keys ?? [],
       quotaGroups: geminiApi.quotaGroups ?? [],
       models: geminiApi.models ?? [],
-      source: geminiProjectQuotaState.source,
-      authoritative: geminiProjectQuotaState.authoritative,
-      monitoringAuthoritative: geminiProjectQuotaState.monitoringAuthoritative,
-      updatedAt: geminiProjectQuotaState.updatedAt,
-      lastError: geminiProjectQuotaState.lastError,
-      projectQuotas: geminiProjectQuotaState.projectQuotas,
     },
     ollama: {
       enabled: ollama.enabled ?? false,
@@ -1235,6 +1198,21 @@ function buildGuestSummary() {
     }))
     : [];
   const providerModels = Array.isArray(provider.models) ? provider.models as Record<string, unknown>[] : [];
+
+  // Cumulative RPD per model: sum remaining and limit across all quota groups
+  const rpdByModel: Record<string, { remaining: number | null; limit: number | null }> = {};
+  for (const group of publicQuotaGroups) {
+    for (const m of group.models) {
+      const rpd = m.rpd as { remaining?: number | null; limit?: number | null } | null;
+      if (!rpd) continue;
+      const id = String(m.model);
+      if (!rpdByModel[id]) rpdByModel[id] = { remaining: null, limit: null };
+      const entry = rpdByModel[id];
+      if (typeof rpd.remaining === 'number') entry.remaining = (entry.remaining ?? 0) + rpd.remaining;
+      if (typeof rpd.limit === 'number') entry.limit = (entry.limit ?? 0) + rpd.limit;
+    }
+  }
+
   const usageWindow = interactions.hourlyWindow(24);
   const stats = usageWindow.totals;
   const recent = interactions.list(240);
@@ -1276,6 +1254,7 @@ function buildGuestSummary() {
       quota: {
         apiKeys: publicApiKeys,
         quotaGroups: publicQuotaGroups,
+        rpdByModel,
         rpdResetAt: new Date(nextPacificDayStartMs()).toISOString(),
         rpdWindow: 'America/Los_Angeles',
       },
@@ -1300,409 +1279,6 @@ function buildGuestSummary() {
         .map(([label, requests]) => ({ label, requests })),
     },
   };
-}
-
-async function readGcloudAccessToken(): Promise<string> {
-  const { stdout } = await execFileAsync('gcloud', ['auth', 'print-access-token'], {
-    timeout: 15_000,
-    maxBuffer: 1024 * 1024,
-  });
-  const token = stdout.trim();
-  if (!token) throw new Error('gcloud returned an empty access token');
-  return token;
-}
-
-function normalizeGoogleProjectRef(projectId: string): string {
-  return String(projectId ?? '').trim().replace(/^projects\//, '');
-}
-
-interface MonitoringUsageEntry {
-  quotaMetric: string;
-  limitName: string;
-  model: string | null;
-  value: number;
-}
-
-function parseMonitoringTimeSeries(timeSeries: Array<Record<string, unknown>>): MonitoringUsageEntry[] {
-  const results: MonitoringUsageEntry[] = [];
-  for (const series of timeSeries) {
-    const metric = (series.metric as Record<string, unknown> | undefined) ?? {};
-    const labels = (metric.labels as Record<string, unknown> | undefined) ?? {};
-    const points = Array.isArray(series.points) ? series.points as Array<Record<string, unknown>> : [];
-    const latest = points[0];
-    if (!latest) continue;
-    const val = (latest.value as Record<string, unknown> | undefined) ?? {};
-    let value = 0;
-    if (typeof val.int64Value === 'string') value = parseInt(val.int64Value, 10) || 0;
-    else if (typeof val.int64Value === 'number') value = val.int64Value;
-    else if (typeof val.doubleValue === 'number') value = Math.round(val.doubleValue);
-    results.push({
-      quotaMetric: String(labels.quota_metric ?? ''),
-      limitName: String(labels.limit_name ?? ''),
-      model: labels.model ? String(labels.model) : null,
-      value,
-    });
-  }
-  return results;
-}
-
-function parseRequestCountTimeSeries(timeSeries: Array<Record<string, unknown>>, mostRecentOnly: boolean): number | null {
-  if (timeSeries.length === 0) return null;
-  let total = 0;
-  let hasData = false;
-  for (const series of timeSeries) {
-    const points = Array.isArray(series.points) ? series.points as Array<Record<string, unknown>> : [];
-    const relevant = mostRecentOnly ? points.slice(0, 1) : points;
-    for (const point of relevant) {
-      const val = (point.value as Record<string, unknown> | undefined) ?? {};
-      let value = 0;
-      if (typeof val.int64Value === 'string') value = parseInt(val.int64Value, 10) || 0;
-      else if (typeof val.int64Value === 'number') value = val.int64Value;
-      else if (typeof val.doubleValue === 'number') value = Math.round(val.doubleValue);
-      total += value;
-      hasData = true;
-    }
-  }
-  return hasData ? total : null;
-}
-
-interface FreeTierRow {
-  model: string;
-  limitName: string;
-  value: number;
-}
-
-interface FreeTierModelMetrics {
-  model: string;
-  rpmUsed: number | null;
-  rpdUsed: number | null;
-  rpmLimit: number | null;
-  rpdLimit: number | null;
-}
-
-function parseFreeTierTimeSeries(timeSeries: Array<Record<string, unknown>>, mostRecentOnly: boolean): FreeTierRow[] {
-  const results: FreeTierRow[] = [];
-  for (const s of timeSeries) {
-    const metric = (s.metric as Record<string, unknown> | undefined) ?? {};
-    const labels = (metric.labels as Record<string, unknown> | undefined) ?? {};
-    const model = String(labels.model ?? '').trim();
-    const limitName = String(labels.limit_name ?? '').trim();
-    if (!model || !limitName) continue;
-    const points = Array.isArray(s.points) ? s.points as Array<Record<string, unknown>> : [];
-    const relevant = mostRecentOnly ? points.slice(0, 1) : points;
-    let value = 0;
-    for (const point of relevant) {
-      const val = (point.value as Record<string, unknown> | undefined) ?? {};
-      if (typeof val.int64Value === 'string') value += parseInt(val.int64Value, 10) || 0;
-      else if (typeof val.int64Value === 'number') value += val.int64Value;
-      else if (typeof val.doubleValue === 'number') value += Math.round(val.doubleValue);
-    }
-    results.push({ model, limitName, value });
-  }
-  return results;
-}
-
-function mergeFreeTierMetrics(rpmRows: FreeTierRow[], rpdRows: FreeTierRow[], limitRows: FreeTierRow[]): FreeTierModelMetrics[] {
-  const byModel: Record<string, FreeTierModelMetrics> = {};
-  const get = (model: string) => {
-    if (!byModel[model]) byModel[model] = { model, rpmUsed: null, rpdUsed: null, rpmLimit: null, rpdLimit: null };
-    return byModel[model];
-  };
-  for (const row of rpmRows) {
-    if (!row.limitName.toUpperCase().includes('MINUTE')) continue;
-    const entry = get(row.model);
-    entry.rpmUsed = (entry.rpmUsed ?? 0) + row.value;
-  }
-  for (const row of rpdRows) {
-    if (!row.limitName.toUpperCase().includes('DAY')) continue;
-    const entry = get(row.model);
-    entry.rpdUsed = (entry.rpdUsed ?? 0) + row.value;
-  }
-  for (const row of limitRows) {
-    const upper = row.limitName.toUpperCase();
-    const entry = get(row.model);
-    if (upper.includes('MINUTE')) entry.rpmLimit = row.value;
-    else if (upper.includes('DAY')) entry.rpdLimit = row.value;
-  }
-  return Object.values(byModel);
-}
-
-async function fetchGeminiQuotaFromMonitoring(
-  projectId: string,
-  accessToken: string,
-): Promise<Record<string, unknown>> {
-  const normalizedProjectId = normalizeGoogleProjectRef(projectId);
-  const now = new Date();
-  const nowMs = now.getTime();
-  // Rate (RPM): GAUGE metric - query last 5 minutes, 60s alignment
-  const rateStart = new Date(nowMs - 5 * 60_000);
-  // Allocation (RPD): GAUGE metric - query last 6 hours, 3600s alignment, take most recent point
-  const allocStart = new Date(nowMs - 6 * 60 * 60_000);
-  // api/request_count is CUMULATIVE → ALIGN_DELTA gives count in each alignment window
-  const startOfDayMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const startOfDay = new Date(startOfDayMs);
-  const dayElapsedSeconds = Math.max(120, Math.floor((nowMs - startOfDayMs) / 1000));
-  const reqCountRpmStart = new Date(nowMs - 2 * 60_000);
-  const headers = { Authorization: `Bearer ${accessToken}` };
-
-  const makeUrl = (filter: string, start: Date, alignPeriod: string, aligner: string): URL => {
-    const url = new URL(`https://monitoring.googleapis.com/v3/projects/${encodeURIComponent(normalizedProjectId)}/timeSeries`);
-    url.searchParams.set('filter', filter);
-    url.searchParams.set('interval.startTime', start.toISOString());
-    url.searchParams.set('interval.endTime', now.toISOString());
-    url.searchParams.set('aggregation.alignmentPeriod', alignPeriod);
-    url.searchParams.set('aggregation.perSeriesAligner', aligner);
-    url.searchParams.set('view', 'FULL');
-    return url;
-  };
-
-  // quota/* metrics: only populated for standard GCP quota (not AI Studio free-tier)
-  const GEMINI_QUOTA_FILTER = 'metric.labels.quota_metric : "generativelanguage"';
-  const rateUrl = makeUrl(
-    `metric.type="serviceruntime.googleapis.com/quota/rate/net_usage" AND ${GEMINI_QUOTA_FILTER}`,
-    rateStart, '60s', 'ALIGN_MAX',
-  );
-  const allocUrl = makeUrl(
-    `metric.type="serviceruntime.googleapis.com/quota/allocation/usage" AND ${GEMINI_QUOTA_FILTER}`,
-    allocStart, '3600s', 'ALIGN_MAX',
-  );
-  const limitUrl = makeUrl(
-    `metric.type="serviceruntime.googleapis.com/quota/limit" AND ${GEMINI_QUOTA_FILTER}`,
-    rateStart, '60s', 'ALIGN_MAX',
-  );
-  // api/request_count: CUMULATIVE, works for any project making API calls, no per-model breakdown
-  const REQ_COUNT_FILTER = 'metric.type="serviceruntime.googleapis.com/api/request_count" AND resource.type="consumed_api" AND resource.labels.service="generativelanguage.googleapis.com"';
-  const reqCountRpmUrl = makeUrl(REQ_COUNT_FILTER, reqCountRpmStart, '60s', 'ALIGN_DELTA');
-  const reqCountRpdUrl = makeUrl(REQ_COUNT_FILTER, startOfDay, `${dayElapsedSeconds}s`, 'ALIGN_DELTA');
-  // Native free-tier quota metrics: authoritative per-model usage from Google Cloud Monitoring
-  const FREE_TIER_USAGE_FILTER = 'metric.type="generativelanguage.googleapis.com/quota/generate_content_free_tier_requests/usage"';
-  const FREE_TIER_LIMIT_FILTER = 'metric.type="generativelanguage.googleapis.com/quota/generate_content_free_tier_requests/limit"';
-  const freeTierReqsRpmUrl = makeUrl(FREE_TIER_USAGE_FILTER, reqCountRpmStart, '60s', 'ALIGN_DELTA');
-  const freeTierReqsRpdUrl = makeUrl(FREE_TIER_USAGE_FILTER, startOfDay, `${dayElapsedSeconds}s`, 'ALIGN_DELTA');
-  const freeTierReqsLimitUrl = makeUrl(FREE_TIER_LIMIT_FILTER, allocStart, '3600s', 'ALIGN_NEXT_OLDER');
-
-  const [rateResp, allocResp, limitResp, reqCountRpmResp, reqCountRpdResp, freeTierRpmResp, freeTierRpdResp, freeTierLimitResp] = await Promise.all([
-    fetch(rateUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(allocUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(limitUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(reqCountRpmUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(reqCountRpdUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(freeTierReqsRpmUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(freeTierReqsRpdUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-    fetch(freeTierReqsLimitUrl, { headers, signal: AbortSignal.timeout(25_000) }).catch(() => null),
-  ]);
-  const [ratePay, allocPay, limitPay, reqCountRpmPay, reqCountRpdPay, freeTierRpmPay, freeTierRpdPay, freeTierLimitPay]: [
-    Record<string, unknown>, Record<string, unknown>, Record<string, unknown>,
-    Record<string, unknown>, Record<string, unknown>,
-    Record<string, unknown>, Record<string, unknown>, Record<string, unknown>,
-  ] = await Promise.all([
-    rateResp ? rateResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    allocResp ? allocResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    limitResp ? limitResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    reqCountRpmResp ? reqCountRpmResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    reqCountRpdResp ? reqCountRpdResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    freeTierRpmResp ? freeTierRpmResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    freeTierRpdResp ? freeTierRpdResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-    freeTierLimitResp ? freeTierLimitResp.json().catch(() => ({})) as Promise<Record<string, unknown>> : Promise.resolve({}),
-  ]);
-
-  const rateOk = rateResp?.ok ?? false;
-  const allocOk = allocResp?.ok ?? false;
-  const limitOk = limitResp?.ok ?? false;
-  const reqCountOk = (reqCountRpmResp?.ok ?? false) || (reqCountRpdResp?.ok ?? false);
-
-  const rateUsage = parseMonitoringTimeSeries(
-    Array.isArray(ratePay.timeSeries) ? ratePay.timeSeries as Array<Record<string, unknown>> : [],
-  );
-  const allocUsage = parseMonitoringTimeSeries(
-    Array.isArray(allocPay.timeSeries) ? allocPay.timeSeries as Array<Record<string, unknown>> : [],
-  );
-  const limitUsage = parseMonitoringTimeSeries(
-    Array.isArray(limitPay.timeSeries) ? limitPay.timeSeries as Array<Record<string, unknown>> : [],
-  );
-  const requestCountRpm = parseRequestCountTimeSeries(
-    Array.isArray(reqCountRpmPay.timeSeries) ? reqCountRpmPay.timeSeries as Array<Record<string, unknown>> : [],
-    true,
-  );
-  const requestCountRpd = parseRequestCountTimeSeries(
-    Array.isArray(reqCountRpdPay.timeSeries) ? reqCountRpdPay.timeSeries as Array<Record<string, unknown>> : [],
-    false,
-  );
-
-  const errorMessage = (pay: Record<string, unknown>): string =>
-    String((pay.error as Record<string, unknown> | undefined)?.message ?? '');
-
-  // Native free-tier per-model metrics
-  const freeTierRpmRows = parseFreeTierTimeSeries(
-    Array.isArray(freeTierRpmPay.timeSeries) ? freeTierRpmPay.timeSeries as Array<Record<string, unknown>> : [],
-    true,
-  );
-  const freeTierRpdRows = parseFreeTierTimeSeries(
-    Array.isArray(freeTierRpdPay.timeSeries) ? freeTierRpdPay.timeSeries as Array<Record<string, unknown>> : [],
-    false,
-  );
-  const freeTierLimitRows = parseFreeTierTimeSeries(
-    Array.isArray(freeTierLimitPay.timeSeries) ? freeTierLimitPay.timeSeries as Array<Record<string, unknown>> : [],
-    true,
-  );
-  const freeTierPerModel = mergeFreeTierMetrics(freeTierRpmRows, freeTierRpdRows, freeTierLimitRows);
-  const freeTierOk = (freeTierRpmResp?.ok ?? false) || (freeTierRpdResp?.ok ?? false) || (freeTierLimitResp?.ok ?? false);
-
-  return {
-    projectId,
-    ok: rateOk || allocOk || limitOk || reqCountOk || freeTierOk,
-    rateOk,
-    allocOk,
-    limitOk,
-    reqCountOk,
-    freeTierOk,
-    rateUsage,
-    allocUsage,
-    limitUsage,
-    requestCountRpm,
-    requestCountRpd,
-    freeTierPerModel: freeTierPerModel.length > 0 ? freeTierPerModel : null,
-    rateError: !rateOk ? (errorMessage(ratePay) || String(rateResp?.status ?? 'no response')) : null,
-    allocError: !allocOk ? (errorMessage(allocPay) || String(allocResp?.status ?? 'no response')) : null,
-    limitError: !limitOk ? (errorMessage(limitPay) || String(limitResp?.status ?? 'no response')) : null,
-    rateCount: rateUsage.length,
-    allocCount: allocUsage.length,
-    limitCount: limitUsage.length,
-    debug: {
-      rateStatus: rateResp?.status ?? null,
-      allocStatus: allocResp?.status ?? null,
-      limitStatus: limitResp?.status ?? null,
-      reqCountRpmStatus: reqCountRpmResp?.status ?? null,
-      reqCountRpdStatus: reqCountRpdResp?.status ?? null,
-      freeTierRpmStatus: freeTierRpmResp?.status ?? null,
-      freeTierRpdStatus: freeTierRpdResp?.status ?? null,
-      freeTierLimitStatus: freeTierLimitResp?.status ?? null,
-    },
-  };
-}
-
-function summarizeServiceUsageMetrics(payload: Record<string, unknown>): Array<Record<string, unknown>> {
-  const metrics = Array.isArray(payload.metrics) ? payload.metrics as Array<Record<string, unknown>> : [];
-  return metrics
-    .filter((metric) => /generate|token|embedding|embed|request/i.test(String(metric.displayName ?? metric.metric ?? '')))
-    .slice(0, 80)
-    .map((metric) => ({
-      metric: metric.metric ?? null,
-      displayName: metric.displayName ?? null,
-      unit: metric.unit ?? null,
-      limits: (Array.isArray(metric.consumerQuotaLimits) ? metric.consumerQuotaLimits as Array<Record<string, unknown>> : [])
-        .slice(0, 8)
-        .map((limit) => ({
-          name: limit.name ?? null,
-          displayName: limit.displayName ?? null,
-          unit: limit.unit ?? null,
-          quotaBuckets: (Array.isArray(limit.quotaBuckets) ? limit.quotaBuckets as Array<Record<string, unknown>> : [])
-            .slice(0, 6)
-            .map((bucket) => ({
-              effectiveLimit: bucket.effectiveLimit ?? null,
-              defaultLimit: bucket.defaultLimit ?? null,
-              dimensions: bucket.dimensions ?? null,
-            })),
-        })),
-    }));
-}
-
-async function fetchGeminiProjectQuota(projectId: string, accessToken: string): Promise<Record<string, unknown>> {
-  const normalizedProjectId = normalizeGoogleProjectRef(projectId);
-  const url = new URL(`https://serviceusage.googleapis.com/v1beta1/projects/${encodeURIComponent(normalizedProjectId)}/services/generativelanguage.googleapis.com/consumerQuotaMetrics`);
-  url.searchParams.set('view', 'FULL');
-  url.searchParams.set('pageSize', '200');
-  const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-    signal: AbortSignal.timeout(30_000),
-  });
-  const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
-  if (!response.ok) {
-    return {
-      projectId,
-      ok: false,
-      statusCode: response.status,
-      error: (payload.error as Record<string, unknown> | undefined)?.status ?? 'service_usage_error',
-      message: (payload.error as Record<string, unknown> | undefined)?.message ?? response.statusText,
-    };
-  }
-  return {
-    projectId,
-    ok: true,
-    source: 'google-service-usage',
-    metrics: summarizeServiceUsageMetrics(payload),
-  };
-}
-
-async function refreshGeminiProjectQuotaState(force = false): Promise<GeminiProjectQuotaState> {
-  const updatedAt = Date.parse(String(geminiProjectQuotaState.updatedAt ?? ''));
-  if (!force && Number.isFinite(updatedAt) && (Date.now() - updatedAt) < GEMINI_PROJECT_QUOTA_REFRESH_MS) {
-    return geminiProjectQuotaState;
-  }
-  if (geminiProjectQuotaRefresh) return geminiProjectQuotaRefresh;
-  geminiProjectQuotaRefresh = (async () => {
-    const runtime = getRuntimeSnapshot(undefined, { includeSensitiveLlm: true });
-    const geminiApi = ((runtime.backends as Record<string, unknown>)?.geminiApi as Record<string, unknown> | null) ?? {};
-    const keys = Array.isArray(geminiApi.keys) ? geminiApi.keys as Array<Record<string, unknown>> : [];
-    const projectIds = [...new Set(keys.map((key) => String(key.projectId ?? '').trim()).filter(Boolean))];
-    let projectQuotas: Array<Record<string, unknown>> = [];
-    let lastError: string | null = null;
-    if (projectIds.length > 0) {
-      try {
-        const token = await readGcloudAccessToken();
-        projectQuotas = await Promise.all(projectIds.map(async (projectId) => {
-          const [serviceUsageResult, monitoringResult] = await Promise.allSettled([
-            fetchGeminiProjectQuota(projectId, token),
-            fetchGeminiQuotaFromMonitoring(projectId, token),
-          ]);
-          const base = serviceUsageResult.status === 'fulfilled'
-            ? serviceUsageResult.value
-            : { projectId, ok: false, error: 'serviceusage_error', message: serviceUsageResult.reason instanceof Error ? serviceUsageResult.reason.message : String(serviceUsageResult.reason) };
-          const monitoring = monitoringResult.status === 'fulfilled'
-            ? monitoringResult.value
-            : { projectId, ok: false, rateOk: false, allocOk: false, rateUsage: [], allocUsage: [], rateError: monitoringResult.reason instanceof Error ? monitoringResult.reason.message : String(monitoringResult.reason), allocError: null };
-          return { ...base, monitoring };
-        }));
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : String(error);
-      }
-    }
-    const anyServiceUsageOk = projectQuotas.some((quota) => quota.ok === true);
-    const anyMonitoringOk = projectQuotas.some((quota) => {
-      const m = quota.monitoring as Record<string, unknown> | undefined;
-      return m?.ok === true;
-    });
-    geminiProjectQuotaState = {
-      updatedAt: new Date().toISOString(),
-      source: anyServiceUsageOk && anyMonitoringOk
-        ? 'google-service-usage+cloud-monitoring+local-ledger'
-        : anyServiceUsageOk ? 'google-service-usage+local-ledger' : 'local-ledger',
-      limitsAuthoritative: anyServiceUsageOk,
-      remainingAuthoritative: false,
-      authoritative: false,
-      monitoringAuthoritative: false,
-      projectQuotas,
-      lastError,
-    };
-    geminiProjectQuotaRefresh = null;
-    return geminiProjectQuotaState;
-  })();
-  return geminiProjectQuotaRefresh;
-}
-
-function resetGeminiProjectQuotaState(): GeminiProjectQuotaState {
-  geminiProjectQuotaState = {
-    updatedAt: null,
-    source: 'local-ledger',
-    limitsAuthoritative: false,
-    remainingAuthoritative: false,
-    authoritative: false,
-    monitoringAuthoritative: false,
-    projectQuotas: [],
-    lastError: null,
-  };
-  geminiProjectQuotaRefresh = null;
-  return geminiProjectQuotaState;
 }
 
 function getRuntimeSnapshot(
@@ -3114,7 +2690,6 @@ app.get('/admin/me', async (request, reply) => {
 app.get('/admin/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   void refreshFreeTierPolicyIfStale();
-  await refreshGeminiProjectQuotaState();
   let runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const initialBackends = (runtime.backends as Record<string, unknown> | null) ?? null;
   const initialGeminiApi = (initialBackends?.geminiApi as Record<string, unknown> | null) ?? null;
@@ -3177,17 +2752,12 @@ app.post('/admin/provider/gemini-api/discover-models', async (request, reply) =>
 
 app.post('/admin/provider/gemini-api/refresh-quota', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const quotaState = await refreshGeminiProjectQuotaState(true);
   const runtime = getRuntimeSnapshot(request, { includeSensitiveLlm: true });
   const geminiApi = ((runtime.backends as Record<string, unknown>)?.geminiApi as Record<string, unknown> | null) ?? {};
   return {
     ok: true,
-    source: quotaState.source,
-    authoritative: quotaState.authoritative,
-    monitoringAuthoritative: quotaState.monitoringAuthoritative,
-    updatedAt: quotaState.updatedAt,
-    projectQuotas: quotaState.projectQuotas,
-    projectQuotaLastError: quotaState.lastError,
+    source: 'local-ledger',
+    updatedAt: new Date().toISOString(),
     geminiApi,
   };
 });
@@ -3222,7 +2792,6 @@ app.post('/admin/reset-telemetry', async (request, reply) => {
   interactions.clear();
   audit.reset();
   const geminiApi = client.resetTelemetry();
-  resetGeminiProjectQuotaState();
   return {
     ok: true,
     interactions: 0,
@@ -3477,8 +3046,7 @@ app.get('/v1/provider/quota', async (request, reply) => {
         apiKeys: geminiApi.keys ?? [],
         quotaGroups: geminiApi.quotaGroups ?? [],
         models: geminiApi.models ?? [],
-        updatedAt: providerQuota.updatedAt ?? geminiApi.quotaUpdatedAt ?? null,
-        projectQuotas: providerQuota.projectQuotas ?? [],
+        updatedAt: geminiApi.quotaUpdatedAt ?? null,
         lastError: providerQuota.lastError ?? null,
         modelDiscovery: geminiApi.modelDiscovery ?? null,
       },
