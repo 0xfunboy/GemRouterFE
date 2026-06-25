@@ -22,8 +22,13 @@ export interface GeminiApiModelQuotaLedger {
   tpm: WindowCounter;
   rpd: WindowCounter;
   cooldownUntil?: string;
-  cooldownSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand';
+  cooldownSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | '429-backoff' | 'daily-depleted';
   last429At?: string;
+  /** Consecutive generic-429 strikes within the current Pacific day (backoff ladder). */
+  rateLimitStrikes?: number;
+  rateLimitStrikesDay?: number;
+  /** True once this model+account is parked until the next daily reset. */
+  dailyDepleted?: boolean;
   lastSuccessAt?: string;
   lastFailureAt?: string;
   lastFailureCode?: string;
@@ -73,7 +78,8 @@ export interface GeminiApiQuotaModelSnapshot {
   tpm: GeminiApiQuotaMetricSnapshot;
   rpd: GeminiApiQuotaMetricSnapshot;
   cooldownUntil: string | null;
-  cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | null;
+  cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | '429-backoff' | 'daily-depleted' | null;
+  dailyDepleted: boolean;
   last429At: string | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
@@ -102,6 +108,12 @@ function nowIso(): string {
 const PACIFIC_TIME_ZONE = 'America/Los_Angeles';
 /** Short skip window applied when Google returns 503 overloaded/unavailable for a model. */
 const HIGH_DEMAND_COOLDOWN_MS = 30_000;
+/**
+ * Escalating cooldown for generic 429s (no Retry-After, no day scope), per model+account:
+ * strike 1 -> 1 min, strike 2 -> 5 min. A strike beyond the ladder is treated as a daily
+ * quota depletion and parks the model until the next Pacific reset.
+ */
+const RATE_LIMIT_STRIKE_LADDER = [60_000, 300_000];
 
 function pacificDateParts(epochMs: number): { year: number; month: number; day: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -279,7 +291,7 @@ export class GeminiApiQuotaLedger {
     tpmRemaining: number | null;
     rpdRemaining: number | null;
     cooldownUntil: string | null;
-    cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | null;
+    cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | '429-backoff' | 'daily-depleted' | null;
     limit: GeminiApiRateLimit;
   } {
     const now = Date.now();
@@ -331,6 +343,13 @@ export class GeminiApiQuotaLedger {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = nowIso();
     ledger.lastSuccessAt = now;
+    // A success clears the 429 backoff state for this model+account.
+    ledger.rateLimitStrikes = 0;
+    ledger.dailyDepleted = false;
+    if (ledger.cooldownSource === '429-backoff' || ledger.cooldownSource === 'daily-depleted') {
+      delete ledger.cooldownUntil;
+      delete ledger.cooldownSource;
+    }
     if (typeof input.totalTokens === 'number' && Number.isFinite(input.totalTokens)) {
       const event = ledger.tpm.events.find((candidate) => candidate.requestId === input.requestId);
       if (event) event.tokens = input.totalTokens;
@@ -383,14 +402,33 @@ export class GeminiApiQuotaLedger {
     if (input.rateLimited) {
       ledger.last429At = nowString;
       if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0) {
+        // Google told us exactly when to retry: honour it verbatim.
         ledger.cooldownUntil = new Date(now + input.retryAfterMs).toISOString();
         ledger.cooldownSource = 'retry-after';
       } else if (input.rateLimitScope === 'day') {
+        // Explicit per-day quota exhaustion: park until the Pacific reset.
         ledger.cooldownUntil = new Date(nextPacificDayStartMs(now)).toISOString();
         ledger.cooldownSource = 'pacific-reset';
+        ledger.dailyDepleted = true;
       } else {
-        ledger.cooldownUntil = new Date(now + this.config.quotaCooldownMs).toISOString();
-        ledger.cooldownSource = 'upstream-rate-limit';
+        // Generic 429 with no scope hint: escalate per model+account.
+        //   strike 1 -> 1 min, strike 2 -> 5 min, strike 3 -> treat as daily depleted.
+        // Strikes only accrue across days; they reset at the Pacific midnight rollover.
+        const today = pacificDayStartMs(now);
+        if (ledger.rateLimitStrikesDay !== today) {
+          ledger.rateLimitStrikes = 0;
+          ledger.rateLimitStrikesDay = today;
+        }
+        const strikes = (ledger.rateLimitStrikes ?? 0) + 1;
+        ledger.rateLimitStrikes = strikes;
+        if (strikes > RATE_LIMIT_STRIKE_LADDER.length) {
+          ledger.cooldownUntil = new Date(nextPacificDayStartMs(now)).toISOString();
+          ledger.cooldownSource = 'daily-depleted';
+          ledger.dailyDepleted = true;
+        } else {
+          ledger.cooldownUntil = new Date(now + RATE_LIMIT_STRIKE_LADDER[strikes - 1]).toISOString();
+          ledger.cooldownSource = '429-backoff';
+        }
       }
       if (!this.config.countFailed429AsUsage) {
         for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
@@ -441,6 +479,7 @@ export class GeminiApiQuotaLedger {
           rpd: metric(model.rpd),
           cooldownUntil: model.cooldownUntil ?? null,
           cooldownSource: model.cooldownSource ?? null,
+          dailyDepleted: model.dailyDepleted === true,
           last429At: model.last429At ?? null,
           lastSuccessAt: model.lastSuccessAt ?? null,
           lastFailureAt: model.lastFailureAt ?? null,
