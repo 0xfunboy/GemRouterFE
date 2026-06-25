@@ -5,7 +5,7 @@ export interface LLMMessage {
   content: string;
 }
 
-export type LLMBackendId = 'gemini-api';
+export type LLMBackendId = 'gemini-api' | 'ollama';
 export type LLMBackendPreference = 'auto' | LLMBackendId;
 
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */

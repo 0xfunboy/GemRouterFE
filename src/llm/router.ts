@@ -56,13 +56,25 @@ function shouldFallback(
   if (config.strictModelIds?.includes(model)) return false;
   if (remainingBackends.length === 0) return false;
   if (error.options.fallbackEligible !== true) return false;
-  return backend === 'gemini-api';
+  return backend === 'gemini-api' || backend === 'ollama';
 }
 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
-  if (preference === 'gemini-api') return [preference];
-  return [...new Set(config.backendOrder)];
+  if (preference !== 'auto') return [preference];
+  const order = [...new Set(config.backendOrder)];
+  const model = String(opts?.model ?? '').trim().toLowerCase();
+  const isGeminiModel = /^(gemini|gemma)-/.test(model);
+  if (isGeminiModel) {
+    return [
+      ...order.filter((backend) => backend === 'gemini-api'),
+      ...order.filter((backend) => backend !== 'gemini-api'),
+    ];
+  }
+  return [
+    ...order.filter((backend) => backend === 'ollama'),
+    ...order.filter((backend) => backend !== 'ollama'),
+  ];
 }
 
 async function* singleResponseStream(
@@ -81,6 +93,7 @@ export function createLlmRouter(
   config: LLMRouterConfig,
   backends: {
     geminiApi: BackendClient;
+    ollama?: BackendClient;
   },
 ): LLMClient {
   const state: RouterState = {
@@ -91,6 +104,11 @@ export function createLlmRouter(
     lastError: null,
   };
 
+  function getBackendClient(backend: LLMBackendId): BackendClient | undefined {
+    if (backend === 'ollama') return backends.ollama;
+    return backends.geminiApi;
+  }
+
   async function dispatchChat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
     const sequence = resolveBackendSequence(config, opts);
     let lastError: LLMProviderError | null = null;
@@ -99,7 +117,14 @@ export function createLlmRouter(
       const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
-        const rawResponse = await backends.geminiApi.chat(messages, opts);
+        const client = getBackendClient(backend);
+        if (!client) {
+          throw new LLMProviderError('backend_disabled', backend, `Backend ${backend} is not configured.`, {
+            statusCode: 503,
+            fallbackEligible: true,
+          });
+        }
+        const rawResponse = await client.chat(messages, opts);
         const response = annotateResponse(rawResponse, backend, lastError?.backend, lastError?.code);
         state.lastBackendUsed = response.backend ?? backend;
         state.lastFallbackFrom = response.fallbackFrom ?? null;
@@ -161,7 +186,13 @@ export function createLlmRouter(
         const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
-          const client = backends.geminiApi;
+          const client = getBackendClient(backend);
+          if (!client) {
+            throw new LLMProviderError('backend_disabled', backend, `Backend ${backend} is not configured.`, {
+              statusCode: 503,
+              fallbackEligible: true,
+            });
+          }
           const stream = client.streamChat ? client.streamChat(messages, opts) : singleResponseStream(client, messages, opts);
           let finalResponse: LLMResponse | null = null;
           while (true) {
@@ -177,7 +208,7 @@ export function createLlmRouter(
             finalResponse ?? {
               content: '',
               provider: backend,
-              model: opts?.model ?? backends.geminiApi.model,
+              model: opts?.model ?? client.model,
             },
             backend,
             lastError?.backend,
@@ -231,6 +262,9 @@ export function createLlmRouter(
       const geminiApi = backends.geminiApi.health
         ? (backends.geminiApi.health() as Record<string, unknown>)
         : backends.geminiApi.getDiagnostics?.() ?? null;
+      const ollama = backends.ollama?.health
+        ? (backends.ollama.health() as Record<string, unknown>)
+        : backends.ollama?.getDiagnostics?.() ?? null;
       return {
         provider: 'router',
         model: 'gemini-router',
@@ -242,6 +276,7 @@ export function createLlmRouter(
         lastResolutionAt: state.lastResolutionAt,
         lastError: state.lastError,
         geminiApi,
+        ollama,
       };
     },
   };
