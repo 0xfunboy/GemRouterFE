@@ -1895,6 +1895,9 @@ export function renderAppShell(input: {
       const state = {
         apps: [],
         appFormDirty: false,
+        modelsConfigDirty: false,
+        proxyDirty: false,
+        accountsDirty: false,
         adminRefreshInFlight: false,
         adminSummary: null,
         adminStats: null,
@@ -2191,6 +2194,8 @@ export function renderAppShell(input: {
 
       function renderAccounts(accounts) {
         if (!accountsTable) return;
+        // Fresh authoritative data (initial load or post-mutation): edits are settled.
+        state.accountsDirty = false;
         const list = Array.isArray(accounts) ? accounts : [];
         accountsTable.innerHTML = list.map(function(account) {
           const id = escapeHtml(String(account.id || ''));
@@ -2215,6 +2220,8 @@ export function renderAppShell(input: {
 
       async function loadAccounts() {
         if (!accountsTable) return;
+        // Don't clobber in-progress priority/enable edits during a background refresh.
+        if (state.accountsDirty) return;
         try {
           const data = await request('/admin/provider/gemini-api/accounts');
           renderAccounts(data.accounts);
@@ -2224,6 +2231,8 @@ export function renderAppShell(input: {
       }
 
       if (accountsTable) {
+        // Editing a priority/enabled field marks the table dirty so refreshes leave it alone.
+        accountsTable.addEventListener('input', function() { state.accountsDirty = true; });
         accountsTable.addEventListener('click', async function(event) {
           const saveBtn = event.target.closest('.account-save');
           const removeBtn = event.target.closest('.account-remove');
@@ -2318,6 +2327,7 @@ export function renderAppShell(input: {
 
       async function loadProxyConfig() {
         if (!proxyForm) return;
+        if (state.proxyDirty) return;
         try {
           const data = await request('/admin/provider/proxy');
           proxyEnabled.checked = data.enabled === true;
@@ -2330,6 +2340,8 @@ export function renderAppShell(input: {
       }
 
       if (proxyForm) {
+        // Editing any field marks the form dirty so background refreshes don't overwrite it.
+        proxyForm.addEventListener('input', function() { state.proxyDirty = true; });
         proxyForm.addEventListener('submit', async function(event) {
           event.preventDefault();
           const splitLines = function(value) { return String(value || '').split('\\n').map(function(line) { return line.trim(); }).filter(Boolean); };
@@ -2343,6 +2355,7 @@ export function renderAppShell(input: {
                 bypassHosts: splitLines(proxyBypass.value),
               }),
             });
+            state.proxyDirty = false;
             proxyUrls.value = (data.urls || []).join('\\n');
             if (proxyStatus) { proxyStatus.style.color = 'var(--muted)'; proxyStatus.textContent = 'Proxy config saved' + (data.enabled ? ' (enabled)' : ' (disabled)') + '.'; }
           } catch (error) {
@@ -2377,6 +2390,8 @@ export function renderAppShell(input: {
 
       async function loadModelsConfig() {
         if (!modelsEnabledBox) return;
+        // Don't reset an in-progress reorder/selection during a background refresh.
+        if (state.modelsConfigDirty) return;
         try {
           const data = await request('/admin/provider/models-config');
           modelsEnabledOrder = Array.isArray(data.enabled) ? data.enabled.slice() : [];
@@ -2393,6 +2408,7 @@ export function renderAppShell(input: {
           const j = i + delta;
           if (i < 0 || j < 0 || j >= modelsEnabledOrder.length) return;
           const tmp = modelsEnabledOrder[i]; modelsEnabledOrder[i] = modelsEnabledOrder[j]; modelsEnabledOrder[j] = tmp;
+          state.modelsConfigDirty = true;
           renderModelsConfig();
         }
         modelsEnabledBox.addEventListener('click', function(event) {
@@ -2405,6 +2421,7 @@ export function renderAppShell(input: {
             const id = rem.getAttribute('data-mc-remove');
             modelsEnabledOrder = modelsEnabledOrder.filter(function(m) { return m !== id; });
             if (modelsAvailableList.indexOf(id) < 0) modelsAvailableList.push(id);
+            state.modelsConfigDirty = true;
             renderModelsConfig();
           }
         });
@@ -2414,11 +2431,13 @@ export function renderAppShell(input: {
           const id = add.getAttribute('data-mc-add');
           if (modelsEnabledOrder.indexOf(id) < 0) modelsEnabledOrder.push(id);
           modelsAvailableList = modelsAvailableList.filter(function(m) { return m !== id; });
+          state.modelsConfigDirty = true;
           renderModelsConfig();
         });
         modelsConfigSave.addEventListener('click', async function() {
           try {
             await request('/admin/provider/models-config', { method: 'POST', body: JSON.stringify({ textModels: modelsEnabledOrder }) });
+            state.modelsConfigDirty = false;
             if (modelsConfigStatus) { modelsConfigStatus.style.color = 'var(--muted)'; modelsConfigStatus.textContent = 'Saved. Routing order applied live.'; }
           } catch (error) {
             if (modelsConfigStatus) { modelsConfigStatus.style.color = 'var(--bad)'; modelsConfigStatus.textContent = error.message || 'Save failed.'; }
