@@ -43,7 +43,7 @@ export interface InteractionRecord {
     reason: string;
     statusCode?: number | null;
     availableAfter?: string | null;
-    availableAfterSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | null;
+    availableAfterSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | '429-backoff' | 'daily-depleted' | null;
   }>;
   feedback?: 'good' | 'bad';
   feedbackNotes?: string;
