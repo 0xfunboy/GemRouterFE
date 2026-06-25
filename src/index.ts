@@ -2965,6 +2965,101 @@ app.post<{ Body: { id?: string } }>('/admin/provider/gemini-api/accounts/remove'
   return { ok: true, removed: id, reload: result, accounts: config.geminiApi.keys.map(maskAccount) };
 });
 
+// ---- Outbound proxy management (off by default; not yet applied to upstreams) ----
+interface OutboundProxyState {
+  enabled: boolean;
+  strategy: 'round-robin' | 'random';
+  urls: string[];
+  bypassHosts: string[];
+}
+function loadOutboundProxyState(): OutboundProxyState {
+  const base: OutboundProxyState = {
+    enabled: config.outboundProxy.enabled,
+    strategy: config.outboundProxy.strategy,
+    urls: config.outboundProxy.urls,
+    bypassHosts: config.outboundProxy.bypassHosts,
+  };
+  if (!existsSync(config.outboundProxy.storePath)) return base;
+  try {
+    const parsed = JSON.parse(readFileSync(config.outboundProxy.storePath, 'utf8')) as Partial<OutboundProxyState>;
+    return {
+      enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : base.enabled,
+      strategy: parsed.strategy === 'random' ? 'random' : 'round-robin',
+      urls: Array.isArray(parsed.urls) ? parsed.urls.map(String) : base.urls,
+      bypassHosts: Array.isArray(parsed.bypassHosts) ? parsed.bypassHosts.map(String) : base.bypassHosts,
+    };
+  } catch {
+    return base;
+  }
+}
+let outboundProxyState = loadOutboundProxyState();
+let outboundProxyCursor = 0;
+function persistOutboundProxyState(): void {
+  mkdirSync(path.dirname(config.outboundProxy.storePath), { recursive: true });
+  writeFileSync(config.outboundProxy.storePath, `${JSON.stringify(outboundProxyState, null, 2)}\n`, 'utf8');
+}
+function maskProxyUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.password) parsed.password = '***';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+/**
+ * Picks the next proxy URL per the configured strategy, honouring the bypass list.
+ * Exposed for when outbound proxying is wired into the upstream fetches; today the only
+ * upstreams (Gemini direct, local Ollama) are on the bypass list, so this stays inert.
+ */
+function selectOutboundProxy(targetHost: string): string | null {
+  if (!outboundProxyState.enabled || outboundProxyState.urls.length === 0) return null;
+  const host = targetHost.toLowerCase();
+  const bypassed = outboundProxyState.bypassHosts.some((pattern) => {
+    const p = pattern.toLowerCase();
+    return p.startsWith('*.') ? host.endsWith(p.slice(1)) : host === p;
+  });
+  if (bypassed) return null;
+  if (outboundProxyState.strategy === 'random') {
+    return outboundProxyState.urls[Math.floor(Math.random() * outboundProxyState.urls.length)];
+  }
+  const url = outboundProxyState.urls[outboundProxyCursor % outboundProxyState.urls.length];
+  outboundProxyCursor += 1;
+  return url;
+}
+void selectOutboundProxy;
+
+app.get('/admin/provider/proxy', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  return {
+    ok: true,
+    enabled: outboundProxyState.enabled,
+    strategy: outboundProxyState.strategy,
+    urls: outboundProxyState.urls.map(maskProxyUrl),
+    bypassHosts: outboundProxyState.bypassHosts,
+    applied: false,
+    note: 'Proxy is managed here but not yet applied to upstream calls (Gemini runs direct).',
+  };
+});
+
+app.post<{ Body: { enabled?: boolean; strategy?: string; urls?: string[]; bypassHosts?: string[] } }>('/admin/provider/proxy', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const body = request.body ?? {};
+  if (typeof body.enabled === 'boolean') outboundProxyState.enabled = body.enabled;
+  if (body.strategy === 'random' || body.strategy === 'round-robin') outboundProxyState.strategy = body.strategy;
+  if (Array.isArray(body.urls)) outboundProxyState.urls = body.urls.map((value) => String(value).trim()).filter(Boolean);
+  if (Array.isArray(body.bypassHosts)) outboundProxyState.bypassHosts = body.bypassHosts.map((value) => String(value).trim()).filter(Boolean);
+  outboundProxyCursor = 0;
+  persistOutboundProxyState();
+  return {
+    ok: true,
+    enabled: outboundProxyState.enabled,
+    strategy: outboundProxyState.strategy,
+    urls: outboundProxyState.urls.map(maskProxyUrl),
+    bypassHosts: outboundProxyState.bypassHosts,
+  };
+});
+
 app.post('/admin/reset-telemetry', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const client = geminiApiLlm as typeof geminiApiLlm & {
