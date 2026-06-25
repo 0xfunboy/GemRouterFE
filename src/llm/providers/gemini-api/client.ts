@@ -339,11 +339,15 @@ function shouldRetryWithAnotherKey(error: GeminiApiProviderError): boolean {
     case 'gemini_api_no_key_for_model':
     case 'gemini_api_rate_limited':
     case 'gemini_api_quota_unavailable':
-    case 'gemini_api_high_demand':
     case 'gemini_api_model_not_found':
     case 'gemini_api_upstream_error':
     case 'gemini_api_timeout':
       return true;
+    // gemini_api_high_demand (503 overloaded) is a model-wide condition on Google's side:
+    // every account hits the same backend, so retrying other keys is pointless. Skip
+    // straight to the next fallback model instead and let the 30s cooldown park this one.
+    case 'gemini_api_high_demand':
+      return false;
     default:
       return false;
   }
