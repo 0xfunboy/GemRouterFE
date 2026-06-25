@@ -22,7 +22,7 @@ export interface GeminiApiModelQuotaLedger {
   tpm: WindowCounter;
   rpd: WindowCounter;
   cooldownUntil?: string;
-  cooldownSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset';
+  cooldownSource?: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand';
   last429At?: string;
   lastSuccessAt?: string;
   lastFailureAt?: string;
@@ -73,7 +73,7 @@ export interface GeminiApiQuotaModelSnapshot {
   tpm: GeminiApiQuotaMetricSnapshot;
   rpd: GeminiApiQuotaMetricSnapshot;
   cooldownUntil: string | null;
-  cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | null;
+  cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | null;
   last429At: string | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
@@ -100,6 +100,8 @@ function nowIso(): string {
 }
 
 const PACIFIC_TIME_ZONE = 'America/Los_Angeles';
+/** Short skip window applied when Google returns 503 overloaded/unavailable for a model. */
+const HIGH_DEMAND_COOLDOWN_MS = 30_000;
 
 function pacificDateParts(epochMs: number): { year: number; month: number; day: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -277,7 +279,7 @@ export class GeminiApiQuotaLedger {
     tpmRemaining: number | null;
     rpdRemaining: number | null;
     cooldownUntil: string | null;
-    cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | null;
+    cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | null;
     limit: GeminiApiRateLimit;
   } {
     const now = Date.now();
@@ -359,6 +361,7 @@ export class GeminiApiQuotaLedger {
     rateLimited?: boolean;
     retryAfterMs?: number;
     rateLimitScope?: 'minute' | 'day' | 'unknown';
+    highDemand?: boolean;
   }): void {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = Date.now();
@@ -367,6 +370,16 @@ export class GeminiApiQuotaLedger {
     ledger.lastFailureCode = input.code;
     ledger.lastFailureReason = input.reason;
     ledger.lastFailureStatus = input.status;
+    // Google returned 503 "overloaded/unavailable" for this model. It is not a quota
+    // problem and never executed, so apply a short cooldown to stop hammering the same
+    // model on every request and let the fallback chain move on quickly.
+    if (input.highDemand && !input.rateLimited) {
+      ledger.cooldownUntil = new Date(now + HIGH_DEMAND_COOLDOWN_MS).toISOString();
+      ledger.cooldownSource = 'high-demand';
+      for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
+        counter.events = counter.events.filter((event) => event.requestId !== input.requestId);
+      }
+    }
     if (input.rateLimited) {
       ledger.last429At = nowString;
       if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0) {
