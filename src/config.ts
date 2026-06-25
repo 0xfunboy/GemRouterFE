@@ -15,6 +15,7 @@ import type { LLMBackendId } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
 import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
 import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
+import type { OllamaLocalConfig } from './llm/providers/ollama-local/client.js';
 
 export interface BootstrapAppConfig {
   name: string;
@@ -49,6 +50,7 @@ export interface RuntimeConfig {
   };
   geminiApi: GeminiApiProviderConfig;
   ollama: OllamaRouterConfig;
+  ollamaLocal: OllamaLocalConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
   };
@@ -526,6 +528,15 @@ export function loadConfig(
       timeoutMs: readNumber(env, 120_000, 'GEMROUTER_OLLAMA_TIMEOUT_MS'),
       streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_OLLAMA_STREAM_TIMEOUT_MS'),
       defaultModel: configuredOllamaModels[0] ?? ollamaModelIds[0],
+    },
+    ollamaLocal: {
+      enabled: readBoolean(env, false, 'GEMROUTER_OLLAMA_LOCAL_ENABLED'),
+      baseUrl: pick(env, 'GEMROUTER_OLLAMA_LOCAL_BASE_URL') ?? 'http://127.0.0.1:11434',
+      embeddingModel: pick(env, 'GEMROUTER_OLLAMA_LOCAL_EMBEDDING_MODEL')?.trim().toLowerCase() || null,
+      embeddingRpd: readNumber(env, 0, 'GEMROUTER_OLLAMA_LOCAL_EMBEDDING_RPD') || null,
+      visionModel: pick(env, 'GEMROUTER_OLLAMA_LOCAL_VISION_MODEL')?.trim().toLowerCase() || null,
+      visionRpd: readNumber(env, 0, 'GEMROUTER_OLLAMA_LOCAL_VISION_RPD') || null,
+      timeoutMs: readNumber(env, 120_000, 'GEMROUTER_OLLAMA_LOCAL_TIMEOUT_MS'),
     },
     llmRouting: {
       backendOrder: effectiveBackendOrder,

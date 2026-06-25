@@ -113,6 +113,10 @@ function parseTextContent(content: unknown, role: string): string {
         const text = typedPart.text;
         return typeof text === 'string' ? [text] : [];
       }
+      // Image parts are extracted separately by extractImages(); ignore them here.
+      if (typedPart.type === 'image_url' || typedPart.type === 'input_image' || typedPart.type === 'image') {
+        return [];
+      }
       throw new Error(`Unsupported content part for role "${role}": ${String(typedPart.type ?? 'unknown')}`);
     });
     return textParts.join('\n').trim();
@@ -121,6 +125,30 @@ function parseTextContent(content: unknown, role: string): string {
     return String((content as { text: string }).text);
   }
   return '';
+}
+
+/** Pull base64 image data out of OpenAI-style multimodal content parts. */
+function extractImages(content: unknown): string[] {
+  if (!Array.isArray(content)) return [];
+  const images: string[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const typedPart = part as Record<string, unknown>;
+    let url: string | undefined;
+    if (typedPart.type === 'image_url') {
+      const imageUrl = typedPart.image_url;
+      url = typeof imageUrl === 'string'
+        ? imageUrl
+        : (imageUrl && typeof imageUrl === 'object' ? String((imageUrl as { url?: unknown }).url ?? '') : '');
+    } else if (typedPart.type === 'input_image' || typedPart.type === 'image') {
+      url = String(typedPart.image_url ?? typedPart.image ?? typedPart.data ?? '');
+    }
+    if (!url) continue;
+    // Accept data URIs (strip the prefix to raw base64) and bare base64 strings.
+    const match = url.match(/^data:[^;]+;base64,(.+)$/);
+    images.push(match ? match[1] : url);
+  }
+  return images;
 }
 
 function normalizeRole(rawRole: unknown): LLMMessage['role'] {
@@ -189,9 +217,11 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
   const messages = body.messages.map((message) => {
     if (!message || typeof message !== 'object') throw new Error('Invalid message item');
     const typed = message as Record<string, unknown>;
+    const images = extractImages(typed.content);
     return {
       role: normalizeRole(typed.role),
       content: parseTextContent(typed.content, String(typed.role ?? 'unknown')),
+      ...(images.length > 0 ? { images } : {}),
     } satisfies LLMMessage;
   });
 
