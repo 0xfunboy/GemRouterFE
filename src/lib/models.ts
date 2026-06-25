@@ -1,15 +1,22 @@
+// Ordered strongest -> weakest. The strong, low-RPD flagships are tried first for
+// quality; the high-RPD lite/gemma models sit at the tail so the fallback chain has
+// large daily headroom (3.1-flash-lite 500/key, gemma 1500/key) before "busy".
 export const DEFAULT_DIRECT_MODEL_IDS = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
   'gemma-4-31b-it',
+  'gemma-4-26b-a4b-it',
 ] as const;
 
 export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
   'gemma-4-31b-it',
+  'gemma-4-26b-a4b-it',
 ] as const;
 
 export const DEFAULT_FREE_TIER_AUDIO_MODEL_IDS = [
@@ -27,7 +34,9 @@ export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
   'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
   'gemma-4-31b-it',
+  'gemma-4-26b-a4b-it',
 ] as const;
 
 export interface PublicModelDescriptor {

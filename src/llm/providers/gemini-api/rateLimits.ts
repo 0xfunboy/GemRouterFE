@@ -48,7 +48,7 @@ export const GEMINI_API_TIER1_LIMITS = {
   },
   'gemma-4-31b-it': {
     rpm: 15,
-    tpm: 10_000_000,
+    tpm: null,
     rpd: 1_500,
   },
   'gemma-4-26b-a4b-it': {
