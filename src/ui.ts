@@ -2954,6 +2954,9 @@ export function renderAppShell(input: {
       function formatRetryAfter(value, source) {
         if (!value) return 'ready';
         if (source === 'retry-after') return 'retry after ' + formatTimestamp(value);
+        if (source === 'daily-depleted' || source === 'pacific-reset') return 'daily quota depleted · resets ' + formatTimestamp(value);
+        if (source === '429-backoff') return 'rate-limit backoff until ' + formatTimestamp(value);
+        if (source === 'high-demand') return 'upstream busy until ' + formatTimestamp(value);
         return 'local counter active';
       }
 
