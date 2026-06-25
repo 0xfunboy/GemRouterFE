@@ -37,10 +37,10 @@ The bootstrap app is the built-in API client identity (e.g. your local Claude Co
 ## Backend routing
 
 ```env
-GEMROUTER_BACKEND_ORDER=gemini-api
+GEMROUTER_BACKEND_ORDER=gemini-api,ollama
 ```
 
-Only `gemini-api` is active. Order controls fallback priority if multiple backends are listed.
+Order determines which backend is tried first. When `backendPreference=auto`, the router also applies model-name heuristics: `gemini-*`/`gemma-*` models are routed to `gemini-api` first regardless of list order; all other models prefer `ollama` first. Explicit backend overrides (`x-gemrouter-backend` header) bypass this logic entirely.
 
 ## Gemini API backend
 
@@ -60,10 +60,9 @@ Only `gemini-api` is active. Order controls fallback priority if multiple backen
 | `GEMROUTER_GEMINI_API_LEDGER_PATH` | `data/gemini-api-quota-ledger.json` | Local quota ledger |
 | `GEMROUTER_GEMINI_API_DISCOVERY_CACHE_PATH` | `data/gemini-api-models-cache.json` | Model discovery cache |
 | `GEMROUTER_GEMINI_API_DISCOVERY_REFRESH_MS` | `21600000` | Discovery refresh interval (6 h) |
-| `GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS` | `600000` | Default cooldown after 429 (10 min) |
+| `GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS` | `600000` | Default cooldown after generic 429 (10 min); day-scope 429s hold until Pacific midnight |
 | `GEMROUTER_GEMINI_API_RPM_WINDOW_MS` | `60000` | RPM tracking window |
 | `GEMROUTER_GEMINI_API_TPM_WINDOW_MS` | `60000` | TPM tracking window |
-| `GEMROUTER_GEMINI_API_RPD_WINDOW_MS` | `86400000` | RPD window (resets at UTC midnight) |
 | `GEMROUTER_GEMINI_API_COUNT_TOKENS_PREFLIGHT` | `false` | Count tokens before sending |
 | `GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE` | `true` | Count quota for failed 429 requests |
 | `GEMROUTER_GEMINI_API_TIMEOUT_MS` | `120000` | Request timeout |

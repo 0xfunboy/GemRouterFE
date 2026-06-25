@@ -10,27 +10,32 @@ GEMROUTER_GEMINI_API_KEYS=AIza...key1,AIza...key2
 GEMROUTER_GEMINI_API_KEYS_JSON=[{"id":"k1","key":"AIza...","quotaGroup":"proj-a","tier":"free","priority":100,"enabled":true}]
 ```
 
-For richer per-account metadata (tiers, limit overrides, project IDs) use `data/gemini-api-accounts.json`. The file matches keys by `id` to accounts by `id`. See `docs/gemini-api-accounts.example.json`.
+For richer per-account metadata (tiers, limit overrides) use `data/gemini-api-accounts.json`. The file matches keys by `id` to accounts by `id`. See `docs/gemini-api-accounts.example.json`.
 
 ## Quota tracking
 
-GemRouter tracks quota locally in `data/gemini-api-quota-ledger.json` without any Google Cloud calls. Tracked per key + model:
+GemRouter tracks quota entirely in-process in `data/gemini-api-quota-ledger.json` — no Google Cloud calls, no `gcloud` CLI, no service account required. Tracked per quota group + model:
 
 - **RPM** — requests in the last 60 s sliding window
-- **TPM** — tokens in the last 60 s sliding window
-- **RPD** — requests since UTC midnight (matches Google's reset boundary)
+- **TPM** — tokens in the last 60 s sliding window  
+- **RPD** — requests since midnight **America/Los_Angeles** (matches Google's actual reset boundary, including DST changes)
 
-On each request the router picks the key/model combination with the best availability score:
+On every response the ledger records real token counts (from the API reply) and upstream rate-limit headers (`x-ratelimit-remaining-requests-day`, etc.) as secondary validation. On a 429 the relevant events are optionally rolled back (`GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE`).
 
-```
-score = priority + rpmRatio×30 + tpmRatio×30 + rpdRatio×30
-```
+### Key selection
 
-Where each ratio is `remaining / limit` (clamped 0–1). Higher score wins. Keys at or near their limit are skipped.
+The pool picks the key/group with the best multi-factor score, evaluated in this order:
+
+1. **Priority** — higher `priority` field wins
+2. **Rotation** — least recently used key wins (round-robin at equal priority)
+3. **Capacity score** — `rpmRatio×30 + tpmRatio×30 + rpdRatio×30` where each ratio is `remaining / limit`
+4. **Config order** — tie-break by position in the key list
+
+Keys at or beyond any limit (RPM, TPM, or RPD) are excluded from selection before scoring.
 
 ## Per-account tiers
 
-Mixing free-tier (RPM=5, RPD=20) and Tier 1 (RPM=1000, RPD=10000) accounts without limit overrides would make the scoring unfair. Use per-model limit overrides in `data/gemini-api-accounts.json`:
+Mixing free-tier (RPM 5, RPD 20) and Tier 1 (RPM 1000+, RPD 10 000+) accounts without limit overrides would make scoring unfair — the Tier 1 key would always win. Fix with per-model limit overrides in `data/gemini-api-accounts.json`:
 
 ```json
 {
@@ -44,42 +49,96 @@ Mixing free-tier (RPM=5, RPD=20) and Tier 1 (RPM=1000, RPD=10000) accounts witho
 }
 ```
 
-Alternatively override via environment variable (as JSON):
+Or via environment variable:
 
 ```env
 GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON={"my-tier1-project":{"gemini-2.5-flash":{"rpm":1000,"tpm":1000000,"rpd":10000}}}
 ```
 
+## Backend routing
+
+When `backendPreference=auto` (default), the backend sequence is resolved by model name:
+
+- **gemini-\* / gemma-\*** → `gemini-api` first, then other backends if fallback is allowed
+- **everything else** → `ollama` first, then other backends
+
+Force a specific backend per request with the `x-gemrouter-backend` header (`gemini-api`, `gemini`, `ai-studio`, or `auto`). The alias `x-baribi-backend` is also accepted.
+
+### Strict model IDs
+
+Models listed in `strictModelIds` (config) never fall back to another backend, even on error. Use this to prevent Gemma models from silently falling back to a Flash endpoint.
+
 ## Fallback behavior
 
-When `backendPreference=auto` (default), GemRouter retries the next usable key/model on:
+When `backendPreference=auto`, GemRouter falls back to the next backend on:
 
 - 429 rate limit / quota exhaustion
-- 401/403 auth failure
+- 401 / 403 auth failure
 - model unavailable
 - upstream timeout or transport error
 
-Invalid requests (4xx from caller errors) do not fall back.
+Caller-error 4xx (bad request, invalid parameters) do not fall back.
+
+The fallback chain is annotated in the response as `fallbackFrom` / `fallbackReason`.
 
 ## Cooldown
 
-After a 429 with a `Retry-After` header, the model is cooled down for the specified duration. Without the header, no cooldown is applied (the quota ledger itself prevents re-selection until the window clears).
+After a 429, the cooldown source determines how long the model is held out:
+
+| Source | Trigger | Duration |
+|---|---|---|
+| `retry-after` | 429 with `Retry-After` header | Exact header value |
+| `pacific-reset` | 429 with `rateLimitScope=day` | Until next Pacific midnight |
+| `upstream-rate-limit` | 429 without header | `GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS` (default 10 min) |
 
 Cooldowns can be cleared from the admin UI or via:
 
 ```bash
-curl -X POST http://127.0.0.1:4024/v1/provider/quota/clear-cooldown \
+curl -X POST http://127.0.0.1:4024/admin/provider/gemini-api/clear-cooldown \
   -H "Authorization: Bearer $GEMROUTER_ADMIN_TOKEN"
 ```
 
+## Quota exposed to the dashboard
+
+The guest dashboard at `/dashboard/summary` receives a compact quota snapshot:
+
+```json
+{
+  "provider": {
+    "quota": {
+      "apiKeys": [...],
+      "quotaGroups": [
+        {
+          "id": "my-project",
+          "models": [
+            {
+              "model": "gemini-2.5-flash",
+              "rpm": { "used": 2, "limit": 5, "remaining": 3 },
+              "tpm": { "used": 4200, "limit": 250000, "remaining": 245800 },
+              "rpd": { "used": 8, "limit": 20, "remaining": 12 }
+            }
+          ]
+        }
+      ],
+      "rpdResetAt": "2026-06-26T07:00:00.000Z",
+      "rpdWindow": "America/Los_Angeles"
+    }
+  }
+}
+```
+
+The **cumulative remaining RPD** for a model across all accounts is the sum of `rpd.remaining` across every quota group. This is computed client-side by the frontend from the per-group data above. All values come directly from the local ledger — no Cloud Monitoring, no Google API calls.
+
 ## Observability endpoints
 
-| Endpoint | Description |
-|---|---|
-| `GET /health` | Overall backend health and quota summary |
-| `GET /v1/provider/runtime` | Backend order, current key selection state |
-| `GET /v1/provider/models` | Discovered model list |
-| `GET /v1/provider/quota` | Per-key, per-model quota snapshot |
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /health` | none | Runtime health and compact quota summary |
+| `GET /dashboard/summary` | none | Guest-safe stats and quota view |
+| `GET /admin/summary` | admin | Full diagnostics, model catalog, apps |
+| `GET /v1/provider/runtime` | client | Backend order and current key selection state |
+| `GET /v1/provider/models` | client | Discovered model list |
+| `GET /v1/provider/quota` | client | Per-key, per-model quota snapshot |
 
 ## API surfaces
 

@@ -48,7 +48,7 @@ Check `GEMROUTER_GEMINI_API_ENABLED=true` and that at least one key is configure
 
 **All requests 429 / quota exhausted**
 
-Check `/v1/provider/quota`. Look for models with RPD at limit or keys in cooldown. RPD resets at UTC midnight. Cooldowns can be cleared from the admin UI.
+Check `/v1/provider/quota`. Look for models with RPD at limit or keys in cooldown. RPD resets at **midnight America/Los_Angeles** (matches Google's actual reset boundary). Cooldowns can be cleared from the admin UI or via `POST /admin/provider/gemini-api/clear-cooldown`.
 
 **Startup fails immediately**
 
@@ -60,7 +60,7 @@ Refresh `/health` and `/admin/summary` after sending a live request. Quota state
 
 **One account gets all the traffic**
 
-Likely a limit mismatch between accounts (e.g. mixing free-tier and Tier 1 without per-account overrides). Add `limits` to the higher-quota account in `data/gemini-api-accounts.json` so the scoring ratios are comparable.
+Likely a limit mismatch between accounts (e.g. mixing free-tier and Tier 1 without per-account overrides). Add `limits` to the higher-quota account in `data/gemini-api-accounts.json` so the scoring ratios (remaining/limit) are comparable across accounts. Without overrides the Tier 1 key always wins because its raw remaining values are larger.
 
 ## Key repository paths
 
