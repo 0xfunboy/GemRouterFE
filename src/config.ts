@@ -555,6 +555,7 @@ export function loadConfig(
       visionModel: pick(env, 'GEMROUTER_OLLAMA_LOCAL_VISION_MODEL')?.trim().toLowerCase() || null,
       visionRpd: readNumber(env, 0, 'GEMROUTER_OLLAMA_LOCAL_VISION_RPD') || null,
       timeoutMs: readNumber(env, 120_000, 'GEMROUTER_OLLAMA_LOCAL_TIMEOUT_MS'),
+      usageStorePath: path.resolve(rootDir, pick(env, 'GEMROUTER_OLLAMA_LOCAL_USAGE_PATH') ?? 'data/ollama-local-usage.json'),
     },
     llmRouting: {
       backendOrder: effectiveBackendOrder,
