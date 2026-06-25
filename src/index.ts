@@ -3542,10 +3542,16 @@ app.post<{
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
     maxConcurrency?: number;
+    apiKey?: string;
   };
 }>('/admin/apps', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const body = request.body ?? {};
+  // Optional caller-supplied key (e.g. a custom prefix like goon_...). Reject collisions.
+  const requestedKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+  if (requestedKey && appStore.verify(requestedKey)) {
+    return sendError(reply, 409, { message: 'API key already in use', type: 'invalid_request_error', code: 'duplicate_api_key' });
+  }
   const created = appStore.create({
     name: String(body.name ?? '').trim() || 'local-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
@@ -3554,6 +3560,7 @@ app.post<{
     rateLimitPerMinute:
       typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
     maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : config.bootstrapApp.maxConcurrency,
+    ...(requestedKey ? { rawKey: requestedKey } : {}),
   });
   audit.write({
     type: 'admin.app.created',
