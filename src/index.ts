@@ -1266,6 +1266,9 @@ function buildGuestSummary() {
         rpdWindow: 'America/Los_Angeles',
       },
     },
+    ollamaLocal: config.ollamaLocal.enabled
+      ? { enabled: true, models: ollamaLocalLlm.usage(), rpdResetAt: new Date(nextPacificDayStartMs()).toISOString() }
+      : { enabled: false, models: [] },
     stats: {
       requests: totalRequests,
       succeeded: totalSucceeded,

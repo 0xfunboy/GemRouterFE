@@ -1,3 +1,4 @@
+import { pacificDayStartMs } from '../gemini-api/quotaLedger.js';
 import type { LLMMessage } from '../../types.js';
 
 export interface OllamaLocalConfig {
@@ -10,12 +11,20 @@ export interface OllamaLocalConfig {
   timeoutMs: number;
 }
 
+export interface OllamaLocalModelUsage {
+  model: string;
+  kind: 'embedding' | 'vision' | 'text';
+  used: number;
+  limit: number | null;
+}
+
 export interface OllamaLocalClient {
   config: OllamaLocalConfig;
   isEmbeddingModel(model: string): boolean;
   isVisionModel(model: string): boolean;
   embed(model: string, input: string[]): Promise<number[][]>;
   visionChat(model: string, messages: LLMMessage[]): Promise<{ content: string }>;
+  usage(): OllamaLocalModelUsage[];
   health(): Promise<Record<string, unknown>>;
 }
 
@@ -30,6 +39,19 @@ function normalize(model: string | undefined): string {
  */
 export function createOllamaLocalClient(config: OllamaLocalConfig): OllamaLocalClient {
   const base = config.baseUrl.replace(/\/+$/, '');
+
+  // In-memory daily request counters, reset at the Pacific midnight rollover to match
+  // the Gemini ledger. Local models have no upstream quota; these are soft budgets.
+  const counters = new Map<string, number>();
+  let countersDay = pacificDayStartMs();
+  function bump(model: string): void {
+    const today = pacificDayStartMs();
+    if (today !== countersDay) {
+      counters.clear();
+      countersDay = today;
+    }
+    counters.set(model, (counters.get(model) ?? 0) + 1);
+  }
 
   async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {
     const response = await fetch(`${base}${path}`, {
@@ -55,11 +77,13 @@ export function createOllamaLocalClient(config: OllamaLocalConfig): OllamaLocalC
       return Boolean(config.visionModel) && normalize(model) === normalize(config.visionModel ?? undefined);
     },
     async embed(model: string, input: string[]): Promise<number[][]> {
+      bump(model);
       const payload = await postJson('/api/embed', { model, input });
       const embeddings = Array.isArray(payload.embeddings) ? payload.embeddings as number[][] : [];
       return embeddings;
     },
     async visionChat(model: string, messages: LLMMessage[]): Promise<{ content: string }> {
+      bump(model);
       const payload = await postJson('/api/chat', {
         model,
         stream: false,
@@ -72,6 +96,22 @@ export function createOllamaLocalClient(config: OllamaLocalConfig): OllamaLocalC
       const message = (payload.message as { content?: unknown } | undefined) ?? {};
       return { content: typeof message.content === 'string' ? message.content : '' };
     },
+    usage(): OllamaLocalModelUsage[] {
+      const today = pacificDayStartMs();
+      if (today !== countersDay) {
+        counters.clear();
+        countersDay = today;
+      }
+      const rows: OllamaLocalModelUsage[] = [];
+      if (config.embeddingModel) {
+        rows.push({ model: config.embeddingModel, kind: 'embedding', used: counters.get(config.embeddingModel) ?? 0, limit: config.embeddingRpd });
+      }
+      if (config.visionModel) {
+        rows.push({ model: config.visionModel, kind: 'vision', used: counters.get(config.visionModel) ?? 0, limit: config.visionRpd });
+      }
+      return rows;
+    },
+
     async health(): Promise<Record<string, unknown>> {
       if (!config.enabled) return { enabled: false, available: false };
       try {
