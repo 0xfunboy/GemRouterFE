@@ -1812,6 +1812,7 @@ export function renderAppShell(input: {
       const bootstrap = window.__GEMROUTER_BOOTSTRAP__;
       const state = {
         apps: [],
+        appFormDirty: false,
         adminRefreshInFlight: false,
         adminSummary: null,
         adminStats: null,
@@ -3348,6 +3349,7 @@ export function renderAppShell(input: {
       }
 
       function resetAppForm() {
+        state.appFormDirty = false;
         appForm.reset();
         appForm.elements.id.value = '';
         setAllowedModelSelection([]);
@@ -3372,6 +3374,8 @@ export function renderAppShell(input: {
           autosizeTextarea(textarea);
         });
         appStatus.textContent = 'Editing ' + app.name + '.';
+        // Fresh load from server state: not a user edit yet.
+        state.appFormDirty = false;
       }
 
       function renderApps(apps) {
@@ -3551,7 +3555,11 @@ export function renderAppShell(input: {
           state.compatibility = data.compatibility || null;
           state.freeTierPolicy = data.freeTierPolicy || null;
           syncProjectQuotaState((data.provider && data.provider.quota) || null);
-          renderAllowedModelsPicker(state.modelCatalog, selectedModels);
+          // Never clobber the app form while the operator is editing it: a background
+          // refresh must not wipe in-progress model checkboxes or reset the form fields.
+          if (!state.appFormDirty) {
+            renderAllowedModelsPicker(state.modelCatalog, selectedModels);
+          }
           fillAppOptions(data.apps);
           fillModelOptions(selectedPromptModel);
           renderRuntimePills(data);
@@ -3562,7 +3570,7 @@ export function renderAppShell(input: {
           renderCompatibility(data.compatibility);
           renderApps(data.apps);
           renderInteractions(state.adminStats);
-          if (editingAppId) {
+          if (editingAppId && !state.appFormDirty) {
             const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
             if (editingApp) {
               populateAppForm(editingApp);
@@ -3817,7 +3825,12 @@ export function renderAppShell(input: {
         });
       }
       allowedModelsOptions.addEventListener('change', function() {
+        state.appFormDirty = true;
         updateAllowedModelsSummary();
+      });
+      // Any manual edit to the app form marks it dirty so background refreshes leave it alone.
+      appForm.addEventListener('input', function() {
+        state.appFormDirty = true;
       });
 
       appsTable.addEventListener('click', async function(event) {
