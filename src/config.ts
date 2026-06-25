@@ -214,9 +214,9 @@ function readGeminiApiGroupLimits(
 
 function readGeminiAccountMetadata(
   env: Record<string, string | undefined>,
-): Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string }> {
+): Array<Partial<GeminiApiKeyConfig> & { keyEnv?: string }> {
   const pathValue = pick(env, 'GEMROUTER_GEMINI_API_ACCOUNTS_PATH');
-  let fileAccounts: Array<Partial<Omit<GeminiApiKeyConfig, 'key'>> & { keyEnv?: string }> = [];
+  let fileAccounts: Array<Partial<GeminiApiKeyConfig> & { keyEnv?: string }> = [];
   if (pathValue && existsSync(pathValue)) {
     try {
       const parsed = JSON.parse(readFileSync(pathValue, 'utf8')) as unknown;
@@ -255,6 +255,27 @@ function readGeminiApiKeys(
   }
 
   const accounts = readGeminiAccountMetadata(env);
+
+  // If accounts.json carries its own secrets (written by the admin model-manager) it
+  // becomes the authoritative key source, decoupled from .env ordering.
+  const accountsWithKeys = accounts.filter((account) => typeof account.key === 'string' && account.key.trim());
+  if (accountsWithKeys.length > 0) {
+    return accountsWithKeys.map((account, index) => {
+      const id = String(account.id ?? `account${index + 1}`).trim();
+      return {
+        id,
+        key: String(account.key).trim(),
+        owner: account.owner,
+        projectId: account.projectId,
+        quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
+        tier: String(account.tier ?? defaultTier).trim(),
+        priority: typeof account.priority === 'number' ? account.priority : 100,
+        enabled: account.enabled !== false,
+        models: Array.isArray(account.models) ? account.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean) : undefined,
+      };
+    });
+  }
+
   const rawKeys = readList(env, [], 'GEMROUTER_GEMINI_API_KEYS');
   return rawKeys.map((key, index) => {
     const account = accounts[index] ?? {};
@@ -466,6 +487,10 @@ export function loadConfig(
     geminiApi: {
       enabled: readBoolean(env, geminiApiKeys.length > 0, 'GEMROUTER_GEMINI_API_ENABLED'),
       keys: geminiApiKeys,
+      accountsPath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_GEMINI_API_ACCOUNTS_PATH') ?? 'data/gemini-api-accounts.json',
+      ),
       baseUrl: pick(env, 'GEMROUTER_GEMINI_API_BASE_URL') ?? 'https://generativelanguage.googleapis.com',
       version: pick(env, 'GEMROUTER_GEMINI_API_VERSION') ?? 'v1beta',
       defaultTier: geminiApiDefaultTier,
