@@ -1724,6 +1724,10 @@ export function renderAppShell(input: {
                   <input type="text" name="sessionNamespace" placeholder="client-app" />
                 </label>
                 <label>
+                  <span class="field-inline">Custom API key <span class="field-help" title="Optional. Leave empty to auto-generate. Use to set a custom prefix, e.g. goon_...">?</span></span>
+                  <input type="text" name="apiKey" placeholder="(optional) e.g. goon_..." autocomplete="off" />
+                </label>
+                <label>
                   <span class="field-inline">Rate limit per minute <span class="field-help" title="Zero for no limits">?</span></span>
                   <input type="number" min="0" step="1" name="rateLimitPerMinute" value="30" />
                 </label>
@@ -1762,6 +1766,12 @@ export function renderAppShell(input: {
               <p class="section-copy">Prompt and output excerpts, token usage, latency, and operator feedback.</p>
             </div>
             <div class="section-head-actions">
+              <label class="section-inline-control" for="interactions-app-filter">
+                App
+                <select id="interactions-app-filter">
+                  <option value="">All apps</option>
+                </select>
+              </label>
               <label class="section-inline-control" for="interactions-limit-select">
                 Latest
                 <select id="interactions-limit-select">
@@ -1904,6 +1914,7 @@ export function renderAppShell(input: {
         compatibility: null,
         authenticated: false,
         interactionLimit: 10,
+        interactionAppFilter: '',
         modelCatalog: [],
         projectQuota: null,
         projectQuotaRefreshInFlight: false,
@@ -1972,6 +1983,7 @@ export function renderAppShell(input: {
       const appsTable = document.getElementById('apps-table');
       const interactionsTable = document.getElementById('interactions-table');
       const interactionsLimitSelect = document.getElementById('interactions-limit-select');
+      const interactionsAppFilter = document.getElementById('interactions-app-filter');
       const allowedModelsPicker = document.getElementById('allowed-models-picker');
       const allowedModelsOptions = document.getElementById('allowed-models-options');
       const allowedModelsSummary = document.getElementById('allowed-models-summary');
@@ -3525,10 +3537,28 @@ export function renderAppShell(input: {
         return '<strong>' + escapeHtml(finalModel) + '</strong>' + steps.join('');
       }
 
+      // Keep the app filter populated with non-revoked apps only.
+      function fillInteractionAppFilter() {
+        if (!interactionsAppFilter) return;
+        const apps = Array.isArray(state.apps) ? state.apps.filter(function(app) { return !app.revokedAt; }) : [];
+        const current = state.interactionAppFilter || '';
+        const options = ['<option value="">All apps</option>'].concat(apps.map(function(app) {
+          return '<option value="' + escapeHtml(String(app.id)) + '">' + escapeHtml(String(app.name || app.id)) + '</option>';
+        }));
+        interactionsAppFilter.innerHTML = options.join('');
+        // Drop the filter if its app was revoked/removed.
+        if (current && !apps.some(function(app) { return app.id === current; })) {
+          state.interactionAppFilter = '';
+        }
+        interactionsAppFilter.value = state.interactionAppFilter || '';
+      }
+
       function renderInteractions(summary) {
-        const recent = Array.isArray(summary && summary.recent)
-          ? summary.recent.slice(0, Math.max(1, Number(state.interactionLimit) || 10))
-          : [];
+        let recent = Array.isArray(summary && summary.recent) ? summary.recent : [];
+        if (state.interactionAppFilter) {
+          recent = recent.filter(function(item) { return item.appId === state.interactionAppFilter; });
+        }
+        recent = recent.slice(0, Math.max(1, Number(state.interactionLimit) || 10));
         interactionsTable.innerHTML = recent.map(function(item) {
           const usage = item.usage
             ? (item.usage.prompt_tokens + ' / ' + item.usage.completion_tokens + ' / ' + item.usage.total_tokens)
@@ -3604,6 +3634,7 @@ export function renderAppShell(input: {
           loadModelsConfig();
           renderCompatibility(data.compatibility);
           renderApps(data.apps);
+          fillInteractionAppFilter();
           renderInteractions(state.adminStats);
           if (editingAppId && !state.appFormDirty) {
             const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
@@ -3829,6 +3860,8 @@ export function renderAppShell(input: {
           rateLimitPerMinute: Number(form.get('rateLimitPerMinute') || 0),
           maxConcurrency: Number(form.get('maxConcurrency') || 0),
         };
+        const customKey = String(form.get('apiKey') || '').trim();
+        if (!id && customKey) payload.apiKey = customKey;
         try {
           const response = await request(id ? '/admin/apps/' + encodeURIComponent(id) : '/admin/apps', {
             method: id ? 'PUT' : 'POST',
@@ -3856,6 +3889,12 @@ export function renderAppShell(input: {
         interactionsLimitSelect.addEventListener('change', function() {
           const nextValue = Number(interactionsLimitSelect.value || 10);
           state.interactionLimit = Number.isFinite(nextValue) && nextValue > 0 ? nextValue : 10;
+          renderInteractions(state.adminStats);
+        });
+      }
+      if (interactionsAppFilter) {
+        interactionsAppFilter.addEventListener('change', function() {
+          state.interactionAppFilter = interactionsAppFilter.value || '';
           renderInteractions(state.adminStats);
         });
       }
