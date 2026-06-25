@@ -824,9 +824,12 @@ function buildInteractionResponseFromError(error: unknown): Partial<LLMResponse>
 
 function sanitizeLlmDiagnostics(
   input: Record<string, unknown> | null,
-  _options?: { includeSensitive?: boolean },
+  options?: { includeSensitive?: boolean },
 ): Record<string, unknown> | null {
   if (!input) return null;
+  const rawGeminiApi = input.geminiApi && typeof input.geminiApi === 'object'
+    ? input.geminiApi as Record<string, unknown>
+    : null;
   return {
     provider: input.provider ?? null,
     model: input.model ?? null,
@@ -838,29 +841,29 @@ function sanitizeLlmDiagnostics(
     lastResolutionAt: input.lastResolutionAt ?? null,
     lastError: input.lastError ?? null,
     geminiApi:
-      input.geminiApi && typeof input.geminiApi === 'object'
+      rawGeminiApi
         ? {
-          provider: (input.geminiApi as Record<string, unknown>).provider ?? 'gemini-api',
-          enabled: (input.geminiApi as Record<string, unknown>).enabled ?? null,
-          available: (input.geminiApi as Record<string, unknown>).available ?? null,
-          configuredKeyCount: (input.geminiApi as Record<string, unknown>).configuredKeyCount ?? 0,
-          usableKeyCount: (input.geminiApi as Record<string, unknown>).usableKeyCount ?? 0,
-          defaultTier: (input.geminiApi as Record<string, unknown>).defaultTier ?? null,
-          baseUrl: (input.geminiApi as Record<string, unknown>).baseUrl ?? null,
-          version: (input.geminiApi as Record<string, unknown>).version ?? null,
-          keys: (input.geminiApi as Record<string, unknown>).keys ?? [],
-          quotaGroups: (input.geminiApi as Record<string, unknown>).quotaGroups ?? [],
-          quotaUpdatedAt: (input.geminiApi as Record<string, unknown>).quotaUpdatedAt ?? null,
-          modelDiscovery: (input.geminiApi as Record<string, unknown>).modelDiscovery ?? null,
-          models: (input.geminiApi as Record<string, unknown>).models ?? [],
-          lastSelectedKeyId: (input.geminiApi as Record<string, unknown>).lastSelectedKeyId ?? null,
-          lastSelectedQuotaGroup: (input.geminiApi as Record<string, unknown>).lastSelectedQuotaGroup ?? null,
-          lastResolvedModel: (input.geminiApi as Record<string, unknown>).lastResolvedModel ?? null,
-          lastError: (input.geminiApi as Record<string, unknown>).lastError ?? null,
-          lastFailureAt: (input.geminiApi as Record<string, unknown>).lastFailureAt ?? null,
-          lastSuccessAt: (input.geminiApi as Record<string, unknown>).lastSuccessAt ?? null,
-          lastLatencyMs: (input.geminiApi as Record<string, unknown>).lastLatencyMs ?? null,
-          lastUpstreamError: (input.geminiApi as Record<string, unknown>).lastUpstreamError ?? null,
+          provider: rawGeminiApi.provider ?? 'gemini-api',
+          enabled: rawGeminiApi.enabled ?? null,
+          available: rawGeminiApi.available ?? null,
+          configuredKeyCount: rawGeminiApi.configuredKeyCount ?? 0,
+          usableKeyCount: rawGeminiApi.usableKeyCount ?? 0,
+          defaultTier: rawGeminiApi.defaultTier ?? null,
+          baseUrl: rawGeminiApi.baseUrl ?? null,
+          version: rawGeminiApi.version ?? null,
+          keys: options?.includeSensitive ? rawGeminiApi.keys ?? [] : undefined,
+          quotaGroups: options?.includeSensitive ? rawGeminiApi.quotaGroups ?? [] : undefined,
+          quotaUpdatedAt: rawGeminiApi.quotaUpdatedAt ?? null,
+          modelDiscovery: rawGeminiApi.modelDiscovery ?? null,
+          models: rawGeminiApi.models ?? [],
+          lastSelectedKeyId: rawGeminiApi.lastSelectedKeyId ?? null,
+          lastSelectedQuotaGroup: rawGeminiApi.lastSelectedQuotaGroup ?? null,
+          lastResolvedModel: rawGeminiApi.lastResolvedModel ?? null,
+          lastError: rawGeminiApi.lastError ?? null,
+          lastFailureAt: rawGeminiApi.lastFailureAt ?? null,
+          lastSuccessAt: rawGeminiApi.lastSuccessAt ?? null,
+          lastLatencyMs: rawGeminiApi.lastLatencyMs ?? null,
+          lastUpstreamError: rawGeminiApi.lastUpstreamError ?? null,
         }
         : null,
   };
