@@ -3,6 +3,8 @@ import type { SemanticProfile } from '../lib/semantics.js';
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Base64-encoded image data (no data: prefix) for vision-capable models. */
+  images?: string[];
 }
 
 export type LLMBackendId = 'gemini-api' | 'ollama';

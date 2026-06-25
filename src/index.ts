@@ -50,6 +50,7 @@ import {
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
 import { nextPacificDayStartMs } from './llm/providers/gemini-api/quotaLedger.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
+import { createOllamaLocalClient } from './llm/providers/ollama-local/client.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -73,6 +74,7 @@ const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
+const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
@@ -1412,6 +1414,51 @@ function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: Authe
   };
 }
 
+// Direct local-Ollama vision route. Returns a response object when the requested model is
+// the configured vision model (served by the local server, no Gemini fallback), else null.
+async function maybeServeOllamaLocalVision(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  app: ApiAppRecord,
+  parsed: { model: string; messages: LLMMessage[] },
+): Promise<FastifyReply | Record<string, unknown> | null> {
+  if (!config.ollamaLocal.enabled || !ollamaLocalLlm.isVisionModel(parsed.model)) return null;
+  try {
+    const visionResponse = await ollamaLocalLlm.visionChat(config.ollamaLocal.visionModel as string, parsed.messages);
+    const usage = estimateUsage(parsed.messages, visionResponse.content);
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: app,
+      model: parsed.model,
+      messages: parsed.messages,
+      responseText: visionResponse.content,
+      usage,
+      status: 'succeeded',
+      statusCode: 200,
+      provider: 'ollama-local',
+    });
+    return buildChatCompletionResponse({ model: parsed.model, text: visionResponse.content, usage });
+  } catch (error) {
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: app,
+      model: parsed.model,
+      messages: parsed.messages,
+      status: 'failed',
+      statusCode: 502,
+      provider: 'ollama-local',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return sendError(reply, 502, {
+      message: error instanceof Error ? error.message : 'Local vision model failed',
+      type: 'server_error',
+      code: 'ollama_local_vision_failed',
+    });
+  }
+}
+
 async function handleChatCompletionsRequest(
   request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
   reply: FastifyReply,
@@ -1447,6 +1494,10 @@ async function handleChatCompletionsRequest(
   }
 
   try {
+    const visionResult = await maybeServeOllamaLocalVision(request, reply, access.app, parsed);
+    if (visionResult !== null) {
+      return visionResult;
+    }
     const resolvedModel = resolveTextModelForApp(access.app, parsed.model);
     if (!resolvedModel) {
       return sendError(reply, 403, {
@@ -3208,6 +3259,48 @@ app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (reques
 app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', async (request, reply) =>
   handleChatCompletionsRequest(request, reply, 'gemrouter'),
 );
+
+// Embeddings: served only by the local Ollama embedding model, on direct request, no fallback.
+async function handleEmbeddingsRequest(
+  request: FastifyRequest<{ Body: { model?: string; input?: unknown } }>,
+  reply: FastifyReply,
+): Promise<FastifyReply | Record<string, unknown>> {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    const model = normalizeModelId(String(request.body?.model ?? ''));
+    if (!config.ollamaLocal.enabled || !ollamaLocalLlm.isEmbeddingModel(model)) {
+      return sendError(reply, 404, {
+        message: `Embeddings are only served by the local embedding model${config.ollamaLocal.embeddingModel ? ` (${config.ollamaLocal.embeddingModel})` : ''}`,
+        type: 'invalid_request_error',
+        code: 'embedding_model_not_available',
+        param: 'model',
+      });
+    }
+    const rawInput = request.body?.input;
+    const inputs = Array.isArray(rawInput)
+      ? rawInput.map((value) => String(value))
+      : [String(rawInput ?? '')];
+    const vectors = await ollamaLocalLlm.embed(config.ollamaLocal.embeddingModel as string, inputs);
+    const promptTokens = inputs.reduce((total, text) => total + Math.ceil(text.length / 4), 0);
+    return {
+      object: 'list',
+      data: vectors.map((embedding, index) => ({ object: 'embedding', index, embedding })),
+      model,
+      usage: { prompt_tokens: promptTokens, total_tokens: promptTokens },
+    };
+  } catch (error) {
+    return sendError(reply, 502, {
+      message: error instanceof Error ? error.message : 'Local embedding model failed',
+      type: 'server_error',
+      code: 'ollama_local_embedding_failed',
+    });
+  } finally {
+    access.release();
+  }
+}
+app.post<{ Body: { model?: string; input?: unknown } }>('/v1/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
+app.post<{ Body: { model?: string; input?: unknown } }>('/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
 app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => handleResponsesRequest(request, reply));
 app.post<{ Body: ImageGenerationsRequest }>('/v1/images/generations', async (request, reply) =>
   handleImageGenerationsRequest(request, reply, 'openai'),
