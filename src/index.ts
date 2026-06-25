@@ -2777,6 +2777,138 @@ app.post('/admin/provider/gemini-api/clear-cooldown', async (request, reply) => 
   return client.clearCooldown();
 });
 
+// ---- Gemini account manager (admin model-manager) -------------------------------
+type GeminiAccountClient = typeof geminiApiLlm & {
+  reloadAccounts?: (keys: typeof config.geminiApi.keys) => Record<string, unknown>;
+  listAccountModels?: (accountId: string) => Promise<Record<string, unknown>>;
+};
+
+function persistGeminiAccounts(): void {
+  const serialized = config.geminiApi.keys.map((key) => ({
+    id: key.id,
+    owner: key.owner ?? null,
+    projectId: key.projectId ?? null,
+    quotaGroup: key.quotaGroup,
+    tier: key.tier,
+    priority: key.priority,
+    enabled: key.enabled,
+    models: key.models ?? null,
+    key: key.key,
+  }));
+  mkdirSync(path.dirname(config.geminiApi.accountsPath), { recursive: true });
+  writeFileSync(config.geminiApi.accountsPath, `${JSON.stringify(serialized, null, 2)}\n`, 'utf8');
+}
+
+function applyGeminiAccounts(): Record<string, unknown> {
+  persistGeminiAccounts();
+  const client = geminiApiLlm as GeminiAccountClient;
+  return typeof client.reloadAccounts === 'function'
+    ? client.reloadAccounts(config.geminiApi.keys)
+    : { ok: true };
+}
+
+function maskAccount(key: typeof config.geminiApi.keys[number]): Record<string, unknown> {
+  const raw = String(key.key ?? '');
+  return {
+    id: key.id,
+    owner: key.owner ?? null,
+    projectId: key.projectId ?? null,
+    quotaGroup: key.quotaGroup,
+    tier: key.tier,
+    priority: key.priority,
+    enabled: key.enabled,
+    models: key.models ?? [],
+    keyPreview: raw.length > 8 ? `${raw.slice(0, 4)}…${raw.slice(-4)}` : '••••',
+  };
+}
+
+app.get('/admin/provider/gemini-api/accounts', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  return { ok: true, accounts: config.geminiApi.keys.map(maskAccount) };
+});
+
+app.post<{ Body: { accountId?: string } }>('/admin/provider/gemini-api/accounts/list-models', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const accountId = String(request.body?.accountId ?? '').trim();
+  if (!accountId) {
+    return sendError(reply, 400, { message: 'accountId is required', type: 'invalid_request_error', code: 'missing_account_id' });
+  }
+  const client = geminiApiLlm as GeminiAccountClient;
+  if (typeof client.listAccountModels !== 'function') {
+    return sendError(reply, 503, { message: 'Model listing is not available', type: 'server_error', code: 'list_models_unavailable' });
+  }
+  return client.listAccountModels(accountId);
+});
+
+app.post<{
+  Body: { key?: string; owner?: string; quotaGroup?: string; projectId?: string; priority?: number; models?: string[] };
+}>('/admin/provider/gemini-api/accounts/add', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const key = String(request.body?.key ?? '').trim();
+  if (!key) {
+    return sendError(reply, 400, { message: 'key is required', type: 'invalid_request_error', code: 'missing_key' });
+  }
+  if (config.geminiApi.keys.some((entry) => entry.key === key)) {
+    return sendError(reply, 409, { message: 'This key is already configured', type: 'invalid_request_error', code: 'duplicate_key' });
+  }
+  const existingIds = new Set(config.geminiApi.keys.map((entry) => entry.id));
+  let n = config.geminiApi.keys.length + 1;
+  let id = String(request.body?.owner ?? '').trim() || `account${n}`;
+  while (existingIds.has(id)) { n += 1; id = `account${n}`; }
+  const quotaGroup = String(request.body?.quotaGroup ?? '').trim() || (config.geminiApi.defaultQuotaGroupMode === 'shared' ? 'default' : id);
+  const models = Array.isArray(request.body?.models)
+    ? request.body.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean)
+    : undefined;
+  config.geminiApi.keys.push({
+    id,
+    key,
+    owner: request.body?.owner?.trim() || undefined,
+    projectId: request.body?.projectId?.trim() || undefined,
+    quotaGroup,
+    tier: config.geminiApi.defaultTier,
+    priority: typeof request.body?.priority === 'number' ? request.body.priority : 100,
+    enabled: true,
+    models,
+  });
+  const result = applyGeminiAccounts();
+  audit.write({ type: 'admin.account.add', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
+  return { ok: true, added: id, reload: result, accounts: config.geminiApi.keys.map(maskAccount) };
+});
+
+app.post<{
+  Body: { id?: string; priority?: number; enabled?: boolean; models?: string[] | null; quotaGroup?: string };
+}>('/admin/provider/gemini-api/accounts/update', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const id = String(request.body?.id ?? '').trim();
+  const account = config.geminiApi.keys.find((entry) => entry.id === id);
+  if (!account) {
+    return sendError(reply, 404, { message: `Account ${id} not found`, type: 'invalid_request_error', code: 'account_not_found' });
+  }
+  if (typeof request.body?.priority === 'number') account.priority = request.body.priority;
+  if (typeof request.body?.enabled === 'boolean') account.enabled = request.body.enabled;
+  if (typeof request.body?.quotaGroup === 'string' && request.body.quotaGroup.trim()) account.quotaGroup = request.body.quotaGroup.trim();
+  if (request.body?.models === null) {
+    account.models = undefined;
+  } else if (Array.isArray(request.body?.models)) {
+    account.models = request.body.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean);
+  }
+  const result = applyGeminiAccounts();
+  return { ok: true, updated: id, reload: result, accounts: config.geminiApi.keys.map(maskAccount) };
+});
+
+app.post<{ Body: { id?: string } }>('/admin/provider/gemini-api/accounts/remove', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const id = String(request.body?.id ?? '').trim();
+  const index = config.geminiApi.keys.findIndex((entry) => entry.id === id);
+  if (index < 0) {
+    return sendError(reply, 404, { message: `Account ${id} not found`, type: 'invalid_request_error', code: 'account_not_found' });
+  }
+  config.geminiApi.keys.splice(index, 1);
+  const result = applyGeminiAccounts();
+  audit.write({ type: 'admin.account.remove', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
+  return { ok: true, removed: id, reload: result, accounts: config.geminiApi.keys.map(maskAccount) };
+});
+
 app.post('/admin/reset-telemetry', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const client = geminiApiLlm as typeof geminiApiLlm & {

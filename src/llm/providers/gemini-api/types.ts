@@ -21,6 +21,8 @@ export interface GeminiApiKeyConfig {
 export interface GeminiApiProviderConfig {
   enabled: boolean;
   keys: GeminiApiKeyConfig[];
+  /** Path to the persisted accounts file; the admin model-manager writes here. */
+  accountsPath: string;
   baseUrl: string;
   version: string;
   defaultTier: string;

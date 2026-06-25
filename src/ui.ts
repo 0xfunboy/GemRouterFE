@@ -1475,6 +1475,53 @@ export function renderAppShell(input: {
           </div>
         </section>
 
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('api')} Gemini Accounts</h3>
+              <p class="section-copy">Manage the Gemini API key pool: add accounts, set per-account priority, enable/disable, and download the free models each account can serve. Changes apply live and persist to the accounts file.</p>
+            </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="accounts-section-body" aria-controls="accounts-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
+          </div>
+          <div id="accounts-section-body" class="section-body hidden">
+            <div class="table-wrap">
+              <table class="table responsive-table">
+                <thead>
+                  <tr><th>Account</th><th>Quota group</th><th>Priority</th><th>Enabled</th><th>Key</th><th>Actions</th></tr>
+                </thead>
+                <tbody id="accounts-table"></tbody>
+              </table>
+            </div>
+            <div id="accounts-status" class="footer-note" style="margin-top:8px"></div>
+
+            <div class="shell-grid" style="margin-top:16px">
+              <div>
+                <h4 class="model-picker-title">Add account</h4>
+                <form id="account-add-form" class="stack" autocomplete="off">
+                  <input class="input" id="account-add-key" type="password" placeholder="API key secret (AIza… / AQ.…)" required />
+                  <input class="input" id="account-add-owner" type="text" placeholder="Label / owner (optional)" />
+                  <input class="input" id="account-add-group" type="text" placeholder="Quota group / project id (optional)" />
+                  <input class="input" id="account-add-priority" type="number" placeholder="Priority (default 100)" />
+                  <button type="submit" class="primary">Add account</button>
+                </form>
+              </div>
+              <div>
+                <h4 class="model-picker-title">Download free models</h4>
+                <div class="stack">
+                  <select class="input" id="account-models-select"></select>
+                  <button type="button" class="secondary" id="account-models-btn">Fetch models for account</button>
+                  <div id="account-models-output" class="mono-box" style="max-height:280px;overflow:auto">Pick an account and fetch its catalog.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
 
         <section class="panel section">
           <div class="section-head">
@@ -2041,6 +2088,139 @@ export function renderAppShell(input: {
           throw new Error(summarizeHtmlError(body, response.status));
         }
         return body;
+      }
+
+      // ---- Gemini account manager (admin) ----
+      const accountsTable = document.getElementById('accounts-table');
+      const accountsStatus = document.getElementById('accounts-status');
+      const accountAddForm = document.getElementById('account-add-form');
+      const accountModelsSelect = document.getElementById('account-models-select');
+      const accountModelsBtn = document.getElementById('account-models-btn');
+      const accountModelsOutput = document.getElementById('account-models-output');
+
+      function setAccountsStatus(message, isError) {
+        if (!accountsStatus) return;
+        accountsStatus.textContent = message || '';
+        accountsStatus.style.color = isError ? 'var(--bad)' : 'var(--muted)';
+      }
+
+      function renderAccounts(accounts) {
+        if (!accountsTable) return;
+        const list = Array.isArray(accounts) ? accounts : [];
+        accountsTable.innerHTML = list.map(function(account) {
+          const id = escapeHtml(String(account.id || ''));
+          return '<tr>' +
+            '<td data-label="Account"><strong>' + id + '</strong>' + (account.owner ? '<div class="footer-note">' + escapeHtml(String(account.owner)) + '</div>' : '') + '</td>' +
+            '<td data-label="Quota group">' + escapeHtml(String(account.quotaGroup || '')) + '</td>' +
+            '<td data-label="Priority"><input class="input account-priority" data-account="' + id + '" type="number" value="' + escapeHtml(String(account.priority)) + '" style="width:84px" /></td>' +
+            '<td data-label="Enabled"><input type="checkbox" class="account-enabled" data-account="' + id + '"' + (account.enabled ? ' checked' : '') + ' /></td>' +
+            '<td data-label="Key"><code>' + escapeHtml(String(account.keyPreview || '')) + '</code></td>' +
+            '<td data-label="Actions"><button type="button" class="secondary account-save" data-account="' + id + '">Save</button> <button type="button" class="secondary account-remove" data-account="' + id + '">Remove</button></td>' +
+          '</tr>';
+        }).join('') || '<tr><td colspan="6" class="muted">No Gemini accounts configured.</td></tr>';
+
+        if (accountModelsSelect) {
+          const previous = accountModelsSelect.value;
+          accountModelsSelect.innerHTML = list.map(function(account) {
+            return '<option value="' + escapeHtml(String(account.id)) + '">' + escapeHtml(String(account.id)) + (account.owner ? ' (' + escapeHtml(String(account.owner)) + ')' : '') + '</option>';
+          }).join('');
+          if (previous) accountModelsSelect.value = previous;
+        }
+      }
+
+      async function loadAccounts() {
+        if (!accountsTable) return;
+        try {
+          const data = await request('/admin/provider/gemini-api/accounts');
+          renderAccounts(data.accounts);
+        } catch (error) {
+          setAccountsStatus(error.message || 'Failed to load accounts.', true);
+        }
+      }
+
+      if (accountsTable) {
+        accountsTable.addEventListener('click', async function(event) {
+          const saveBtn = event.target.closest('.account-save');
+          const removeBtn = event.target.closest('.account-remove');
+          if (saveBtn) {
+            const id = saveBtn.getAttribute('data-account');
+            const priorityInput = accountsTable.querySelector('.account-priority[data-account="' + id + '"]');
+            const enabledInput = accountsTable.querySelector('.account-enabled[data-account="' + id + '"]');
+            try {
+              const data = await request('/admin/provider/gemini-api/accounts/update', {
+                method: 'POST',
+                body: JSON.stringify({ id: id, priority: Number(priorityInput.value), enabled: enabledInput.checked }),
+              });
+              renderAccounts(data.accounts);
+              setAccountsStatus('Saved ' + id + '. Routing reloaded live.', false);
+            } catch (error) {
+              setAccountsStatus(error.message || 'Save failed.', true);
+            }
+          } else if (removeBtn) {
+            const id = removeBtn.getAttribute('data-account');
+            if (!window.confirm('Remove account ' + id + '? This deletes its key from the pool.')) return;
+            try {
+              const data = await request('/admin/provider/gemini-api/accounts/remove', {
+                method: 'POST',
+                body: JSON.stringify({ id: id }),
+              });
+              renderAccounts(data.accounts);
+              setAccountsStatus('Removed ' + id + '.', false);
+            } catch (error) {
+              setAccountsStatus(error.message || 'Remove failed.', true);
+            }
+          }
+        });
+      }
+
+      if (accountAddForm) {
+        accountAddForm.addEventListener('submit', async function(event) {
+          event.preventDefault();
+          const keyInput = document.getElementById('account-add-key');
+          const ownerInput = document.getElementById('account-add-owner');
+          const groupInput = document.getElementById('account-add-group');
+          const priorityInput = document.getElementById('account-add-priority');
+          const payload = { key: keyInput.value.trim() };
+          if (ownerInput.value.trim()) payload.owner = ownerInput.value.trim();
+          if (groupInput.value.trim()) payload.quotaGroup = groupInput.value.trim();
+          if (priorityInput.value.trim()) payload.priority = Number(priorityInput.value);
+          try {
+            const data = await request('/admin/provider/gemini-api/accounts/add', {
+              method: 'POST',
+              body: JSON.stringify(payload),
+            });
+            renderAccounts(data.accounts);
+            accountAddForm.reset();
+            setAccountsStatus('Added ' + data.added + '. Routing reloaded live.', false);
+          } catch (error) {
+            setAccountsStatus(error.message || 'Add failed.', true);
+          }
+        });
+      }
+
+      if (accountModelsBtn) {
+        accountModelsBtn.addEventListener('click', async function() {
+          const accountId = accountModelsSelect ? accountModelsSelect.value : '';
+          if (!accountId) return;
+          accountModelsOutput.textContent = 'Fetching ' + accountId + '…';
+          try {
+            const data = await request('/admin/provider/gemini-api/accounts/list-models', {
+              method: 'POST',
+              body: JSON.stringify({ accountId: accountId }),
+            });
+            if (!data.ok) {
+              accountModelsOutput.textContent = 'Error: ' + (data.error || data.status || 'unknown');
+              return;
+            }
+            const lines = (data.models || []).map(function(model) {
+              const lim = model.limit ? ('  rpm=' + model.limit.rpm + ' tpm=' + model.limit.tpm + ' rpd=' + model.limit.rpd) : '  (no configured limit)';
+              return model.id + lim;
+            });
+            accountModelsOutput.textContent = lines.join('\\n') || 'No chat models returned.';
+          } catch (error) {
+            accountModelsOutput.textContent = 'Error: ' + (error.message || 'request failed');
+          }
+        });
       }
 
       function setSectionExpanded(button, expanded) {
@@ -3378,6 +3558,7 @@ export function renderAppShell(input: {
           renderBackendDiagnostics(data);
           renderProviderState(data);
           renderStats(data.stats);
+          loadAccounts();
           renderCompatibility(data.compatibility);
           renderApps(data.apps);
           renderInteractions(state.adminStats);
