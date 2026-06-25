@@ -14,6 +14,7 @@ import {
 import type { LLMBackendId } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
 import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
+import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
 
 export interface BootstrapAppConfig {
   name: string;
@@ -47,6 +48,7 @@ export interface RuntimeConfig {
     enabledSurfaces: ApiSurface[];
   };
   geminiApi: GeminiApiProviderConfig;
+  ollama: OllamaRouterConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
   };
@@ -143,8 +145,31 @@ function readDashboardUsers(
 
 function normalizeBackendId(value: string): LLMBackendId | null {
   const normalized = value.trim().toLowerCase();
+  if (normalized === 'ollama') return 'ollama';
   if (normalized === 'gemini-api' || normalized === 'gemini' || normalized === 'ai-studio') return 'gemini-api';
   return null;
+}
+
+function readOllamaInventoryModelIds(inventoryPath: string, excludeCloudModels: boolean): string[] {
+  if (!existsSync(inventoryPath)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(inventoryPath, 'utf8')) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.flatMap((endpoint) => {
+      if (!endpoint || typeof endpoint !== 'object') return [];
+      const models = (endpoint as Record<string, unknown>).models;
+      if (!Array.isArray(models)) return [];
+      return models.flatMap((model) => {
+        if (!model || typeof model !== 'object') return [];
+        const name = String((model as Record<string, unknown>).name ?? '').trim();
+        if (!name) return [];
+        if (excludeCloudModels && /(:cloud|-cloud)(?:$|[^a-z0-9])/i.test(name)) return [];
+        return [name.toLowerCase()];
+      });
+    }))];
+  } catch {
+    return [];
+  }
 }
 
 function readGeminiApiLimits(
@@ -274,6 +299,12 @@ export function loadConfig(
   const rootDir = path.resolve(pick(env, 'GEMROUTER_ROOT_DIR', 'BAIRBI_ROOT_DIR', 'BARIBI_ROOT_DIR') ?? process.cwd());
   const dataDir = path.resolve(rootDir, pick(env, 'GEMROUTER_DATA_DIR', 'BAIRBI_DATA_DIR', 'BARIBI_DATA_DIR') ?? 'data');
   mkdirSync(dataDir, { recursive: true });
+  const ollamaInventoryPath = path.resolve(
+    rootDir,
+    pick(env, 'GEMROUTER_OLLAMA_INVENTORY_PATH') ?? 'ollama-model-inventory.json',
+  );
+  const ollamaExcludeCloudModels = readBoolean(env, true, 'GEMROUTER_OLLAMA_EXCLUDE_CLOUD_MODELS');
+  const ollamaModelIds = readOllamaInventoryModelIds(ollamaInventoryPath, ollamaExcludeCloudModels);
 
   const freeTierTextModelIds = readList(
     env,
@@ -317,7 +348,9 @@ export function loadConfig(
     configuredDirectModels[0] ||
     freeTierTextModelIds[0] ||
     DEFAULT_DIRECT_MODEL_IDS[0];
-  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels])];
+  const configuredOllamaModels = readList(env, ollamaModelIds, 'GEMROUTER_OLLAMA_MODELS')
+    .map((model) => model.toLowerCase());
+  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels])];
   const modelIds = buildPublicModelIds(directModels);
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
@@ -335,6 +368,9 @@ export function loadConfig(
     ),
   });
   const backendOrder = readBackendOrder(env, ['gemini-api'], 'GEMROUTER_BACKEND_ORDER');
+  const effectiveBackendOrder = ollamaModelIds.length > 0 && !backendOrder.includes('ollama')
+    ? [...backendOrder, 'ollama' as const]
+    : backendOrder;
   const geminiApiDefaultTier = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_TIER') ?? 'tier1';
   const geminiApiQuotaGroupMode = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE') === 'shared'
     ? 'shared'
@@ -457,8 +493,17 @@ export function loadConfig(
       strictModelIds: readList(env, [], 'GEMROUTER_GEMINI_API_STRICT_MODELS')
         .map((model) => model.replace(/^models\//, '').toLowerCase()),
     },
+    ollama: {
+      enabled: readBoolean(env, ollamaModelIds.length > 0, 'GEMROUTER_OLLAMA_ENABLED'),
+      inventoryPath: ollamaInventoryPath,
+      excludeCloudModels: ollamaExcludeCloudModels,
+      minParameterScore: readNumber(env, 0, 'GEMROUTER_OLLAMA_MIN_PARAMETER_SCORE'),
+      timeoutMs: readNumber(env, 120_000, 'GEMROUTER_OLLAMA_TIMEOUT_MS'),
+      streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_OLLAMA_STREAM_TIMEOUT_MS'),
+      defaultModel: configuredOllamaModels[0] ?? ollamaModelIds[0],
+    },
     llmRouting: {
-      backendOrder,
+      backendOrder: effectiveBackendOrder,
     },
     modelIds,
     freeTierPolicy: {

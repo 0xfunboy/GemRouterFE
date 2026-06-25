@@ -51,6 +51,7 @@ import {
 } from './lib/ollama.js';
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
 import { nextPacificDayStartMs } from './llm/providers/gemini-api/quotaLedger.js';
+import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -75,11 +76,13 @@ const execFileAsync = promisify(execFile);
 
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
+const ollamaLlm = createOllamaRouterClient(config.ollama);
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
 }, {
   geminiApi: geminiApiLlm,
+  ollama: ollamaLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
 const audit = new AuditLogger(config.auditLogPath);
@@ -126,7 +129,7 @@ const bootstrapApp = appStore.ensureBootstrapApp({
   rateLimitPerMinute: config.bootstrapApp.rateLimitPerMinute,
   maxConcurrency: config.bootstrapApp.maxConcurrency,
 });
-appStore.restrictAllowedModels(config.freeTierPolicy.textModelIds);
+appStore.restrictAllowedModels(config.modelIds);
 
 const app = Fastify({
   logger: false,
@@ -148,10 +151,10 @@ type AuthenticatedClientAccess = {
 };
 
 function concurrencyPriority(request: FastifyRequest, app: AuthenticatedClientApp): number {
-  // Only the bootstrap credential belongs to GoonersBot. Other API clients cannot
+  // Only the bootstrap credential can receive queue priority. Other API clients cannot
   // self-upgrade their queue position by supplying this header.
   if (app.id !== bootstrapApp.id) return 0;
-  const plan = String(request.headers['x-leakrouter-group-plan'] ?? '').trim().toLowerCase();
+  const plan = String(request.headers['x-gemrouter-group-plan'] ?? '').trim().toLowerCase();
   if (plan === 'pro') return 2;
   if (plan === 'plus') return 1;
   return 0;
@@ -485,12 +488,18 @@ function ensureModelAllowed(
 }
 
 function isConfiguredTextModel(modelId: string): boolean {
-  return config.freeTierPolicy.textModelIds.includes(normalizeModelId(modelId));
+  const normalized = normalizeModelId(modelId);
+  if (config.freeTierPolicy.textModelIds.includes(normalized)) return true;
+  return config.modelIds.map((model) => model.toLowerCase()).includes(normalized) &&
+    !config.freeTierPolicy.audioModelIds.includes(normalized) &&
+    !config.freeTierPolicy.embeddingModelIds.includes(normalized);
 }
 
 function textModelsAllowedForApp(clientApp: AuthenticatedClientApp | ApiAppRecord): string[] {
   const appAllowed = new Set(clientApp.allowedModels.map((model) => normalizeModelId(model)));
-  return config.freeTierPolicy.textModelIds.filter((modelId) => appAllowed.has(modelId));
+  return config.modelIds
+    .map((model) => normalizeModelId(model))
+    .filter((modelId) => appAllowed.has(modelId) && isConfiguredTextModel(modelId));
 }
 
 function resolveTextModelForApp(
@@ -845,6 +854,9 @@ function sanitizeLlmDiagnostics(
   const rawGeminiApi = input.geminiApi && typeof input.geminiApi === 'object'
     ? input.geminiApi as Record<string, unknown>
     : null;
+  const rawOllama = input.ollama && typeof input.ollama === 'object'
+    ? input.ollama as Record<string, unknown>
+    : null;
   return {
     provider: input.provider ?? null,
     model: input.model ?? null,
@@ -881,6 +893,23 @@ function sanitizeLlmDiagnostics(
           lastUpstreamError: rawGeminiApi.lastUpstreamError ?? null,
         }
         : null,
+    ollama: rawOllama
+      ? {
+        provider: rawOllama.provider ?? 'ollama',
+        enabled: rawOllama.enabled ?? null,
+        available: rawOllama.available ?? null,
+        configuredEndpointCount: rawOllama.configuredEndpointCount ?? 0,
+        configuredModelCount: rawOllama.configuredModelCount ?? 0,
+        excludeCloudModels: rawOllama.excludeCloudModels ?? null,
+        defaultModel: rawOllama.defaultModel ?? null,
+        models: rawOllama.models ?? [],
+        benchmarks: options?.includeSensitive ? rawOllama.benchmarks ?? [] : undefined,
+        lastModel: rawOllama.lastModel ?? null,
+        lastSuccessAt: rawOllama.lastSuccessAt ?? null,
+        lastFailureAt: rawOllama.lastFailureAt ?? null,
+        lastError: rawOllama.lastError ?? null,
+      }
+      : null,
   };
 }
 
@@ -1107,10 +1136,12 @@ function buildCompatibleSurfaceModelIds(
 
 function buildProviderSnapshot(
   geminiApi: Record<string, unknown>,
+  ollama: Record<string, unknown>,
 ): Record<string, unknown> {
   const routedModelIds = buildCompatibleSurfaceModelIds(geminiApi, 'chat');
+  const ollamaModels = Array.isArray(ollama.models) ? ollama.models as Array<Record<string, unknown>> : [];
   return {
-    backend: 'gemini-api',
+    backend: config.llmRouting.backendOrder[0] ?? 'gemini-api',
     configuredModel: routedModelIds[0] ?? config.modelIds[0] ?? null,
     geminiApi: {
       enabled: geminiApi.enabled ?? null,
@@ -1137,7 +1168,25 @@ function buildProviderSnapshot(
       lastError: geminiProjectQuotaState.lastError,
       projectQuotas: geminiProjectQuotaState.projectQuotas,
     },
-    models: buildProviderModelState(geminiApi),
+    ollama: {
+      enabled: ollama.enabled ?? false,
+      available: ollama.available ?? false,
+      configuredEndpointCount: ollama.configuredEndpointCount ?? 0,
+      configuredModelCount: ollama.configuredModelCount ?? 0,
+      defaultModel: ollama.defaultModel ?? null,
+      lastModel: ollama.lastModel ?? null,
+      lastError: ollama.lastError ?? null,
+      lastFailureAt: ollama.lastFailureAt ?? null,
+      lastSuccessAt: ollama.lastSuccessAt ?? null,
+    },
+    models: [
+      ...buildProviderModelState(geminiApi),
+      ...ollamaModels.map((model) => ({
+        ...model,
+        provider: 'ollama',
+        backends: { ollama: ollama.available === true },
+      })),
+    ],
   };
 }
 
@@ -1663,11 +1712,12 @@ function getRuntimeSnapshot(
   const rawLlmDiagnostics = typeof llm.getDiagnostics === 'function' ? llm.getDiagnostics() : null;
   const sanitizedLlmDiagnostics = sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm });
   const geminiApiDiagnostics = ((sanitizedLlmDiagnostics?.geminiApi as Record<string, unknown> | undefined) ?? {});
+  const ollamaDiagnostics = ((sanitizedLlmDiagnostics?.ollama as Record<string, unknown> | undefined) ?? {});
   const backendOrder = (sanitizedLlmDiagnostics?.backendOrder as LLMBackendId[] | undefined) ?? config.llmRouting.backendOrder;
   const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? backendOrder[0] ?? 'gemini-api');
   const geminiApiAvailable = Boolean(geminiApiDiagnostics.enabled) && Boolean(geminiApiDiagnostics.available);
   const activeDefaultBackend = resolveActiveDefaultBackend(backendOrder, geminiApiAvailable);
-  const provider = buildProviderSnapshot(geminiApiDiagnostics);
+  const provider = buildProviderSnapshot(geminiApiDiagnostics, ollamaDiagnostics);
 
   return {
     ok: true,
@@ -1688,9 +1738,15 @@ function getRuntimeSnapshot(
       backendOnly: true,
     },
     provider,
-    models: buildCompatibleSurfaceModelIds(geminiApiDiagnostics, 'chat-or-image'),
+    models: [
+      ...buildCompatibleSurfaceModelIds(geminiApiDiagnostics, 'chat-or-image'),
+      ...(Array.isArray(ollamaDiagnostics.models)
+        ? (ollamaDiagnostics.models as Record<string, unknown>[]).map((model) => String(model.id ?? '').trim()).filter(Boolean)
+        : []),
+    ],
     backends: {
       geminiApi: geminiApiDiagnostics,
+      ollama: ollamaDiagnostics,
     },
     compatibility: request ? getCompatibilitySnapshot(request) : compatibility.get(),
     llm: sanitizedLlmDiagnostics,
@@ -1699,8 +1755,8 @@ function getRuntimeSnapshot(
 
 function normalizeAllowedModels(values: unknown): string[] {
   if (!Array.isArray(values) || values.length === 0) return config.bootstrapApp.allowedModels;
-  const freeText = new Set(config.freeTierPolicy.textModelIds);
-  const models = values.map((value) => normalizeModelId(String(value))).filter((modelId) => freeText.has(modelId));
+  const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
+  const models = values.map((value) => normalizeModelId(String(value))).filter((modelId) => knownModels.has(modelId));
   return models.length > 0 ? [...new Set(models)] : config.bootstrapApp.allowedModels;
 }
 
@@ -3474,9 +3530,10 @@ app.get('/api/tags', async (request, reply) => {
   if (!access) return reply;
   try {
     const runtime = getRuntimeSnapshot();
-    const backends = (runtime.backends as Record<string, unknown> | null) ?? {};
-    const geminiApi = (backends.geminiApi as Record<string, unknown> | null) ?? {};
-    const allowedModels = buildCompatibleSurfaceModelIds(geminiApi, 'chat').filter((modelId) =>
+    const runtimeModels = Array.isArray(runtime.models)
+      ? runtime.models.map((model) => String(model).trim()).filter(Boolean)
+      : config.modelIds;
+    const allowedModels = runtimeModels.filter((modelId) =>
       appStore.isModelAllowed(access.app, modelId),
     );
     return buildOllamaTagsResponse(allowedModels);

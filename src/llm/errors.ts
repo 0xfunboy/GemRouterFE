@@ -13,7 +13,11 @@ export type LLMProviderErrorCode =
   | 'gemini_api_high_demand'
   | 'gemini_api_upstream_error'
   | 'gemini_api_timeout'
-  | 'gemini_api_stream_error';
+  | 'gemini_api_stream_error'
+  | 'ollama_model_not_found'
+  | 'ollama_missing_endpoint'
+  | 'ollama_upstream_error'
+  | 'ollama_timeout';
 
 export interface LLMProviderErrorOptions {
   statusCode?: number;
