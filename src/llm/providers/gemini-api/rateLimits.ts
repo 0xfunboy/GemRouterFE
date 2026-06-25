@@ -6,6 +6,13 @@ export const GEMINI_API_TIER1_LIMITS = {
     tpm: 250_000,
     rpd: 20,
   },
+  // Catalogued so it is recognised as a known model (silences the "new model" alert);
+  // not part of the default text chain because it has no usable free-tier RPD here.
+  'gemini-2.5-pro': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 100,
+  },
   'gemini-2.0-flash': {
     rpm: 15,
     tpm: 1_000_000,
