@@ -1398,6 +1398,23 @@ export function renderAppShell(input: {
         </div>
       </section>
 
+      <section class="panel section" id="ollama-local-section" style="display:none">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">${svgIcon('chart')} Ollama Local RPD</h3>
+            <p class="section-copy">Local-only embedding and vision models with their daily request budgets (resets America/Los_Angeles).</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table responsive-table quota-table public-rpd-table">
+            <thead>
+              <tr><th>Model</th><th>Type</th><th>RPD</th><th></th></tr>
+            </thead>
+            <tbody id="ollama-local-table"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="panel section">
         <div class="chart-grid">
           <div class="chart-card">
@@ -1912,6 +1929,8 @@ export function renderAppShell(input: {
       const publicRpdCopy = document.getElementById('public-rpd-copy');
       const publicRpdTable = document.getElementById('public-rpd-table');
       const publicRpdAccountTable = document.getElementById('public-rpd-account-table');
+      const ollamaLocalSection = document.getElementById('ollama-local-section');
+      const ollamaLocalTable = document.getElementById('ollama-local-table');
       const hourlyChart = document.getElementById('hourly-chart');
       const routeChart = document.getElementById('route-chart');
       const adminDashboard = document.getElementById('admin-dashboard');
@@ -2435,16 +2454,16 @@ export function renderAppShell(input: {
         const expanded = button.getAttribute('aria-expanded') === 'true';
         button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
         const toggleRow = button.closest('tr');
+        const tbody = button.closest('tbody');
+        if (tbody && tbody.id) expandedRpdTables[tbody.id] = !expanded;
         let sibling = toggleRow ? toggleRow.nextElementSibling : null;
         while (sibling && sibling.classList.contains('rpd-idle')) {
           sibling.classList.toggle('hidden', expanded);
           sibling = sibling.nextElementSibling;
         }
-        const labelArrow = button.querySelector('.rpd-toggle-arrow');
         const count = button.textContent.replace(/[^0-9]/g, '');
         button.innerHTML = '<span class="rpd-toggle-arrow">&#9656;</span> ' +
           (expanded ? 'Show ' : 'Hide ') + count + ' idle model' + (count === '1' ? '' : 's');
-        void labelArrow;
       });
 
       function autosizeTextarea(textarea) {
@@ -2649,17 +2668,21 @@ export function renderAppShell(input: {
         const meterClass = percent >= 100 ? 'bad' : percent > 75 ? 'warn' : 'good';
         return '<td data-label=""><div class="quota-meter ' + meterClass + '" title="' + escapeHtml(String(percent)) + '% used"><span style="width:' + escapeHtml(String(percent)) + '%"></span></div></td>';
       }
+      // Tables (by tbody id) whose idle rows the operator has expanded. Persisted across the
+      // 5s refresh re-renders so the section does not snap shut on every tick.
+      const expandedRpdTables = {};
       // Render consumed rows first; collapse the idle (untouched) ones behind a toggle.
       function renderRpdRows(tableEl, rows, idleColspan) {
         const consumed = rows.filter(function(r) { return r.html.used > 0; }).map(function(r) { return r.row; });
         const idle = rows.filter(function(r) { return r.html.used <= 0; }).map(function(r) { return r.row; });
+        const expanded = expandedRpdTables[tableEl.id] === true;
         let out = consumed.join('');
         if (idle.length > 0) {
           out += '<tr class="rpd-toggle-row"><td colspan="' + idleColspan + '">' +
-            '<button type="button" class="secondary rpd-toggle" data-rpd-toggle aria-expanded="false">' +
-            '<span class="rpd-toggle-arrow">&#9656;</span> Show ' + idle.length + ' idle model' + (idle.length === 1 ? '' : 's') +
+            '<button type="button" class="secondary rpd-toggle" data-rpd-toggle aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
+            '<span class="rpd-toggle-arrow">&#9656;</span> ' + (expanded ? 'Hide ' : 'Show ') + idle.length + ' idle model' + (idle.length === 1 ? '' : 's') +
             '</button></td></tr>';
-          out += idle.map(function(row) { return row.replace('<tr>', '<tr class="rpd-idle hidden">'); }).join('');
+          out += idle.map(function(row) { return row.replace('<tr>', '<tr class="rpd-idle' + (expanded ? '' : ' hidden') + '">'); }).join('');
         }
         tableEl.innerHTML = consumed.length + idle.length > 0
           ? out
@@ -2751,6 +2774,32 @@ export function renderAppShell(input: {
             });
           renderRpdRows(publicRpdAccountTable, accountRows, 5);
         }
+      }
+
+      function renderOllamaLocalRpd(summary) {
+        if (!ollamaLocalSection || !ollamaLocalTable) return;
+        const local = summary && summary.ollamaLocal ? summary.ollamaLocal : null;
+        const models = local && Array.isArray(local.models) ? local.models : [];
+        if (!local || local.enabled !== true || models.length === 0) {
+          ollamaLocalSection.style.display = 'none';
+          return;
+        }
+        ollamaLocalSection.style.display = '';
+        ollamaLocalTable.innerHTML = models.map(function(model) {
+          const id = String(model.model || 'unknown');
+          const kind = String(model.kind || 'text');
+          const used = typeof model.used === 'number' ? model.used : 0;
+          const limit = typeof model.limit === 'number' && model.limit > 0 ? model.limit : null;
+          const percent = limit ? Math.min(100, Math.round((used / limit) * 100)) : 0;
+          const meterClass = percent >= 100 ? 'bad' : percent > 75 ? 'warn' : 'good';
+          const rpdLabel = limit ? (fmtNumber(used) + ' / ' + fmtNumber(limit)) : (fmtNumber(used) + ' / ∞');
+          return '<tr>' +
+            '<td data-label="Model"><strong>' + escapeHtml(id) + '</strong></td>' +
+            '<td data-label="Type"><span class="chip">' + escapeHtml(kind) + '</span></td>' +
+            '<td data-label="RPD">' + escapeHtml(rpdLabel) + '</td>' +
+            '<td data-label=""><div class="quota-meter ' + meterClass + '" title="' + escapeHtml(String(percent)) + '% used"><span style="width:' + escapeHtml(String(percent)) + '%"></span></div></td>' +
+          '</tr>';
+        }).join('');
       }
 
       function renderHourlyChart(summary) {
@@ -3494,6 +3543,7 @@ export function renderAppShell(input: {
           renderPublicPills(data);
           renderPublicStats(data);
           renderPublicRpd(data);
+          renderOllamaLocalRpd(data);
           if (!state.authenticated) {
             renderProviderState(data);
           }
