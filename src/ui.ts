@@ -1556,6 +1556,37 @@ export function renderAppShell(input: {
           </div>
         </section>
 
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('route')} Routed Models</h3>
+              <p class="section-copy">Choose which Gemini models the router offers and in what order (strongest first). The first entry is the default; the rest are the fallback chain. Applies live and persists.</p>
+            </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="models-config-body" aria-controls="models-config-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
+          </div>
+          <div id="models-config-body" class="section-body hidden">
+            <div class="shell-grid">
+              <div>
+                <h4 class="model-picker-title">Enabled — in routing order</h4>
+                <div id="models-enabled" class="model-picker-panel"></div>
+              </div>
+              <div>
+                <h4 class="model-picker-title">Available</h4>
+                <div id="models-available" class="model-picker-panel"></div>
+              </div>
+            </div>
+            <div style="margin-top:12px">
+              <button type="button" class="primary" id="models-config-save">Save model order</button>
+              <div id="models-config-status" class="footer-note" style="margin-top:8px"></div>
+            </div>
+          </div>
+        </section>
+
 
         <section class="panel section">
           <div class="section-head">
@@ -2297,6 +2328,81 @@ export function renderAppShell(input: {
             if (proxyStatus) { proxyStatus.style.color = 'var(--muted)'; proxyStatus.textContent = 'Proxy config saved' + (data.enabled ? ' (enabled)' : ' (disabled)') + '.'; }
           } catch (error) {
             if (proxyStatus) { proxyStatus.style.color = 'var(--bad)'; proxyStatus.textContent = error.message || 'Save failed.'; }
+          }
+        });
+      }
+
+      // ---- Routed-models editor (admin) ----
+      const modelsEnabledBox = document.getElementById('models-enabled');
+      const modelsAvailableBox = document.getElementById('models-available');
+      const modelsConfigSave = document.getElementById('models-config-save');
+      const modelsConfigStatus = document.getElementById('models-config-status');
+      let modelsEnabledOrder = [];
+      let modelsAvailableList = [];
+
+      function renderModelsConfig() {
+        if (!modelsEnabledBox) return;
+        modelsEnabledBox.innerHTML = modelsEnabledOrder.map(function(id, index) {
+          return '<div class="model-picker-option"><div><span class="model-picker-title">' + (index + 1) + '. ' + escapeHtml(id) + '</span></div>' +
+            '<div>' +
+            '<button type="button" class="secondary" data-mc-up="' + escapeHtml(id) + '"' + (index === 0 ? ' disabled' : '') + '>↑</button> ' +
+            '<button type="button" class="secondary" data-mc-down="' + escapeHtml(id) + '"' + (index === modelsEnabledOrder.length - 1 ? ' disabled' : '') + '>↓</button> ' +
+            '<button type="button" class="secondary" data-mc-remove="' + escapeHtml(id) + '">✕</button>' +
+            '</div></div>';
+        }).join('') || '<div class="footer-note" style="padding:10px">No models enabled.</div>';
+        modelsAvailableBox.innerHTML = modelsAvailableList.map(function(id) {
+          return '<div class="model-picker-option"><div><span class="model-picker-title">' + escapeHtml(id) + '</span></div>' +
+            '<button type="button" class="secondary" data-mc-add="' + escapeHtml(id) + '">+ add</button></div>';
+        }).join('') || '<div class="footer-note" style="padding:10px">All known models are enabled.</div>';
+      }
+
+      async function loadModelsConfig() {
+        if (!modelsEnabledBox) return;
+        try {
+          const data = await request('/admin/provider/models-config');
+          modelsEnabledOrder = Array.isArray(data.enabled) ? data.enabled.slice() : [];
+          modelsAvailableList = Array.isArray(data.available) ? data.available.slice() : [];
+          renderModelsConfig();
+        } catch (error) {
+          if (modelsConfigStatus) modelsConfigStatus.textContent = error.message || 'Failed to load model config.';
+        }
+      }
+
+      if (modelsEnabledBox) {
+        function move(id, delta) {
+          const i = modelsEnabledOrder.indexOf(id);
+          const j = i + delta;
+          if (i < 0 || j < 0 || j >= modelsEnabledOrder.length) return;
+          const tmp = modelsEnabledOrder[i]; modelsEnabledOrder[i] = modelsEnabledOrder[j]; modelsEnabledOrder[j] = tmp;
+          renderModelsConfig();
+        }
+        modelsEnabledBox.addEventListener('click', function(event) {
+          const up = event.target.closest('[data-mc-up]');
+          const down = event.target.closest('[data-mc-down]');
+          const rem = event.target.closest('[data-mc-remove]');
+          if (up) move(up.getAttribute('data-mc-up'), -1);
+          else if (down) move(down.getAttribute('data-mc-down'), 1);
+          else if (rem) {
+            const id = rem.getAttribute('data-mc-remove');
+            modelsEnabledOrder = modelsEnabledOrder.filter(function(m) { return m !== id; });
+            if (modelsAvailableList.indexOf(id) < 0) modelsAvailableList.push(id);
+            renderModelsConfig();
+          }
+        });
+        modelsAvailableBox.addEventListener('click', function(event) {
+          const add = event.target.closest('[data-mc-add]');
+          if (!add) return;
+          const id = add.getAttribute('data-mc-add');
+          if (modelsEnabledOrder.indexOf(id) < 0) modelsEnabledOrder.push(id);
+          modelsAvailableList = modelsAvailableList.filter(function(m) { return m !== id; });
+          renderModelsConfig();
+        });
+        modelsConfigSave.addEventListener('click', async function() {
+          try {
+            await request('/admin/provider/models-config', { method: 'POST', body: JSON.stringify({ textModels: modelsEnabledOrder }) });
+            if (modelsConfigStatus) { modelsConfigStatus.style.color = 'var(--muted)'; modelsConfigStatus.textContent = 'Saved. Routing order applied live.'; }
+          } catch (error) {
+            if (modelsConfigStatus) { modelsConfigStatus.style.color = 'var(--bad)'; modelsConfigStatus.textContent = error.message || 'Save failed.'; }
           }
         });
       }
@@ -3648,6 +3754,7 @@ export function renderAppShell(input: {
           renderStats(data.stats);
           loadAccounts();
           loadProxyConfig();
+          loadModelsConfig();
           renderCompatibility(data.compatibility);
           renderApps(data.apps);
           renderInteractions(state.adminStats);

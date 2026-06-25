@@ -3060,6 +3060,69 @@ app.post<{ Body: { enabled?: boolean; strategy?: string; urls?: string[]; bypass
   };
 });
 
+// ---- Global model list editor (enabled set + order, applied live) ----
+const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
+
+/** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
+function knownGeminiTextModels(): string[] {
+  return Object.keys(config.geminiApi.limits)
+    .map((id) => id.toLowerCase())
+    .filter((id) => /^(gemini|gemma)-/.test(id) && !id.includes('embedding'));
+}
+
+function applyModelConfig(orderedModels: string[]): void {
+  const known = new Set(knownGeminiTextModels());
+  const ordered = orderedModels.map((m) => m.toLowerCase()).filter((m) => known.has(m));
+  if (ordered.length === 0) return;
+  config.freeTierPolicy.textModelIds = ordered;
+  config.freeTierPolicy.fallbackModelIds = ordered;
+  config.geminiApi.fallbackModelIds = ordered;
+  const audio = config.freeTierPolicy.audioModelIds;
+  const embedding = config.freeTierPolicy.embeddingModelIds;
+  config.freeTierPolicy.allModelIds = [...new Set([...ordered, ...audio, ...embedding])];
+  // Public model list leads with the ordered text models, keeps any other entries after.
+  const nonText = config.modelIds.filter((m) => !known.has(m.toLowerCase()));
+  config.modelIds = [...new Set([...ordered, ...nonText])];
+}
+
+function loadModelConfig(): void {
+  if (!existsSync(MODEL_CONFIG_PATH)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(MODEL_CONFIG_PATH, 'utf8')) as { textModels?: unknown };
+    if (Array.isArray(parsed.textModels)) applyModelConfig(parsed.textModels.map(String));
+  } catch {
+    // ignore malformed override
+  }
+}
+loadModelConfig();
+
+app.get('/admin/provider/models-config', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const enabled = config.freeTierPolicy.textModelIds;
+  const enabledSet = new Set(enabled);
+  const available = knownGeminiTextModels().filter((m) => !enabledSet.has(m));
+  return {
+    ok: true,
+    enabled,
+    available,
+    limits: config.geminiApi.limits,
+  };
+});
+
+app.post<{ Body: { textModels?: string[] } }>('/admin/provider/models-config', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const list = Array.isArray(request.body?.textModels) ? request.body.textModels.map(String) : [];
+  if (list.length === 0) {
+    return sendError(reply, 400, { message: 'textModels must be a non-empty ordered list', type: 'invalid_request_error', code: 'empty_model_list' });
+  }
+  applyModelConfig(list);
+  mkdirSync(path.dirname(MODEL_CONFIG_PATH), { recursive: true });
+  writeFileSync(MODEL_CONFIG_PATH, `${JSON.stringify({ textModels: config.freeTierPolicy.textModelIds }, null, 2)}\n`, 'utf8');
+  appStore.restrictAllowedModels(config.modelIds);
+  audit.write({ type: 'admin.models.config', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
+  return { ok: true, enabled: config.freeTierPolicy.textModelIds };
+});
+
 app.post('/admin/reset-telemetry', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const client = geminiApiLlm as typeof geminiApiLlm & {
