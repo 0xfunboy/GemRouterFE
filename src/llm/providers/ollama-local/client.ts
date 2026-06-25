@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { pacificDayStartMs } from '../gemini-api/quotaLedger.js';
 import type { LLMMessage } from '../../types.js';
 
@@ -9,6 +12,8 @@ export interface OllamaLocalConfig {
   visionModel: string | null;
   visionRpd: number | null;
   timeoutMs: number;
+  /** Where the daily request counters are persisted so they survive restarts. */
+  usageStorePath: string;
 }
 
 export interface OllamaLocalModelUsage {
@@ -40,17 +45,53 @@ function normalize(model: string | undefined): string {
 export function createOllamaLocalClient(config: OllamaLocalConfig): OllamaLocalClient {
   const base = config.baseUrl.replace(/\/+$/, '');
 
-  // In-memory daily request counters, reset at the Pacific midnight rollover to match
-  // the Gemini ledger. Local models have no upstream quota; these are soft budgets.
+  // Daily request counters, persisted to disk so they survive restarts and reset at the
+  // Pacific midnight rollover (matching the Gemini ledger). Local models have no upstream
+  // quota; these are soft budgets.
   const counters = new Map<string, number>();
   let countersDay = pacificDayStartMs();
-  function bump(model: string): void {
+
+  function persistCounters(): void {
+    try {
+      mkdirSync(path.dirname(config.usageStorePath), { recursive: true });
+      writeFileSync(
+        config.usageStorePath,
+        `${JSON.stringify({ day: countersDay, counts: Object.fromEntries(counters) }, null, 2)}\n`,
+        'utf8',
+      );
+    } catch {
+      // best-effort: a counter is not worth crashing a request over
+    }
+  }
+
+  function loadCounters(): void {
+    if (!existsSync(config.usageStorePath)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(config.usageStorePath, 'utf8')) as { day?: number; counts?: Record<string, number> };
+      if (parsed.day === countersDay && parsed.counts && typeof parsed.counts === 'object') {
+        for (const [model, count] of Object.entries(parsed.counts)) {
+          if (typeof count === 'number') counters.set(model, count);
+        }
+      }
+    } catch {
+      // ignore malformed file
+    }
+  }
+  loadCounters();
+
+  function rolloverIfNeeded(): void {
     const today = pacificDayStartMs();
     if (today !== countersDay) {
       counters.clear();
       countersDay = today;
+      persistCounters();
     }
+  }
+
+  function bump(model: string): void {
+    rolloverIfNeeded();
     counters.set(model, (counters.get(model) ?? 0) + 1);
+    persistCounters();
   }
 
   async function postJson(path: string, body: unknown): Promise<Record<string, unknown>> {
@@ -97,11 +138,7 @@ export function createOllamaLocalClient(config: OllamaLocalConfig): OllamaLocalC
       return { content: typeof message.content === 'string' ? message.content : '' };
     },
     usage(): OllamaLocalModelUsage[] {
-      const today = pacificDayStartMs();
-      if (today !== countersDay) {
-        counters.clear();
-        countersDay = today;
-      }
+      rolloverIfNeeded();
       const rows: OllamaLocalModelUsage[] = [];
       if (config.embeddingModel) {
         rows.push({ model: config.embeddingModel, kind: 'embedding', used: counters.get(config.embeddingModel) ?? 0, limit: config.embeddingRpd });
