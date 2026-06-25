@@ -9,7 +9,7 @@ User=funboy
 WorkingDirectory=/home/funboy
 Environment=HOME=/home/funboy
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/bin/cloudflared tunnel --config /home/funboy/GemRouter/ops/cloudflared/gemrouter.yml run 883e52e8-b6ab-4e77-99fe-d435e02751e6
+ExecStart=/usr/local/bin/cloudflared tunnel --config /home/funboy/INFRA/gem-router/ops/cloudflared/gemrouter.yml run 883e52e8-b6ab-4e77-99fe-d435e02751e6
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
