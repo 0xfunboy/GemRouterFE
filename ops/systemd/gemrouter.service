@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=funboy
-WorkingDirectory=/home/funboy/GemRouter
-EnvironmentFile=/home/funboy/GemRouter/.env
+WorkingDirectory=/home/funboy/INFRA/gem-router
+EnvironmentFile=/home/funboy/INFRA/gem-router/.env
 Environment=HOME=/home/funboy
 Environment=NODE_ENV=production
 Environment=PNPM_HOME=/home/funboy/.local/share/pnpm
