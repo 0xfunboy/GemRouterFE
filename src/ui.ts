@@ -130,7 +130,7 @@ export function renderAppShell(input: {
         --radius: 0px;
         --radius-sm: 0px;
         --frame-gap: 5px;
-        --frame-pad: 15px;
+        --frame-pad: 5mm;
       }
       [data-theme="light"] {
         color-scheme: light;
@@ -249,6 +249,7 @@ export function renderAppShell(input: {
       }
       /* Square icon-only header controls (theme, health, refresh, menu). */
       .icon-btn {
+        position: relative;
         width: 40px;
         height: 40px;
         padding: 0;
@@ -262,6 +263,22 @@ export function renderAppShell(input: {
       }
       .icon-btn:hover { background: rgba(255, 255, 255, 0.08); }
       .icon-btn .icon { width: 18px; height: 18px; }
+      /* Refresh spin: hide the icon and show a ring that completes in half a second. */
+      .icon-btn.is-loading { pointer-events: none; }
+      .icon-btn.is-loading .icon { visibility: hidden; }
+      .icon-btn.is-loading::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        margin: auto;
+        width: 18px;
+        height: 18px;
+        border: 2px solid var(--line-strong);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: icon-spin 0.5s linear infinite;
+      }
+      @keyframes icon-spin { to { transform: rotate(360deg); } }
       .icon {
         width: 17px;
         height: 17px;
@@ -316,7 +333,9 @@ export function renderAppShell(input: {
       }
       .hero-copy {
         display: grid;
-        align-content: start;
+      }
+      .activity-strip {
+        height: 100%;
       }
       .hero-copy p {
         margin-top: 16px;
@@ -337,35 +356,29 @@ export function renderAppShell(input: {
         grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .source-card {
-        min-height: 154px;
-        padding: 0;
+        height: 100%;
+        padding: 12px;
         border-radius: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
         background:
           linear-gradient(180deg, rgba(255, 223, 145, 0.07), rgba(255, 255, 255, 0.012)),
           linear-gradient(135deg, rgba(255, 62, 201, 0.1), transparent 44%, rgba(24, 240, 208, 0.1));
         border: 1px solid var(--line);
         overflow: hidden;
       }
-      .source-card::before {
-        content: "Browser";
-        display: block;
-        height: 22px;
-        padding: 4px 8px;
-        color: #0b0b13;
-        font: 700 10px/1 "IBM Plex Mono", monospace;
-        background: linear-gradient(90deg, #f1d37a, #d68ac6);
-        border-bottom: 1px solid rgba(0, 0, 0, 0.8);
-      }
       .source-card strong {
         display: flex;
         align-items: center;
         gap: 8px;
-        margin: 14px 14px 0;
-        font-size: 16px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--line);
+        font-size: 15px;
         letter-spacing: -0.02em;
       }
       .source-card p {
-        margin: 10px 14px 0;
+        margin: 0;
         color: var(--muted);
         font-size: 12px;
         line-height: 1.55;
@@ -3747,11 +3760,15 @@ export function renderAppShell(input: {
       });
 
       menuRefreshButton.addEventListener('click', async function() {
+        // Spin for at least half a second, then settle back to the icon.
+        menuRefreshButton.classList.add('is-loading');
+        const minSpin = new Promise(function(resolve) { setTimeout(resolve, 500); });
         try {
-          await loadPublicSummary();
-          await refreshSession();
+          await Promise.all([loadPublicSummary().then(refreshSession), minSpin]);
         } catch (error) {
           authStatus.textContent = error.message;
+        } finally {
+          menuRefreshButton.classList.remove('is-loading');
         }
       });
 
