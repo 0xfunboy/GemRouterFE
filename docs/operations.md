@@ -25,8 +25,8 @@ bash ./ops/systemd/install-gemrouter-services.sh
 ```
 
 Units:
-- `gemrouter.service` — main service (user unit)
-- `gemrouter-nightly-restart.service` + `gemrouter-nightly-restart.timer` — nightly restart at 03:30 UTC
+- `gemrouter.service` - main service (user unit)
+- `gemrouter-nightly-restart.service` + `gemrouter-nightly-restart.timer` - nightly restart at 03:30 UTC
 
 **Cloudflare Tunnel:**
 
@@ -35,23 +35,23 @@ Template: `ops/cloudflared/gemrouter.yml`
 ## Security
 
 - Keep `GEMROUTER_ADMIN_TOKEN`, bootstrap API key, and Gemini API keys out of version control.
-- Do not commit `.env` or `data/`. Once accounts are managed from the admin UI, `data/gemini-api-accounts.json` holds the **raw Gemini keys** and `data/proxy-config.json` holds proxy credentials — both are gitignored; keep the `data/` directory access-controlled.
-- Admin auth (`GEMROUTER_ADMIN_TOKEN`) and client auth (`GEMROUTER_BOOTSTRAP_API_KEY`) are separate — rotate independently.
-- Expose the admin UI only to trusted networks. It can add/remove Gemini accounts, edit the routed model set, manage the proxy pool, and create API clients (with optional custom key prefixes) — all live.
+- Do not commit `.env` or `data/`. Once accounts are managed from the admin UI, `data/gemini-api-accounts.json` holds the **raw Gemini keys** and `data/proxy-config.json` holds proxy credentials - both are gitignored; keep the `data/` directory access-controlled.
+- Admin auth (`GEMROUTER_ADMIN_TOKEN`) and client auth (`GEMROUTER_BOOTSTRAP_API_KEY`) are separate - rotate independently.
+- Expose the admin UI only to trusted networks. It can add/remove Gemini accounts, edit the routed model set, manage the proxy pool, and create API clients (with optional custom key prefixes) - all live.
 - All `/admin/*` endpoints require the admin token or session; client endpoints (`/v1/chat/completions`, `/v1/embeddings`, …) require a valid app key. Secrets are masked in API responses.
-- Audit and interaction logs may contain prompt content — store and rotate them accordingly.
+- Audit and interaction logs may contain prompt content - store and rotate them accordingly.
 
 ## Live admin management
 
 The admin dashboard manages most runtime config without a restart or `.env` edit; changes
 persist under `data/` and reload in-process:
 
-- **Gemini Accounts** — add/remove keys, set per-account priority and enabled state, and
+- **Gemini Accounts** - add/remove keys, set per-account priority and enabled state, and
   download the free models each account can serve.
-- **Routed Models** — choose which Gemini models the router offers and their order
+- **Routed Models** - choose which Gemini models the router offers and their order
   (first = default, rest = fallback chain).
-- **Outbound Proxy** — manage the proxy pool (off by default, not yet applied to upstreams).
-- **Apps and API Keys** — create/rotate/revoke client apps; Recent Interactions can be
+- **Outbound Proxy** - manage the proxy pool (off by default, not yet applied to upstreams).
+- **Apps and API Keys** - create/rotate/revoke client apps; Recent Interactions can be
   filtered by app.
 
 ## Troubleshooting
@@ -66,7 +66,7 @@ Check `/v1/provider/quota`. Look for models with RPD at limit or keys in cooldow
 
 **Startup fails immediately**
 
-Missing required values — check that `GEMROUTER_ADMIN_TOKEN` and `GEMROUTER_BOOTSTRAP_API_KEY` are set.
+Missing required values - check that `GEMROUTER_ADMIN_TOKEN` and `GEMROUTER_BOOTSTRAP_API_KEY` are set.
 
 **Admin UI loads but data looks stale**
 

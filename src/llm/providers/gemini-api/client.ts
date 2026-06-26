@@ -290,7 +290,7 @@ function rateLimitScope(payload: unknown, googleError: ReturnType<typeof parseGo
   return 'unknown';
 }
 
-// Capture any header whose name contains quota/ratelimit keywords — works regardless of exact names Gemini uses
+// Capture any header whose name contains quota/ratelimit keywords - works regardless of exact names Gemini uses
 function captureRateLimitHeaders(response: Response): Record<string, string> {
   const result: Record<string, string> = {};
   response.headers.forEach((value, key) => {
