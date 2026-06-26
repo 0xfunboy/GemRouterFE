@@ -1419,21 +1419,43 @@ function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: Authe
 
 // Direct local-Ollama vision route. Returns a response object when the requested model is
 // the configured vision model (served by the local server, no Gemini fallback), else null.
-async function maybeServeOllamaLocalVision(
-  request: FastifyRequest,
+// Dedicated vision endpoint. Authenticated like any client call, but deliberately kept
+// OUTSIDE the chat rate-limit / concurrency / priority queue so vision is its own flow.
+// Always serves the configured local vision model; never touches Gemini.
+async function handleVisionRequest(
+  request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
   reply: FastifyReply,
-  app: ApiAppRecord,
-  parsed: { model: string; messages: LLMMessage[] },
-): Promise<FastifyReply | Record<string, unknown> | null> {
-  if (!config.ollamaLocal.enabled || !ollamaLocalLlm.isVisionModel(parsed.model)) return null;
+): Promise<FastifyReply | Record<string, unknown>> {
+  const token = getBearerToken(request);
+  if (!token) {
+    return sendError(reply, 401, { message: 'Missing API key', type: 'authentication_error', code: 'missing_api_key' });
+  }
+  const clientApp = appStore.verify(token);
+  if (!clientApp) {
+    return sendError(reply, 401, { message: 'Invalid API key', type: 'authentication_error', code: 'invalid_api_key' });
+  }
+  const origin = getRequestOrigin(request) ?? null;
+  if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
+    return sendError(reply, 403, { message: `Origin not allowed for app ${clientApp.name}`, type: 'permission_error', code: 'origin_not_allowed' });
+  }
+  if (!config.ollamaLocal.enabled || !config.ollamaLocal.visionModel) {
+    return sendError(reply, 404, { message: 'Vision model is not configured', type: 'invalid_request_error', code: 'vision_model_not_available' });
+  }
+  let parsed: ReturnType<typeof parseChatCompletionsRequest>;
   try {
-    const visionResponse = await ollamaLocalLlm.visionChat(config.ollamaLocal.visionModel as string, parsed.messages);
+    parsed = parseChatCompletionsRequest(request.body ?? {});
+  } catch (error) {
+    return sendError(reply, 400, { message: error instanceof Error ? error.message : String(error), type: 'invalid_request_error', code: 'invalid_request' });
+  }
+  const model = config.ollamaLocal.visionModel;
+  try {
+    const visionResponse = await ollamaLocalLlm.visionChat(model, parsed.messages);
     const usage = estimateUsage(parsed.messages, visionResponse.content);
     recordInteraction({
       request,
       route: request.url,
-      appRecord: app,
-      model: parsed.model,
+      appRecord: clientApp,
+      model,
       messages: parsed.messages,
       responseText: visionResponse.content,
       usage,
@@ -1441,13 +1463,13 @@ async function maybeServeOllamaLocalVision(
       statusCode: 200,
       provider: 'ollama-local',
     });
-    return buildChatCompletionResponse({ model: parsed.model, text: visionResponse.content, usage });
+    return buildChatCompletionResponse({ model, text: visionResponse.content, usage });
   } catch (error) {
     recordInteraction({
       request,
       route: request.url,
-      appRecord: app,
-      model: parsed.model,
+      appRecord: clientApp,
+      model,
       messages: parsed.messages,
       status: 'failed',
       statusCode: 502,
@@ -1497,10 +1519,6 @@ async function handleChatCompletionsRequest(
   }
 
   try {
-    const visionResult = await maybeServeOllamaLocalVision(request, reply, access.app, parsed);
-    if (visionResult !== null) {
-      return visionResult;
-    }
     const resolvedModel = resolveTextModelForApp(access.app, parsed.model);
     if (!resolvedModel) {
       return sendError(reply, 403, {
@@ -3462,6 +3480,8 @@ async function handleEmbeddingsRequest(
 }
 app.post<{ Body: { model?: string; input?: unknown } }>('/v1/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
 app.post<{ Body: { model?: string; input?: unknown } }>('/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
+app.post<{ Body: ChatCompletionsRequest }>('/v1/vision', async (request, reply) => handleVisionRequest(request, reply));
+app.post<{ Body: ChatCompletionsRequest }>('/vision', async (request, reply) => handleVisionRequest(request, reply));
 app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => handleResponsesRequest(request, reply));
 app.post<{ Body: ImageGenerationsRequest }>('/v1/images/generations', async (request, reply) =>
   handleImageGenerationsRequest(request, reply, 'openai'),

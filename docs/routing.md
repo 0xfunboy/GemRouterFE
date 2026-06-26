@@ -156,13 +156,15 @@ Ollama server, on explicit request only, with **no fallback**:
 
 - **Embeddings** - `POST /v1/embeddings` (and `/embeddings`) for the configured embedding
   model returns an OpenAI-style vector list via Ollama `/api/embed`.
-- **Vision** - an explicit chat request for the configured vision model is intercepted
-  before free-tier text resolution and served via Ollama `/api/chat`; image parts
-  (`image_url`/`input_image`, data URIs or bare base64) are forwarded. On error it returns
-  502 and never falls back to Gemini.
+- **Vision** - dedicated `POST /v1/vision` (and `/vision`) endpoint. It always serves the
+  configured vision model via Ollama `/api/chat`; image parts (`image_url`/`input_image`,
+  data URIs or bare base64) are forwarded. On error it returns 502 and never falls back to
+  Gemini.
 
-Per-model daily request counters persist to `data/ollama-local-usage.json` (Pacific reset)
-and surface in the dashboard's "Ollama Local RPD" box.
+Both require a valid app key but are intentionally kept **outside** the chat rate-limit /
+concurrency / priority queue, so vision and embedding run as their own flows. Per-model
+daily request counters persist to `data/ollama-local-usage.json` (Pacific reset) and
+surface in the dashboard's "Ollama Local RPD" box.
 
 ## Admin management endpoints
 
