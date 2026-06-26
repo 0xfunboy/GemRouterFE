@@ -94,3 +94,35 @@ Order determines which backend is tried first. When `backendPreference=auto`, th
 | `GEMROUTER_STRIP_REASONING` | `true` | Strip `<thinking>` blocks before returning |
 | `GEMROUTER_THINKING_LEVEL` | `minimal` | `none`, `minimal`, `low`, `medium`, `high`, `max` |
 | `GEMROUTER_THINKING_BUDGET` | `0` | Token budget for thinking (0 = model default) |
+
+Thinking config is applied per model: omitted entirely for `gemma-*` and `gemini-3.5-flash` (they reject it), `thinkingLevel` for `gemini-3.*` reasoning variants, `thinkingBudget` for `gemini-2.5-flash`/`-lite`.
+
+## Local Ollama (vision + embeddings)
+
+A dedicated single-instance Ollama server reached **only** on a direct request for the
+configured model, fully outside the Gemini fallback chain. Off by default.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMROUTER_OLLAMA_LOCAL_ENABLED` | `false` | Enable the local vision/embedding route |
+| `GEMROUTER_OLLAMA_LOCAL_BASE_URL` | `http://127.0.0.1:11434` | Local Ollama endpoint |
+| `GEMROUTER_OLLAMA_LOCAL_EMBEDDING_MODEL` | — | Model served by `POST /v1/embeddings` (e.g. `bge-m3`) |
+| `GEMROUTER_OLLAMA_LOCAL_EMBEDDING_RPD` | `0` | Soft daily request budget shown on the dashboard (0 = unlimited) |
+| `GEMROUTER_OLLAMA_LOCAL_VISION_MODEL` | — | Vision model served on direct chat request (e.g. `minicpm-v4.5:8b`) |
+| `GEMROUTER_OLLAMA_LOCAL_VISION_RPD` | `0` | Soft daily request budget |
+| `GEMROUTER_OLLAMA_LOCAL_TIMEOUT_MS` | `120000` | Request timeout |
+| `GEMROUTER_OLLAMA_LOCAL_USAGE_PATH` | `data/ollama-local-usage.json` | Persisted daily counters (Pacific reset) |
+
+## Outbound proxy
+
+Managed proxy pool for non-bypassed upstreams. Off by default and **not yet applied** to
+upstream fetches (Gemini runs direct); configurable via the admin "Outbound Proxy" panel
+which persists to `data/proxy-config.json`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMROUTER_OUTBOUND_PROXY_ENABLED` | `false` | Enable the outbound proxy layer |
+| `GEMROUTER_OUTBOUND_PROXY_STRATEGY` | `round-robin` | `round-robin` or `random` |
+| `GEMROUTER_OUTBOUND_PROXY_URLS` | — | Comma-separated proxy URLs (`http://user:pass@host:port`) |
+| `GEMROUTER_OUTBOUND_PROXY_BYPASS_HOSTS` | `localhost,127.0.0.1,::1,generativelanguage.googleapis.com,*.googleapis.com` | Hosts that always go direct |
+| `GEMROUTER_OUTBOUND_PROXY_PATH` | `data/proxy-config.json` | Persisted proxy config |
