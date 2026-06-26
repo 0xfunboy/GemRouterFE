@@ -74,6 +74,12 @@ function normalizeGeminiApiModel(model: string | undefined): string {
   return normalized.replace(/^models\//, '');
 }
 
+// A completion that comes back with no visible text (e.g. truncated to length with 0 output
+// tokens) is retried on the same model with a larger output budget this many times before
+// falling through to the next model in the chain.
+const EMPTY_RESPONSE_RETRY_LIMIT = 2;
+const EMPTY_RESPONSE_RETRY_TOKENS = 1024;
+
 function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
   // Gemma 4 and Gemini 3.5 reject any thinkingConfig, including an otherwise harmless
@@ -559,6 +565,7 @@ function shouldRetryWithFallbackModel(
     case 'gemini_api_high_demand':
     case 'gemini_api_model_not_found':
     case 'gemini_api_upstream_error':
+    case 'gemini_api_empty_response':
     case 'gemini_api_timeout':
       return true;
     default:
@@ -662,6 +669,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       const remainingModels = modelAttempts.slice(modelIndex + 1);
       const attemptOptions = createAttemptOptions(opts, model);
       const excludedKeyIds = new Set<string>();
+      let emptyResponseRetries = 0;
+      let effectiveOptions = attemptOptions;
 
       while (true) {
         let reservation: GeminiApiKeyReservation;
@@ -699,7 +708,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           const response = await fetch(withKey(endpoint, reservation.key.key), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(toGenerationBody(messages, attemptOptions)),
+            body: JSON.stringify(toGenerationBody(messages, effectiveOptions)),
             signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
           });
           const payload = await response.json().catch(() => ({}));
@@ -711,6 +720,31 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           const finishReason = normalizeFinishReason(gemini);
           const images = extractImages(gemini);
           const usage = gemini.usageMetadata;
+
+          // An empty completion (no text, no image) is never a real success. This happens when
+          // the model truncates to the output-token limit before emitting visible text.
+          if (content.trim().length === 0 && images.length === 0) {
+            // Truncated for length: retry the same model with a larger output budget.
+            if (finishReason === 'length' && emptyResponseRetries < EMPTY_RESPONSE_RETRY_LIMIT) {
+              emptyResponseRetries += 1;
+              const previous = effectiveOptions?.maxTokens ?? 0;
+              effectiveOptions = {
+                ...attemptOptions,
+                maxTokens: Math.max(previous * 4, EMPTY_RESPONSE_RETRY_TOKENS * emptyResponseRetries),
+              };
+              continue;
+            }
+            // Still empty (or empty for another reason): fail retryably so the router moves on
+            // to the next model in the chain instead of returning an empty 200.
+            throw new GeminiApiProviderError('gemini_api_empty_response', `Model ${model} returned an empty completion (finishReason=${finishReason}).`, {
+              statusCode: 502,
+              fallbackEligible: true,
+              upstreamModel: model,
+              upstreamApiKeyId: reservation.key.id,
+              upstreamQuotaGroup: reservation.key.quotaGroup,
+            });
+          }
+
           ledger.markSuccess({
             quotaGroup: reservation.key.quotaGroup,
             keyId: reservation.key.id,
