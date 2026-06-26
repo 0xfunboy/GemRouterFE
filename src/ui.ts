@@ -51,7 +51,7 @@ export function renderAppShell(input: {
   socialPreviewUrl?: string;
 }): string {
   const bootstrap = JSON.stringify(input).replace(/</g, '\\u003c');
-  const pageTitle = `${input.projectName} — Gemini API Compatibility Router`;
+  const pageTitle = `${input.projectName} - Gemini API Compatibility Router`;
   const pageDescription = 'GemRouter routes across Gemini API keys while exposing OpenAI, DeepSeek, and Ollama compatible APIs.';
   const canonicalTag = input.publicBaseUrl?.trim()
     ? `<link rel="canonical" href="${escapeHtml(input.publicBaseUrl.trim())}" />`
@@ -125,8 +125,10 @@ export function renderAppShell(input: {
         --warn: #ffd166;
         --bad: #ff5f8f;
         --shadow: 0 28px 90px rgba(0, 0, 0, 0.48), 0 0 60px rgba(24, 240, 208, 0.06);
-        --radius: 8px;
-        --radius-sm: 5px;
+        /* Squared house style: no rounded corners, one uniform gap between frames. */
+        --radius: 0px;
+        --radius-sm: 0px;
+        --frame-gap: 5mm;
       }
       [data-theme="light"] {
         color-scheme: light;
@@ -175,7 +177,7 @@ export function renderAppShell(input: {
       .panel {
         background: var(--surface);
         border: 1px solid var(--line);
-        border-radius: var(--radius);
+        border-radius: 0;
         box-shadow: var(--shadow);
         backdrop-filter: blur(18px);
         position: relative;
@@ -206,12 +208,11 @@ export function renderAppShell(input: {
       .brand-mark {
         width: 44px;
         height: 44px;
-        border-radius: 4px;
         display: grid;
         place-items: center;
-        overflow: hidden;
-        background: linear-gradient(135deg, rgba(16, 163, 127, 0.12), rgba(62, 169, 255, 0.12));
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        /* Floating logo: no surrounding box, background, or border. */
+        background: none;
+        border: 0;
         font-weight: 700;
         flex: 0 0 auto;
       }
@@ -219,7 +220,7 @@ export function renderAppShell(input: {
         display: block;
         width: 100%;
         height: 100%;
-        object-fit: cover;
+        object-fit: contain;
       }
       .brand-copy {
         display: grid;
@@ -259,7 +260,7 @@ export function renderAppShell(input: {
         align-items: center;
         gap: 8px;
         padding: 9px 12px;
-        border-radius: 4px;
+        border-radius: 0;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.03);
         color: var(--muted);
@@ -271,7 +272,7 @@ export function renderAppShell(input: {
       .hero {
         display: grid;
         grid-template-columns: minmax(280px, 0.62fr) minmax(500px, 1.38fr);
-        gap: 18px;
+        gap: var(--frame-gap);
         padding: 18px;
         overflow: visible;
       }
@@ -281,7 +282,7 @@ export function renderAppShell(input: {
         gap: 8px;
         margin-bottom: 14px;
         padding: 7px 11px;
-        border-radius: 4px;
+        border-radius: 0;
         border: 1px solid rgba(16, 163, 127, 0.24);
         background: rgba(16, 163, 127, 0.1);
         color: var(--accent);
@@ -309,7 +310,7 @@ export function renderAppShell(input: {
       }
       .hero-card {
         padding: 18px;
-        border-radius: var(--radius);
+        border-radius: 0;
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
         border: 1px solid var(--line);
       }
@@ -321,7 +322,7 @@ export function renderAppShell(input: {
       .source-card {
         min-height: 154px;
         padding: 0;
-        border-radius: 5px;
+        border-radius: 0;
         background:
           linear-gradient(180deg, rgba(255, 223, 145, 0.07), rgba(255, 255, 255, 0.012)),
           linear-gradient(135deg, rgba(255, 62, 201, 0.1), transparent 44%, rgba(24, 240, 208, 0.1));
@@ -356,7 +357,7 @@ export function renderAppShell(input: {
         margin-top: 0;
         padding: 12px;
         border: 1px solid var(--line);
-        border-radius: 5px;
+        border-radius: 0;
         background:
           linear-gradient(90deg, rgba(255, 62, 201, 0.1), rgba(24, 240, 208, 0.08)),
           rgba(0, 0, 0, 0.12);
@@ -376,7 +377,7 @@ export function renderAppShell(input: {
         margin-top: 10px;
         overflow: hidden;
         border: 1px solid rgba(24, 240, 208, 0.18);
-        border-radius: 3px;
+        border-radius: 0;
         background:
           linear-gradient(rgba(24, 240, 208, 0.1) 1px, transparent 1px),
           linear-gradient(90deg, rgba(24, 240, 208, 0.1) 1px, transparent 1px),
@@ -448,7 +449,7 @@ export function renderAppShell(input: {
         right: 0;
         width: min(440px, calc(100vw - 32px));
         padding: 16px;
-        border-radius: 6px;
+        border-radius: 0;
         background: var(--surface-strong);
         border: 1px solid var(--line-strong);
         box-shadow: var(--shadow);
@@ -489,7 +490,7 @@ export function renderAppShell(input: {
         color: var(--text);
         background: var(--surface-muted);
         border: 1px solid var(--line);
-        border-radius: 4px;
+        border-radius: 0;
       }
       textarea {
         min-height: 126px;
@@ -512,7 +513,7 @@ export function renderAppShell(input: {
       }
       button {
         border: 1px solid var(--line-strong);
-        border-radius: 4px;
+        border-radius: 0;
         padding: 11px 14px;
         color: var(--text);
         background: linear-gradient(135deg, rgba(16, 163, 127, 0.22), rgba(62, 169, 255, 0.22));
@@ -529,11 +530,11 @@ export function renderAppShell(input: {
       }
       .main-grid {
         display: grid;
-        gap: 16px;
+        gap: var(--frame-gap);
       }
       #admin-dashboard {
         display: grid;
-        gap: 16px;
+        gap: var(--frame-gap);
       }
       .section {
         padding: 18px;
@@ -567,12 +568,12 @@ export function renderAppShell(input: {
       }
       .stats-grid {
         display: grid;
-        gap: 12px;
+        gap: var(--frame-gap);
         grid-template-columns: repeat(4, minmax(0, 1fr));
       }
       .card {
         padding: 16px;
-        border-radius: var(--radius-sm);
+        border-radius: 0;
         background: var(--surface-muted);
         border: 1px solid var(--line);
       }
@@ -595,7 +596,7 @@ export function renderAppShell(input: {
       }
       .chart-grid, .shell-grid {
         display: grid;
-        gap: 16px;
+        gap: var(--frame-gap);
         grid-template-columns: 1.15fr 0.85fr;
       }
       .apps-shell {
@@ -610,7 +611,7 @@ export function renderAppShell(input: {
         position: relative;
         min-height: 220px;
         padding: 14px;
-        border-radius: 5px;
+        border-radius: 0;
         background: var(--surface-muted);
         border: 1px solid var(--line);
       }
@@ -637,7 +638,7 @@ export function renderAppShell(input: {
       .bar {
         width: 100%;
         min-height: 4px;
-        border-radius: 2px 2px 0 0;
+        border-radius: 0;
         background: linear-gradient(180deg, rgba(62, 169, 255, 0.92), rgba(16, 163, 127, 0.8));
       }
       .bar.fail {
@@ -668,12 +669,12 @@ export function renderAppShell(input: {
       .route-track {
         overflow: hidden;
         height: 10px;
-        border-radius: 2px;
+        border-radius: 0;
         background: rgba(255, 255, 255, 0.06);
       }
       .route-fill {
         height: 100%;
-        border-radius: inherit;
+        border-radius: 0;
         background: linear-gradient(90deg, rgba(16, 163, 127, 0.88), rgba(62, 169, 255, 0.88));
       }
       .role-banner {
@@ -682,7 +683,7 @@ export function renderAppShell(input: {
         align-items: center;
         gap: 12px;
         padding: 14px 16px;
-        border-radius: 5px;
+        border-radius: 0;
         background: linear-gradient(135deg, rgba(16, 163, 127, 0.14), rgba(62, 169, 255, 0.12));
         border: 1px solid rgba(16, 163, 127, 0.18);
       }
@@ -698,7 +699,7 @@ export function renderAppShell(input: {
       .response-box, .mono-box {
         min-height: 220px;
         padding: 14px;
-        border-radius: 5px;
+        border-radius: 0;
         background: var(--surface-muted);
         border: 1px solid var(--line);
         white-space: pre-wrap;
@@ -739,7 +740,7 @@ export function renderAppShell(input: {
       }
       .response-box.markdown-body code {
         padding: 0.1em 0.35em;
-        border-radius: 3px;
+        border-radius: 0;
         background: rgba(255, 255, 255, 0.06);
       }
       .response-box.markdown-body pre code {
@@ -765,7 +766,7 @@ export function renderAppShell(input: {
       }
       .table-wrap {
         overflow: auto;
-        border-radius: 5px;
+        border-radius: 0;
         border: 1px solid var(--line);
       }
       .table {
@@ -826,7 +827,7 @@ export function renderAppShell(input: {
         width: 76px;
         height: 7px;
         overflow: hidden;
-        border-radius: 2px;
+        border-radius: 0;
         background: var(--surface-muted);
         border: 1px solid var(--line);
       }
@@ -891,7 +892,7 @@ export function renderAppShell(input: {
         width: 100%;
         min-height: 520px;
         border: 0;
-        border-radius: 5px;
+        border-radius: 0;
         background: #030508;
       }
       .auth-grid {
@@ -924,7 +925,7 @@ export function renderAppShell(input: {
         justify-content: center;
         width: 16px;
         height: 16px;
-        border-radius: 999px;
+        border-radius: 0;
         border: 1px solid var(--line);
         color: var(--muted);
         font: 700 10px/1 "IBM Plex Mono", monospace;
@@ -932,7 +933,7 @@ export function renderAppShell(input: {
       }
       .model-picker {
         border: 1px solid var(--line);
-        border-radius: 4px;
+        border-radius: 0;
         background: var(--surface-muted);
       }
       .model-picker summary {
@@ -1006,7 +1007,7 @@ export function renderAppShell(input: {
       .image-preview-box {
         min-height: 220px;
         padding: 14px;
-        border-radius: 5px;
+        border-radius: 0;
         background: var(--surface-muted);
         border: 1px solid var(--line);
       }
@@ -1020,7 +1021,7 @@ export function renderAppShell(input: {
       }
       .image-preview-card img {
         width: 100%;
-        border-radius: 5px;
+        border-radius: 0;
         border: 1px solid var(--line);
         background: rgba(3, 5, 8, 0.68);
         cursor: zoom-in;
@@ -1043,7 +1044,7 @@ export function renderAppShell(input: {
         align-items: center;
         gap: 8px;
         padding: 8px 12px;
-        border-radius: 4px;
+        border-radius: 0;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.04);
         color: var(--text);
@@ -1070,7 +1071,7 @@ export function renderAppShell(input: {
         max-height: 88vh;
         width: auto;
         height: auto;
-        border-radius: 6px;
+        border-radius: 0;
         border: 1px solid var(--line-strong);
         box-shadow: 0 34px 90px rgba(0, 0, 0, 0.55);
         background: rgba(3, 5, 8, 0.8);
@@ -1094,7 +1095,7 @@ export function renderAppShell(input: {
       .key-modal-card {
         width: min(680px, 100%);
         padding: 20px;
-        border-radius: 8px;
+        border-radius: 0;
         border: 1px solid var(--line-strong);
         background: var(--surface-strong);
         box-shadow: 0 34px 90px rgba(0, 0, 0, 0.55);
@@ -1201,7 +1202,7 @@ export function renderAppShell(input: {
         justify-content: center;
         width: 38px;
         height: 38px;
-        border-radius: 4px;
+        border-radius: 0;
         border: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.03);
         color: var(--muted);
@@ -1276,13 +1277,11 @@ export function renderAppShell(input: {
           </div>
         </div>
         <div class="nav-actions nav-menu">
-          <button id="menu-toggle" type="button" class="secondary" aria-label="Open dashboard menu" title="Open dashboard menu">${svgIcon('menu')}</button>
+          <button id="theme-toggle" type="button" class="secondary">${svgIcon('moon')} Toggle theme</button>
+          <a id="health-link" class="secondary" href="/health" target="_blank" rel="noreferrer">${svgIcon('health')} Health</a>
+          <button id="menu-refresh-button" type="button" class="secondary">${svgIcon('activity')} Refresh</button>
+          <button id="menu-toggle" type="button" class="secondary" aria-label="Open admin login" title="Admin login">${svgIcon('admin')}</button>
           <div id="top-menu" class="menu-popover hidden">
-            <div class="menu-links">
-              <button id="theme-toggle" type="button" class="secondary">${svgIcon('moon')} Toggle theme</button>
-              <a class="ghost-link" href="/health" target="_blank" rel="noreferrer">${svgIcon('health')} Health JSON</a>
-              <button id="menu-refresh-button" type="button" class="secondary">${svgIcon('activity')} Refresh</button>
-            </div>
             <div class="hero-card" style="padding:14px">
               <h2>${svgIcon('admin')} Admin Login</h2>
               <p>Use the dashboard credentials from <span class="mono">.env</span>. The session is stored in an HttpOnly cookie.</p>
@@ -1380,7 +1379,7 @@ export function renderAppShell(input: {
               <tbody id="public-rpd-table"></tbody>
             </table>
           </div>
-          <p class="section-copy" style="margin:18px 0 8px">Per account &mdash; daily request capacity from the same ledger used by routing. RPD resets at the next Pacific midnight.</p>
+          <p class="section-copy" style="margin:18px 0 8px">Per-account daily request capacity from the same ledger used by routing. RPD resets at the next Pacific midnight.</p>
           <div class="table-wrap">
             <table class="table responsive-table quota-table public-rpd-table">
               <thead>
@@ -1589,7 +1588,7 @@ export function renderAppShell(input: {
           <div id="models-config-body" class="section-body hidden">
             <div class="shell-grid">
               <div>
-                <h4 class="model-picker-title">Enabled — in routing order</h4>
+                <h4 class="model-picker-title">Enabled - in routing order</h4>
                 <div id="models-enabled" class="model-picker-panel"></div>
               </div>
               <div>
@@ -3279,7 +3278,7 @@ export function renderAppShell(input: {
           const models = Array.isArray(group.models)
             ? group.models.filter(function(model) {
               const modelId = typeof model.model === 'string' ? model.model.trim() : '';
-              // Skip models with all-zero limits — removed from config but still in ledger
+              // Skip models with all-zero limits (removed from config but still in ledger)
               const zeroLimits = model.rpm && model.tpm && model.rpd &&
                 model.rpm.limit === 0 && model.tpm.limit === 0 && model.rpd.limit === 0;
               if (zeroLimits) return false;

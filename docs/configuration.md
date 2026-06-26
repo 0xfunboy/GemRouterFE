@@ -8,9 +8,9 @@ All configuration is read from `.env`. Copy `.env.example` as your starting poin
 |---|---|---|
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `4024` | Listen port |
-| `GEMROUTER_ROOT_DIR` | — | Absolute path to the repo root |
+| `GEMROUTER_ROOT_DIR` | - | Absolute path to the repo root |
 | `GEMROUTER_DATA_DIR` | `data` | Writable runtime data directory |
-| `GEMROUTER_PUBLIC_BASE_URL` | — | Public URL used by the admin UI |
+| `GEMROUTER_PUBLIC_BASE_URL` | - | Public URL used by the admin UI |
 
 ## Admin and auth
 
@@ -47,16 +47,16 @@ Order determines which backend is tried first. When `backendPreference=auto`, th
 | Variable | Default | Description |
 |---|---|---|
 | `GEMROUTER_GEMINI_API_ENABLED` | `false` | Enable the backend |
-| `GEMROUTER_GEMINI_API_KEYS` | — | Comma-separated API keys |
-| `GEMROUTER_GEMINI_API_KEYS_JSON` | — | JSON array of key objects |
+| `GEMROUTER_GEMINI_API_KEYS` | - | Comma-separated API keys |
+| `GEMROUTER_GEMINI_API_KEYS_JSON` | - | JSON array of key objects |
 | `GEMROUTER_GEMINI_API_ACCOUNTS_PATH` | `data/gemini-api-accounts.json` | Account metadata file |
 | `GEMROUTER_GEMINI_API_BASE_URL` | `https://generativelanguage.googleapis.com` | API base |
 | `GEMROUTER_GEMINI_API_VERSION` | `v1beta` | API version |
 | `GEMROUTER_GEMINI_API_DEFAULT_TIER` | `tier1` | Default quota tier for keys without metadata |
 | `GEMROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE` | `per-key` | `per-key` or `shared` |
-| `GEMROUTER_GEMINI_API_LIMITS_JSON` | — | Global per-model rate limits as JSON |
-| `GEMROUTER_GEMINI_API_LIMITS_PATH` | — | Path to a JSON file with per-model limits |
-| `GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON` | — | Per-quota-group limit overrides as JSON |
+| `GEMROUTER_GEMINI_API_LIMITS_JSON` | - | Global per-model rate limits as JSON |
+| `GEMROUTER_GEMINI_API_LIMITS_PATH` | - | Path to a JSON file with per-model limits |
+| `GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON` | - | Per-quota-group limit overrides as JSON |
 | `GEMROUTER_GEMINI_API_LEDGER_PATH` | `data/gemini-api-quota-ledger.json` | Local quota ledger |
 | `GEMROUTER_GEMINI_API_DISCOVERY_CACHE_PATH` | `data/gemini-api-models-cache.json` | Model discovery cache |
 | `GEMROUTER_GEMINI_API_DISCOVERY_REFRESH_MS` | `21600000` | Discovery refresh interval (6 h) |
@@ -106,9 +106,9 @@ configured model, fully outside the Gemini fallback chain. Off by default.
 |---|---|---|
 | `GEMROUTER_OLLAMA_LOCAL_ENABLED` | `false` | Enable the local vision/embedding route |
 | `GEMROUTER_OLLAMA_LOCAL_BASE_URL` | `http://127.0.0.1:11434` | Local Ollama endpoint |
-| `GEMROUTER_OLLAMA_LOCAL_EMBEDDING_MODEL` | — | Model served by `POST /v1/embeddings` (e.g. `bge-m3`) |
+| `GEMROUTER_OLLAMA_LOCAL_EMBEDDING_MODEL` | - | Model served by `POST /v1/embeddings` (e.g. `bge-m3`) |
 | `GEMROUTER_OLLAMA_LOCAL_EMBEDDING_RPD` | `0` | Soft daily request budget shown on the dashboard (0 = unlimited) |
-| `GEMROUTER_OLLAMA_LOCAL_VISION_MODEL` | — | Vision model served on direct chat request (e.g. `minicpm-v4.5:8b`) |
+| `GEMROUTER_OLLAMA_LOCAL_VISION_MODEL` | - | Vision model served on direct chat request (e.g. `minicpm-v4.5:8b`) |
 | `GEMROUTER_OLLAMA_LOCAL_VISION_RPD` | `0` | Soft daily request budget |
 | `GEMROUTER_OLLAMA_LOCAL_TIMEOUT_MS` | `120000` | Request timeout |
 | `GEMROUTER_OLLAMA_LOCAL_USAGE_PATH` | `data/ollama-local-usage.json` | Persisted daily counters (Pacific reset) |
@@ -123,6 +123,6 @@ which persists to `data/proxy-config.json`.
 |---|---|---|
 | `GEMROUTER_OUTBOUND_PROXY_ENABLED` | `false` | Enable the outbound proxy layer |
 | `GEMROUTER_OUTBOUND_PROXY_STRATEGY` | `round-robin` | `round-robin` or `random` |
-| `GEMROUTER_OUTBOUND_PROXY_URLS` | — | Comma-separated proxy URLs (`http://user:pass@host:port`) |
+| `GEMROUTER_OUTBOUND_PROXY_URLS` | - | Comma-separated proxy URLs (`http://user:pass@host:port`) |
 | `GEMROUTER_OUTBOUND_PROXY_BYPASS_HOSTS` | `localhost,127.0.0.1,::1,generativelanguage.googleapis.com,*.googleapis.com` | Hosts that always go direct |
 | `GEMROUTER_OUTBOUND_PROXY_PATH` | `data/proxy-config.json` | Persisted proxy config |
