@@ -125,10 +125,12 @@ export function renderAppShell(input: {
         --warn: #ffd166;
         --bad: #ff5f8f;
         --shadow: 0 28px 90px rgba(0, 0, 0, 0.48), 0 0 60px rgba(24, 240, 208, 0.06);
-        /* Squared house style: no rounded corners, one uniform gap between frames. */
+        /* Squared house style: no rounded corners, tight uniform gap between frames,
+           dapp-style 15px inner padding. */
         --radius: 0px;
         --radius-sm: 0px;
-        --frame-gap: 5mm;
+        --frame-gap: 5px;
+        --frame-pad: 15px;
       }
       [data-theme="light"] {
         color-scheme: light;
@@ -196,8 +198,8 @@ export function renderAppShell(input: {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
-        padding: 16px 18px;
+        gap: var(--frame-pad);
+        padding: var(--frame-pad);
         z-index: 40;
       }
       .brand {
@@ -243,8 +245,23 @@ export function renderAppShell(input: {
       .nav-actions, .button-row, .meta-row, .chip-row {
         display: flex;
         flex-wrap: wrap;
-        gap: 10px;
+        gap: var(--frame-gap);
       }
+      /* Square icon-only header controls (theme, health, refresh, menu). */
+      .icon-btn {
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid var(--line-strong);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .icon-btn:hover { background: rgba(255, 255, 255, 0.08); }
+      .icon-btn .icon { width: 18px; height: 18px; }
       .icon {
         width: 17px;
         height: 17px;
@@ -273,7 +290,7 @@ export function renderAppShell(input: {
         display: grid;
         grid-template-columns: minmax(280px, 0.62fr) minmax(500px, 1.38fr);
         gap: var(--frame-gap);
-        padding: 18px;
+        padding: var(--frame-pad);
         overflow: visible;
       }
       .eyebrow {
@@ -537,7 +554,7 @@ export function renderAppShell(input: {
         gap: var(--frame-gap);
       }
       .section {
-        padding: 18px;
+        padding: var(--frame-pad);
       }
       .section-head {
         display: flex;
@@ -1277,10 +1294,10 @@ export function renderAppShell(input: {
           </div>
         </div>
         <div class="nav-actions nav-menu">
-          <button id="theme-toggle" type="button" class="secondary">${svgIcon('moon')} Toggle theme</button>
-          <a id="health-link" class="secondary" href="/health" target="_blank" rel="noreferrer">${svgIcon('health')} Health</a>
-          <button id="menu-refresh-button" type="button" class="secondary">${svgIcon('activity')} Refresh</button>
-          <button id="menu-toggle" type="button" class="secondary" aria-label="Open admin login" title="Admin login">${svgIcon('admin')}</button>
+          <button id="theme-toggle" type="button" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">${svgIcon('moon')}</button>
+          <a id="health-link" class="icon-btn" href="/health" target="_blank" rel="noreferrer" aria-label="Health JSON" title="Health JSON">${svgIcon('health')}</a>
+          <button id="menu-refresh-button" type="button" class="icon-btn" aria-label="Refresh" title="Refresh">${svgIcon('activity')}</button>
+          <button id="menu-toggle" type="button" class="icon-btn" aria-label="Open admin login" title="Admin login">${svgIcon('admin')}</button>
           <div id="top-menu" class="menu-popover hidden">
             <div class="hero-card" style="padding:14px">
               <h2>${svgIcon('admin')} Admin Login</h2>
@@ -1336,7 +1353,7 @@ export function renderAppShell(input: {
           </div>
           <div class="source-card">
             <strong>${svgIcon('route')} Fallback Routing</strong>
-            <p>Automatic fallback across configured Gemini API keys and allowed text models when an upstream path is exhausted, rate-limited, or temporarily unavailable.</p>
+            <p>Automatic fallback across configured API keys and allowed models when an upstream path is exhausted, rate-limited, or unavailable.</p>
           </div>
           <div class="source-card">
             <strong>${svgIcon('chart')} Operator Surface</strong>
@@ -2003,7 +2020,9 @@ export function renderAppShell(input: {
       function setTheme(theme) {
         root.setAttribute('data-theme', theme);
         localStorage.setItem('gemrouter-theme', theme);
-        themeToggle.innerHTML = (theme === 'dark' ? '${svgIcon('sun')} Switch to light' : '${svgIcon('moon')} Switch to dark');
+        themeToggle.innerHTML = (theme === 'dark' ? '${svgIcon('sun')}' : '${svgIcon('moon')}');
+        themeToggle.setAttribute('title', theme === 'dark' ? 'Switch to light' : 'Switch to dark');
+        themeToggle.setAttribute('aria-label', theme === 'dark' ? 'Switch to light' : 'Switch to dark');
       }
 
       menuToggle.addEventListener('click', () => {
