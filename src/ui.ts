@@ -130,7 +130,7 @@ export function renderAppShell(input: {
         --radius: 0px;
         --radius-sm: 0px;
         --frame-gap: 5px;
-        --frame-pad: 5mm;
+        --frame-pad: 15px;
       }
       [data-theme="light"] {
         color-scheme: light;
@@ -172,9 +172,9 @@ export function renderAppShell(input: {
       .hidden { display: none !important; }
       .app-shell {
         width: min(1480px, calc(100vw - 28px));
-        margin: 14px auto 28px;
+        margin: var(--frame-gap) auto 28px;
         display: grid;
-        gap: 16px;
+        gap: var(--frame-gap);
       }
       .panel {
         background: var(--surface);
@@ -201,6 +201,17 @@ export function renderAppShell(input: {
         gap: var(--frame-pad);
         padding: var(--frame-pad);
         z-index: 40;
+      }
+      /* Full-bleed sticky header that touches the browser edges and stays on scroll. */
+      .site-header {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        width: 100%;
+        border-left: 0;
+        border-right: 0;
+        border-top: 0;
+        box-shadow: none;
       }
       .brand {
         display: flex;
@@ -352,7 +363,7 @@ export function renderAppShell(input: {
       }
       .source-grid {
         display: grid;
-        gap: 12px;
+        gap: var(--frame-gap);
         grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .source-card {
@@ -1144,7 +1155,7 @@ export function renderAppShell(input: {
       }
       .footer-grid {
         display: grid;
-        gap: 16px;
+        gap: var(--frame-gap);
         grid-template-columns: minmax(240px, 1.05fr) minmax(0, 1.95fr);
         align-items: start;
       }
@@ -1297,8 +1308,7 @@ export function renderAppShell(input: {
   </head>
   <body>
     ${hiddenSocialPreview}
-    <main class="app-shell">
-      <header class="panel nav">
+    <header class="panel nav site-header">
         <div class="brand">
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
@@ -1335,8 +1345,9 @@ export function renderAppShell(input: {
             </div>
           </div>
         </div>
-      </header>
+    </header>
 
+    <main class="app-shell">
       <section class="panel hero">
         <div class="hero-copy">
           <div class="activity-strip">
