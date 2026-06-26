@@ -1313,7 +1313,6 @@ export function renderAppShell(input: {
           <div class="brand-mark">${brandMark}</div>
           <div class="brand-copy">
             ${brandTitle}
-            <span>Gemini API router with compatible API surfaces</span>
           </div>
         </div>
         <div class="nav-actions nav-menu">
