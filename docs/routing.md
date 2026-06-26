@@ -83,13 +83,33 @@ The fallback chain is annotated in the response as `fallbackFrom` / `fallbackRea
 
 ## Cooldown
 
-After a 429, the cooldown source determines how long the model is held out:
+A failed attempt holds the model+account out for a window determined by the cooldown source:
 
 | Source | Trigger | Duration |
 |---|---|---|
 | `retry-after` | 429 with `Retry-After` header | Exact header value |
-| `pacific-reset` | 429 with `rateLimitScope=day` | Until next Pacific midnight |
-| `upstream-rate-limit` | 429 without header | `GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS` (default 10 min) |
+| `pacific-reset` | 429 with `rateLimitScope=day` | Until next Pacific midnight (marks `dailyDepleted`) |
+| `429-backoff` | generic 429 (no header/scope) | Escalating ladder (see below) |
+| `daily-depleted` | 3rd generic 429 strike | Until next Pacific midnight |
+| `high-demand` | 503 "overloaded/unavailable" | 30 s skip (model-wide; does not retry other accounts) |
+
+### 429 escalation ladder
+
+Generic 429s with no `Retry-After` and no day scope escalate **per model+account**, with
+strikes accruing within a Pacific day and resetting at the midnight rollover:
+
+1. **strike 1** → 1 min cooldown
+2. **strike 2** → 5 min cooldown
+3. **strike 3** → treated as daily quota depletion, parked until the next Pacific reset
+
+A successful call clears the strike count and lifts any `429-backoff`/`daily-depleted`
+cooldown for that model+account.
+
+### High demand (503)
+
+A 503 "high demand" is a Google-side capacity condition shared by all accounts, so the
+router does **not** sweep the other keys — it records one attempt, applies a 30 s cooldown,
+and moves straight to the next model in the chain.
 
 Cooldowns can be cleared from the admin UI or via:
 
@@ -129,12 +149,38 @@ The guest dashboard at `/dashboard/summary` receives a compact quota snapshot:
 
 The **cumulative remaining RPD** for a model across all accounts is the sum of `rpd.remaining` across every quota group. This is computed client-side by the frontend from the per-group data above. All values come directly from the local ledger — no Cloud Monitoring, no Google API calls.
 
+## Local Ollama (vision + embeddings)
+
+When `GEMROUTER_OLLAMA_LOCAL_ENABLED=true`, two models are served directly by the local
+Ollama server, on explicit request only, with **no fallback**:
+
+- **Embeddings** — `POST /v1/embeddings` (and `/embeddings`) for the configured embedding
+  model returns an OpenAI-style vector list via Ollama `/api/embed`.
+- **Vision** — an explicit chat request for the configured vision model is intercepted
+  before free-tier text resolution and served via Ollama `/api/chat`; image parts
+  (`image_url`/`input_image`, data URIs or bare base64) are forwarded. On error it returns
+  502 and never falls back to Gemini.
+
+Per-model daily request counters persist to `data/ollama-local-usage.json` (Pacific reset)
+and surface in the dashboard's "Ollama Local RPD" box.
+
+## Admin management endpoints
+
+All require the admin bearer token or session.
+
+| Endpoint | Description |
+|---|---|
+| `GET/POST /admin/provider/gemini-api/accounts` | List accounts; `add`/`update`/`remove`/`list-models` subpaths manage the key pool live (persist to `accounts.json`, hot reload) |
+| `GET/POST /admin/provider/models-config` | Read/set the routed model set and order (applied live, persisted to `model-config.json`) |
+| `GET/POST /admin/provider/proxy` | Read/set the outbound proxy config |
+| `POST /admin/apps` | Create an app; accepts an optional custom `apiKey` (e.g. `goon_` prefix) |
+
 ## Observability endpoints
 
 | Endpoint | Auth | Description |
 |---|---|---|
 | `GET /health` | none | Runtime health and compact quota summary |
-| `GET /dashboard/summary` | none | Guest-safe stats and quota view |
+| `GET /dashboard/summary` | none | Guest-safe stats, quota view, and local Ollama RPD |
 | `GET /admin/summary` | admin | Full diagnostics, model catalog, apps |
 | `GET /v1/provider/runtime` | client | Backend order and current key selection state |
 | `GET /v1/provider/models` | client | Discovered model list |
