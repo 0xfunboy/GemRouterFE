@@ -69,8 +69,14 @@ curl -fsS http://127.0.0.1:4024/health
 ```
 
 Admin UI: open `http://127.0.0.1:4024/admin` in a browser and log in with `GEMROUTER_DASHBOARD_ADMIN_USERS`.
+From the dashboard you can manage accounts (add/remove/priority/enable), reorder the routed
+model set, create client API keys (optionally with a custom prefix), and review interaction
+telemetry - all live, without editing `.env` or restarting. See [routing](routing.md) and
+[operations](operations.md).
 
 ## Verify
+
+Chat (routed across the Gemini pool):
 
 ```bash
 curl -sS http://127.0.0.1:4024/v1/chat/completions \
@@ -80,6 +86,29 @@ curl -sS http://127.0.0.1:4024/v1/chat/completions \
     "model": "gemini-2.5-flash",
     "messages": [{ "role": "user", "content": "Reply only with OK." }]
   }'
+```
+
+## Optional: local embeddings & vision
+
+Set `GEMROUTER_OLLAMA_LOCAL_*` (see [configuration](configuration.md)) to serve an embedding
+and a vision model from a local Ollama instance, on dedicated endpoints, with no Gemini
+fallback:
+
+```bash
+# Embeddings (model must be the configured embedding model)
+curl -sS http://127.0.0.1:4024/v1/embeddings \
+  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "model": "bge-m3", "input": ["hello"] }'
+
+# Vision (always uses the configured vision model; send images as image_url parts)
+curl -sS http://127.0.0.1:4024/v1/vision \
+  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "messages": [{ "role": "user", "content": [
+        { "type": "text", "text": "Describe this image" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+      ] }] }'
 ```
 
 ## Smoke tests
