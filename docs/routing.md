@@ -14,11 +14,11 @@ For richer per-account metadata (tiers, limit overrides) use `data/gemini-api-ac
 
 ## Quota tracking
 
-GemRouter tracks quota entirely in-process in `data/gemini-api-quota-ledger.json` — no Google Cloud calls, no `gcloud` CLI, no service account required. Tracked per quota group + model:
+GemRouter tracks quota entirely in-process in `data/gemini-api-quota-ledger.json` - no Google Cloud calls, no `gcloud` CLI, no service account required. Tracked per quota group + model:
 
-- **RPM** — requests in the last 60 s sliding window
-- **TPM** — tokens in the last 60 s sliding window  
-- **RPD** — requests since midnight **America/Los_Angeles** (matches Google's actual reset boundary, including DST changes)
+- **RPM** - requests in the last 60 s sliding window
+- **TPM** - tokens in the last 60 s sliding window  
+- **RPD** - requests since midnight **America/Los_Angeles** (matches Google's actual reset boundary, including DST changes)
 
 On every response the ledger records real token counts (from the API reply) and upstream rate-limit headers (`x-ratelimit-remaining-requests-day`, etc.) as secondary validation. On a 429 the relevant events are optionally rolled back (`GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE`).
 
@@ -26,16 +26,16 @@ On every response the ledger records real token counts (from the API reply) and 
 
 The pool picks the key/group with the best multi-factor score, evaluated in this order:
 
-1. **Priority** — higher `priority` field wins
-2. **Rotation** — least recently used key wins (round-robin at equal priority)
-3. **Capacity score** — `rpmRatio×30 + tpmRatio×30 + rpdRatio×30` where each ratio is `remaining / limit`
-4. **Config order** — tie-break by position in the key list
+1. **Priority** - higher `priority` field wins
+2. **Rotation** - least recently used key wins (round-robin at equal priority)
+3. **Capacity score** - `rpmRatio×30 + tpmRatio×30 + rpdRatio×30` where each ratio is `remaining / limit`
+4. **Config order** - tie-break by position in the key list
 
 Keys at or beyond any limit (RPM, TPM, or RPD) are excluded from selection before scoring.
 
 ## Per-account tiers
 
-Mixing free-tier (RPM 5, RPD 20) and Tier 1 (RPM 1000+, RPD 10 000+) accounts without limit overrides would make scoring unfair — the Tier 1 key would always win. Fix with per-model limit overrides in `data/gemini-api-accounts.json`:
+Mixing free-tier (RPM 5, RPD 20) and Tier 1 (RPM 1000+, RPD 10 000+) accounts without limit overrides would make scoring unfair - the Tier 1 key would always win. Fix with per-model limit overrides in `data/gemini-api-accounts.json`:
 
 ```json
 {
@@ -108,7 +108,7 @@ cooldown for that model+account.
 ### High demand (503)
 
 A 503 "high demand" is a Google-side capacity condition shared by all accounts, so the
-router does **not** sweep the other keys — it records one attempt, applies a 30 s cooldown,
+router does **not** sweep the other keys - it records one attempt, applies a 30 s cooldown,
 and moves straight to the next model in the chain.
 
 Cooldowns can be cleared from the admin UI or via:
@@ -147,16 +147,16 @@ The guest dashboard at `/dashboard/summary` receives a compact quota snapshot:
 }
 ```
 
-The **cumulative remaining RPD** for a model across all accounts is the sum of `rpd.remaining` across every quota group. This is computed client-side by the frontend from the per-group data above. All values come directly from the local ledger — no Cloud Monitoring, no Google API calls.
+The **cumulative remaining RPD** for a model across all accounts is the sum of `rpd.remaining` across every quota group. This is computed client-side by the frontend from the per-group data above. All values come directly from the local ledger - no Cloud Monitoring, no Google API calls.
 
 ## Local Ollama (vision + embeddings)
 
 When `GEMROUTER_OLLAMA_LOCAL_ENABLED=true`, two models are served directly by the local
 Ollama server, on explicit request only, with **no fallback**:
 
-- **Embeddings** — `POST /v1/embeddings` (and `/embeddings`) for the configured embedding
+- **Embeddings** - `POST /v1/embeddings` (and `/embeddings`) for the configured embedding
   model returns an OpenAI-style vector list via Ollama `/api/embed`.
-- **Vision** — an explicit chat request for the configured vision model is intercepted
+- **Vision** - an explicit chat request for the configured vision model is intercepted
   before free-tier text resolution and served via Ollama `/api/chat`; image parts
   (`image_url`/`input_image`, data URIs or bare base64) are forwarded. On error it returns
   502 and never falls back to Gemini.

@@ -20,7 +20,7 @@ A lightweight backend router for Gemini API traffic. It exposes OpenAI-compatibl
 ```bash
 pnpm install --frozen-lockfile
 cp .env.example .env
-# edit .env — set at minimum GEMROUTER_ADMIN_TOKEN, GEMROUTER_BOOTSTRAP_API_KEY, GEMROUTER_GEMINI_API_KEYS
+# edit .env - set at minimum GEMROUTER_ADMIN_TOKEN, GEMROUTER_BOOTSTRAP_API_KEY, GEMROUTER_GEMINI_API_KEYS
 pnpm build
 ```
 
