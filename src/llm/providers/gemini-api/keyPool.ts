@@ -11,6 +11,13 @@ export interface GeminiApiKeyReservation {
   estimatedTokens: number;
 }
 
+export interface GeminiApiLocalBackpressure {
+  waitMs: number;
+  reason: 'rpm' | 'tpm' | 'cooldown';
+  keyId: string;
+  quotaGroup: string;
+}
+
 function allowsModel(key: GeminiApiKeyConfig, model: string): boolean {
   return !key.models || key.models.length === 0 || key.models.includes(model);
 }
@@ -37,11 +44,67 @@ function rotationTimestamp(input: { lastSuccessAt?: string; lastUsedAt?: string 
   return parseTimestamp(input.lastSuccessAt) || parseTimestamp(input.lastUsedAt);
 }
 
+function recentFailurePenalty(input: {
+  modelLast429At?: string | null;
+  modelRateLimitStrikes?: number;
+  keyLastFailureAt?: string;
+  keyLastFailureCode?: string;
+}): number {
+  const now = Date.now();
+  let penalty = 0;
+  const model429At = parseTimestamp(input.modelLast429At ?? undefined);
+  if (model429At > 0) {
+    const ageMs = now - model429At;
+    if (ageMs < 60 * 60_000) {
+      penalty += 200 + Math.max(0, 60 * 60_000 - ageMs) / 60_000;
+      penalty += (input.modelRateLimitStrikes ?? 0) * 100;
+    }
+  }
+  const keyFailureAt = parseTimestamp(input.keyLastFailureAt);
+  if (input.keyLastFailureCode === 'gemini_api_rate_limited' && keyFailureAt > 0) {
+    const ageMs = now - keyFailureAt;
+    if (ageMs < 15 * 60_000) {
+      penalty += 120 + Math.max(0, 15 * 60_000 - ageMs) / 60_000;
+    }
+  }
+  return penalty;
+}
+
 export class GeminiApiKeyPool {
   constructor(
     private readonly config: GeminiApiProviderConfig,
     private readonly ledger: GeminiApiQuotaLedger,
   ) {}
+
+  nextLocalBackpressure(
+    model: string,
+    estimatedTokens: number,
+    options?: {
+      excludeKeyIds?: string[];
+    },
+  ): GeminiApiLocalBackpressure | null {
+    const excludedKeyIds = new Set((options?.excludeKeyIds ?? []).map((value) => value.trim()).filter(Boolean));
+    const waits = this.config.keys
+      .filter((key) => key.enabled)
+      .filter((key) => allowsModel(key, model))
+      .filter((key) => !excludedKeyIds.has(key.id))
+      .map((key) => ({ key, availability: this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens) }))
+      .filter((entry) => (entry.availability.reason === 'rpm' || entry.availability.reason === 'tpm' || entry.availability.reason === 'cooldown') && typeof entry.availability.waitMs === 'number')
+      .filter((entry) => {
+        if (entry.availability.reason !== 'cooldown') return true;
+        return entry.availability.cooldownSource === '429-backoff' || entry.availability.cooldownSource === 'retry-after';
+      })
+      .sort((left, right) => (left.availability.waitMs ?? Number.MAX_SAFE_INTEGER) - (right.availability.waitMs ?? Number.MAX_SAFE_INTEGER));
+
+    const next = waits[0];
+    if (!next || typeof next.availability.waitMs !== 'number') return null;
+    return {
+      waitMs: next.availability.waitMs,
+      reason: next.availability.reason as 'rpm' | 'tpm' | 'cooldown',
+      keyId: next.key.id,
+      quotaGroup: next.key.quotaGroup,
+    };
+  }
 
   reserve(
     model: string,
@@ -85,21 +148,31 @@ export class GeminiApiKeyPool {
         if (left.key.priority !== right.key.priority) {
           return right.key.priority - left.key.priority;
         }
-        if (left.rotationAt !== right.rotationAt) {
-          return left.rotationAt - right.rotationAt;
-        }
         const capacityDelta = capacityScore({
           rpmRemaining: right.availability.rpmRemaining,
           tpmRemaining: right.availability.tpmRemaining,
           rpdRemaining: right.availability.rpdRemaining,
           limit: right.availability.limit,
-        }) - capacityScore({
+        }) - recentFailurePenalty({
+          modelLast429At: right.availability.last429At,
+          modelRateLimitStrikes: right.availability.rateLimitStrikes,
+          keyLastFailureAt: right.keyState.lastFailureAt,
+          keyLastFailureCode: right.keyState.lastFailureCode,
+        }) - (capacityScore({
           rpmRemaining: left.availability.rpmRemaining,
           tpmRemaining: left.availability.tpmRemaining,
           rpdRemaining: left.availability.rpdRemaining,
           limit: left.availability.limit,
-        });
-        if (capacityDelta !== 0) return capacityDelta;
+        }) - recentFailurePenalty({
+          modelLast429At: left.availability.last429At,
+          modelRateLimitStrikes: left.availability.rateLimitStrikes,
+          keyLastFailureAt: left.keyState.lastFailureAt,
+          keyLastFailureCode: left.keyState.lastFailureCode,
+        }));
+        if (Math.abs(capacityDelta) > 0.001) return capacityDelta;
+        if (left.rotationAt !== right.rotationAt) {
+          return left.rotationAt - right.rotationAt;
+        }
         return left.order - right.order;
       });
 
