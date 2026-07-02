@@ -109,11 +109,11 @@ const PACIFIC_TIME_ZONE = 'America/Los_Angeles';
 /** Short skip window applied when Google returns 503 overloaded/unavailable for a model. */
 const HIGH_DEMAND_COOLDOWN_MS = 30_000;
 /**
- * Escalating cooldown for generic 429s (no Retry-After, no day scope), per model+account:
- * strike 1 -> 1 min, strike 2 -> 5 min. A strike beyond the ladder is treated as a daily
- * quota depletion and parks the model until the next Pacific reset.
+ * Escalating cooldown for generic 429s (no Retry-After, no day scope), per model+account.
+ * Unknown-scope 429s are treated as minute/RPM pressure, never as daily depletion; only
+ * explicit day-scope upstream errors park a model until the Pacific reset.
  */
-const RATE_LIMIT_STRIKE_LADDER = [60_000, 300_000];
+const RATE_LIMIT_STRIKE_LADDER = [60_000, 300_000, 600_000, 900_000];
 
 function pacificDateParts(epochMs: number): { year: number; month: number; day: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -265,6 +265,21 @@ export class GeminiApiQuotaLedger {
     counter.events = counter.events.filter((event) => event.ts >= cutoff);
   }
 
+  private nextCounterSlotMs(counter: WindowCounter, windowMs: number, now: number, needed = 1): number | null {
+    if (counter.limit === null) return null;
+    const used = sumEvents(counter.events);
+    if (counter.limit - used >= needed) return 0;
+    let projectedUsed = used;
+    const events = [...counter.events].sort((left, right) => left.ts - right.ts);
+    for (const event of events) {
+      projectedUsed -= event.tokens ?? event.count;
+      if (counter.limit - projectedUsed >= needed) {
+        return Math.max(0, event.ts + windowMs - now + 250);
+      }
+    }
+    return windowMs;
+  }
+
   // Google Gemini RPD resets at midnight Pacific time, not UTC.
   private pruneRpdCounter(counter: WindowCounter, now: number): void {
     counter.events = counter.events.filter((event) => event.ts >= pacificDayStartMs(now));
@@ -274,6 +289,22 @@ export class GeminiApiQuotaLedger {
     this.pruneCounter(model.rpm, this.config.rpmWindowMs, now);
     this.pruneCounter(model.tpm, this.config.tpmWindowMs, now);
     this.pruneRpdCounter(model.rpd, now);
+    this.reconcileDailyDepletion(model, now);
+  }
+
+  private reconcileDailyDepletion(model: GeminiApiModelQuotaLedger, now: number): void {
+    if (model.cooldownUntil && Date.parse(model.cooldownUntil) <= now) {
+      delete model.cooldownUntil;
+      delete model.cooldownSource;
+      model.dailyDepleted = false;
+    }
+    if (model.cooldownSource !== 'daily-depleted') return;
+    const rpd = metric(model.rpd);
+    if (rpd.remaining !== null && rpd.remaining > 0) {
+      delete model.cooldownUntil;
+      delete model.cooldownSource;
+      model.dailyDepleted = false;
+    }
   }
 
   pruneAll(now = Date.now()): void {
@@ -292,6 +323,9 @@ export class GeminiApiQuotaLedger {
     rpdRemaining: number | null;
     cooldownUntil: string | null;
     cooldownSource: 'retry-after' | 'upstream-rate-limit' | 'pacific-reset' | 'high-demand' | '429-backoff' | 'daily-depleted' | null;
+    waitMs: number | null;
+    last429At: string | null;
+    rateLimitStrikes: number;
     limit: GeminiApiRateLimit;
   } {
     const now = Date.now();
@@ -308,6 +342,9 @@ export class GeminiApiQuotaLedger {
         rpdRemaining: metric(ledger.rpd).remaining,
         cooldownUntil,
         cooldownSource: ledger.cooldownSource ?? null,
+        waitMs: Math.max(0, Date.parse(cooldownUntil) - now),
+        last429At: ledger.last429At ?? null,
+        rateLimitStrikes: ledger.rateLimitStrikes ?? 0,
         limit: groupLimit,
       };
     }
@@ -315,10 +352,14 @@ export class GeminiApiQuotaLedger {
     const tpm = metric(ledger.tpm);
     const rpd = metric(ledger.rpd);
     const cooldownSource = ledger.cooldownSource ?? null;
-    if (rpm.remaining !== null && rpm.remaining <= 0) return { available: false, reason: 'rpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
-    if (tpm.remaining !== null && tpm.remaining < estimatedTokens) return { available: false, reason: 'tpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
-    if (rpd.remaining !== null && rpd.remaining <= 0) return { available: false, reason: 'rpd', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
-    return { available: true, reason: null, rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, limit: groupLimit };
+    if (rpm.remaining !== null && rpm.remaining <= 0) {
+      return { available: false, reason: 'rpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, waitMs: this.nextCounterSlotMs(ledger.rpm, this.config.rpmWindowMs, now, 1), last429At: ledger.last429At ?? null, rateLimitStrikes: ledger.rateLimitStrikes ?? 0, limit: groupLimit };
+    }
+    if (tpm.remaining !== null && tpm.remaining < estimatedTokens) {
+      return { available: false, reason: 'tpm', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, waitMs: this.nextCounterSlotMs(ledger.tpm, this.config.tpmWindowMs, now, estimatedTokens), last429At: ledger.last429At ?? null, rateLimitStrikes: ledger.rateLimitStrikes ?? 0, limit: groupLimit };
+    }
+    if (rpd.remaining !== null && rpd.remaining <= 0) return { available: false, reason: 'rpd', rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, waitMs: null, last429At: ledger.last429At ?? null, rateLimitStrikes: ledger.rateLimitStrikes ?? 0, limit: groupLimit };
+    return { available: true, reason: null, rpmRemaining: rpm.remaining, tpmRemaining: tpm.remaining, rpdRemaining: rpd.remaining, cooldownUntil, cooldownSource, waitMs: null, last429At: ledger.last429At ?? null, rateLimitStrikes: ledger.rateLimitStrikes ?? 0, limit: groupLimit };
   }
 
   reserve(input: { quotaGroup: string; keyId: string; model: string; estimatedTokens: number; requestId: string }): void {
@@ -329,6 +370,14 @@ export class GeminiApiQuotaLedger {
     if (ledger.rpd.limit !== null) ledger.rpd.events.push({ ts: now, count: 1, requestId: input.requestId });
     ledger.tpm.events.push({ ts: now, count: 1, tokens: input.estimatedTokens, requestId: input.requestId });
     this.getKeyLedger(input.keyId).lastUsedAt = nowIso();
+    this.persist();
+  }
+
+  cancelReservation(input: { quotaGroup: string; keyId: string; model: string; requestId: string }): void {
+    const ledger = this.getModelLedger(input.quotaGroup, input.model);
+    for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
+      counter.events = counter.events.filter((event) => event.requestId !== input.requestId);
+    }
     this.persist();
   }
 
@@ -349,10 +398,6 @@ export class GeminiApiQuotaLedger {
     if (ledger.cooldownSource === '429-backoff' || ledger.cooldownSource === 'daily-depleted') {
       delete ledger.cooldownUntil;
       delete ledger.cooldownSource;
-    }
-    if (typeof input.totalTokens === 'number' && Number.isFinite(input.totalTokens)) {
-      const event = ledger.tpm.events.find((candidate) => candidate.requestId === input.requestId);
-      if (event) event.tokens = input.totalTokens;
     }
     if (input.upstreamHeaders && Object.keys(input.upstreamHeaders).length > 0) {
       ledger.upstreamHeadersRaw = input.upstreamHeaders;
@@ -401,9 +446,10 @@ export class GeminiApiQuotaLedger {
     }
     if (input.rateLimited) {
       ledger.last429At = nowString;
-      if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0) {
-        // Google told us exactly when to retry: honour it verbatim.
-        ledger.cooldownUntil = new Date(now + input.retryAfterMs).toISOString();
+      if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0 && input.rateLimitScope !== 'day') {
+        // Any 429 parks this model+account for at least one RPM window, even if
+        // Google returns a shorter Retry-After. This prevents immediate re-hits.
+        ledger.cooldownUntil = new Date(now + Math.max(input.retryAfterMs, 60_000)).toISOString();
         ledger.cooldownSource = 'retry-after';
       } else if (input.rateLimitScope === 'day') {
         // Explicit per-day quota exhaustion: park until the Pacific reset.
@@ -411,9 +457,8 @@ export class GeminiApiQuotaLedger {
         ledger.cooldownSource = 'pacific-reset';
         ledger.dailyDepleted = true;
       } else {
-        // Generic 429 with no scope hint: escalate per model+account.
-        //   strike 1 -> 1 min, strike 2 -> 5 min, strike 3 -> treat as daily depleted.
-        // Strikes only accrue across days; they reset at the Pacific midnight rollover.
+        // Generic 429 with no scope hint: treat as RPM/short-window pressure. Do not
+        // infer daily depletion unless Google explicitly says day/RPD.
         const today = pacificDayStartMs(now);
         if (ledger.rateLimitStrikesDay !== today) {
           ledger.rateLimitStrikes = 0;
@@ -421,14 +466,10 @@ export class GeminiApiQuotaLedger {
         }
         const strikes = (ledger.rateLimitStrikes ?? 0) + 1;
         ledger.rateLimitStrikes = strikes;
-        if (strikes > RATE_LIMIT_STRIKE_LADDER.length) {
-          ledger.cooldownUntil = new Date(nextPacificDayStartMs(now)).toISOString();
-          ledger.cooldownSource = 'daily-depleted';
-          ledger.dailyDepleted = true;
-        } else {
-          ledger.cooldownUntil = new Date(now + RATE_LIMIT_STRIKE_LADDER[strikes - 1]).toISOString();
-          ledger.cooldownSource = '429-backoff';
-        }
+        const cooldown = RATE_LIMIT_STRIKE_LADDER[Math.min(strikes - 1, RATE_LIMIT_STRIKE_LADDER.length - 1)];
+        ledger.cooldownUntil = new Date(now + cooldown).toISOString();
+        ledger.cooldownSource = '429-backoff';
+        ledger.dailyDepleted = false;
       }
       if (!this.config.countFailed429AsUsage) {
         for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {

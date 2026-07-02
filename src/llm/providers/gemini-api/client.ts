@@ -8,7 +8,7 @@ import {
 } from '../../../lib/models.js';
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
 import { GeminiApiProviderError } from './errors.js';
-import { GeminiApiKeyPool, type GeminiApiKeyReservation } from './keyPool.js';
+import { GeminiApiKeyPool, type GeminiApiKeyReservation, type GeminiApiLocalBackpressure } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
 import { GeminiApiQuotaLedger } from './quotaLedger.js';
 import type { GeminiApiKeyConfig, GeminiApiModelInfo, GeminiApiProviderConfig, GeminiApiUpstreamErrorSnapshot } from './types.js';
@@ -64,9 +64,29 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function estimateTokens(messages: LLMMessage[]): number {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  if (signal?.aborted) return Promise.reject(new HedgedRequestCancelled());
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      reject(new HedgedRequestCancelled());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function estimatePromptTokens(messages: LLMMessage[]): number {
   const chars = messages.reduce((total, message) => total + message.content.length, 0);
   return Math.max(1, Math.ceil(chars / 4));
+}
+
+function estimateReservationTokens(messages: LLMMessage[], _opts?: LLMOptions): number {
+  return estimatePromptTokens(messages);
 }
 
 function normalizeGeminiApiModel(model: string | undefined): string {
@@ -79,6 +99,23 @@ function normalizeGeminiApiModel(model: string | undefined): string {
 // falling through to the next model in the chain.
 const EMPTY_RESPONSE_RETRY_LIMIT = 2;
 const EMPTY_RESPONSE_RETRY_TOKENS = 1024;
+const GEMMA_31B_HEDGED_MODEL = 'gemma-4-31b-it';
+const GEMMA_HEDGED_FALLBACK_MODELS = [
+  'gemma-4-26b-a4b-it',
+] as const;
+const GEMMA_HEDGED_SECOND_WAVE_MODELS = [
+  'gemini-3.1-flash-lite-preview',
+  'gemini-3.1-flash-lite',
+] as const;
+const GEMMA_HEDGED_SECOND_WAVE_DELAY_MS = 30_000;
+const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 65_000;
+
+class HedgedRequestCancelled extends Error {
+  constructor() {
+    super('Gemini API hedged request was cancelled after another model won.');
+    this.name = 'HedgedRequestCancelled';
+  }
+}
 
 function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
@@ -578,9 +615,9 @@ function createAttemptOptions(
   modelId: string,
 ): LLMOptions | undefined {
   if (!opts) return opts;
-  if (!opts.imageConfig) return opts;
-  if (isGeminiImageGenerationModelId(modelId)) return opts;
-  const next = { ...opts };
+  const next = { ...opts, model: modelId };
+  if (!next.imageConfig) return next;
+  if (isGeminiImageGenerationModelId(modelId)) return next;
   delete next.imageConfig;
   return next;
 }
@@ -638,6 +675,332 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
   let lastFailureAt: string | null = null;
   let lastLatencyMs: number | null = null;
 
+  function isGemma31bHedgedRequest(requestedModel: string, opts?: LLMOptions): boolean {
+    return requestedModel === GEMMA_31B_HEDGED_MODEL && !isPureImageRequest(opts);
+  }
+
+  async function fetchGeneration(
+    endpoint: string,
+    reservation: GeminiApiKeyReservation,
+    messages: LLMMessage[],
+    opts: LLMOptions | undefined,
+    externalSignal?: AbortSignal,
+  ): Promise<{ response: Response; payload: unknown }> {
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => {
+      timeoutController.abort(new Error('gemrouter_attempt_timeout'));
+    }, effectiveRequestTimeoutMs(config.timeoutMs));
+    const abortFromExternal = (): void => {
+      timeoutController.abort(new HedgedRequestCancelled());
+    };
+    if (externalSignal?.aborted) {
+      clearTimeout(timeout);
+      throw new HedgedRequestCancelled();
+    }
+    externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+    try {
+      const response = await fetch(withKey(endpoint, reservation.key.key), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(toGenerationBody(messages, opts)),
+        signal: timeoutController.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      return { response, payload };
+    } catch (error) {
+      if (externalSignal?.aborted || error instanceof HedgedRequestCancelled) {
+        throw new HedgedRequestCancelled();
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener('abort', abortFromExternal);
+    }
+  }
+
+  async function reserveWithLocalBackpressure(
+    model: string,
+    estimatedTokens: number,
+    options?: {
+      excludeKeyIds?: string[];
+      signal?: AbortSignal;
+    },
+  ): Promise<GeminiApiKeyReservation> {
+    while (true) {
+      if (options?.signal?.aborted) throw new HedgedRequestCancelled();
+      try {
+        return keyPool.reserve(model, estimatedTokens, {
+          excludeKeyIds: options?.excludeKeyIds,
+        });
+      } catch (error) {
+        if (!(error instanceof GeminiApiProviderError) || error.code !== 'gemini_api_quota_unavailable') throw error;
+        const backpressure: GeminiApiLocalBackpressure | null = keyPool.nextLocalBackpressure(model, estimatedTokens, {
+          excludeKeyIds: options?.excludeKeyIds,
+        });
+        if (!backpressure || backpressure.waitMs > LOCAL_BACKPRESSURE_MAX_WAIT_MS) throw error;
+        lastError = `local_${backpressure.reason}_backpressure:${model}:${backpressure.quotaGroup}`;
+        await sleep(backpressure.waitMs, options?.signal);
+      }
+    }
+  }
+
+  async function runSingleModelAttempt(
+    input: {
+      messages: LLMMessage[];
+      opts?: LLMOptions;
+      requestedModel: string;
+      model: string;
+      estimatedTokens: number;
+      started: number;
+      fallbackAttempts: NonNullable<LLMResponse['fallbackAttempts']>;
+      signal?: AbortSignal;
+      claimKeyId?: (keyId: string) => boolean;
+      releaseKeyId?: (keyId: string) => void;
+    },
+  ): Promise<LLMResponse> {
+    const { messages, opts, requestedModel, model, estimatedTokens, started, fallbackAttempts, signal, claimKeyId, releaseKeyId } = input;
+    const attemptOptions = createAttemptOptions(opts, model);
+    const excludedKeyIds = new Set<string>();
+    let emptyResponseRetries = 0;
+    let effectiveOptions = attemptOptions;
+    let lastModelError: GeminiApiProviderError | null = null;
+
+    while (true) {
+      if (signal?.aborted) throw new HedgedRequestCancelled();
+      let reservation: GeminiApiKeyReservation;
+      try {
+        reservation = await reserveWithLocalBackpressure(model, estimatedTokens, {
+          excludeKeyIds: [...excludedKeyIds],
+          signal,
+        });
+      } catch (error) {
+        if (error instanceof GeminiApiProviderError) {
+          appendLocalAvailabilityAttempts({
+            attempts: fallbackAttempts,
+            config,
+            ledger,
+            model,
+            estimatedTokens,
+            error,
+          });
+        }
+        throw error instanceof GeminiApiProviderError
+          ? withFallbackHistory(error, fallbackAttempts, model)
+          : error;
+      }
+      if (claimKeyId && !claimKeyId(reservation.key.id)) {
+        ledger.cancelReservation({
+          quotaGroup: reservation.key.quotaGroup,
+          keyId: reservation.key.id,
+          model,
+          requestId: reservation.requestId,
+        });
+        excludedKeyIds.add(reservation.key.id);
+        continue;
+      }
+      let keyClaimed = claimKeyId ? reservation.key.id : null;
+
+      lastSelectedKeyId = reservation.key.id;
+      lastSelectedQuotaGroup = reservation.key.quotaGroup;
+      lastResolvedModel = model;
+      const endpoint = buildEndpoint(config, model);
+
+      try {
+        const { response, payload } = await fetchGeneration(endpoint, reservation, messages, effectiveOptions, signal);
+        if (!response.ok) {
+          throwGeminiError(response, payload, endpoint, model, reservation);
+        }
+        const gemini = payload as GeminiGenerateResponse;
+        const content = normalizeSemanticOutput(extractText(gemini), attemptOptions?.semanticProfile);
+        const finishReason = normalizeFinishReason(gemini);
+        const images = extractImages(gemini);
+        const usage = gemini.usageMetadata;
+
+        if (content.trim().length === 0 && images.length === 0) {
+          if (finishReason === 'length' && emptyResponseRetries < EMPTY_RESPONSE_RETRY_LIMIT) {
+            emptyResponseRetries += 1;
+            const previous = effectiveOptions?.maxTokens ?? 0;
+            effectiveOptions = {
+              ...attemptOptions,
+              maxTokens: Math.max(previous * 4, EMPTY_RESPONSE_RETRY_TOKENS * emptyResponseRetries),
+            };
+            continue;
+          }
+          throw new GeminiApiProviderError('gemini_api_empty_response', `Model ${model} returned an empty completion (finishReason=${finishReason}).`, {
+            statusCode: 502,
+            fallbackEligible: true,
+            upstreamModel: model,
+            upstreamApiKeyId: reservation.key.id,
+            upstreamQuotaGroup: reservation.key.quotaGroup,
+          });
+        }
+
+        ledger.markSuccess({
+          quotaGroup: reservation.key.quotaGroup,
+          keyId: reservation.key.id,
+          model,
+          requestId: reservation.requestId,
+          totalTokens: usage?.totalTokenCount,
+          upstreamHeaders: captureRateLimitHeaders(response),
+        });
+        lastError = null;
+        lastUpstreamError = null;
+        lastSuccessAt = nowIso();
+        lastLatencyMs = Date.now() - started;
+        return {
+          content,
+          finishReason,
+          images,
+          provider: 'gemini-api',
+          model: opts?.model ?? model,
+          backend: 'gemini-api',
+          backendModel: model,
+          apiKeyId: reservation.key.id,
+          quotaGroup: reservation.key.quotaGroup,
+          quotaSource: 'local-ledger',
+          usage: {
+            promptTokens: usage?.promptTokenCount,
+            completionTokens: usage?.candidatesTokenCount,
+            totalTokens: usage?.totalTokenCount,
+          },
+          tokensUsed: usage?.totalTokenCount,
+          latencyMs: lastLatencyMs,
+          fallbackReason:
+            model !== requestedModel
+              ? (lastModelError?.code ?? `hedged_model:${requestedModel}`)
+              : undefined,
+          fallbackAttempts: fallbackAttempts.length > 0 ? fallbackAttempts : undefined,
+        };
+      } catch (error) {
+        if (error instanceof HedgedRequestCancelled) {
+          if (keyClaimed) {
+            releaseKeyId?.(keyClaimed);
+            keyClaimed = null;
+          }
+          ledger.cancelReservation({
+            quotaGroup: reservation.key.quotaGroup,
+            keyId: reservation.key.id,
+            model,
+            requestId: reservation.requestId,
+          });
+          throw error;
+        }
+        const providerError = normalizeError(error, endpoint, model, reservation);
+        if (keyClaimed) {
+          releaseKeyId?.(keyClaimed);
+          keyClaimed = null;
+        }
+        lastModelError = providerError;
+        const availability = ledger.getAvailability(reservation.key.quotaGroup, model, estimatedTokens);
+        fallbackAttempts.push({
+          model,
+          backend: 'gemini-api',
+          provider: 'gemini-api',
+          keyId: reservation.key.id,
+          quotaGroup: reservation.key.quotaGroup,
+          reason: providerError.code,
+          statusCode: providerError.options.statusCode ?? null,
+          availableAfter: availability.cooldownUntil,
+          availableAfterSource: availability.cooldownSource,
+        });
+        lastError = providerError.message;
+        lastFailureAt = nowIso();
+        lastLatencyMs = Date.now() - started;
+        excludedKeyIds.add(reservation.key.id);
+        if (
+          shouldRetryWithAnotherKey(providerError) &&
+          hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
+        ) {
+          continue;
+        }
+        throw withFallbackHistory(providerError, fallbackAttempts, model);
+      }
+    }
+  }
+
+  async function generateGemma31bHedgedRace(
+    messages: LLMMessage[],
+    opts: LLMOptions | undefined,
+    requestedModel: string,
+    estimatedTokens: number,
+    started: number,
+  ): Promise<LLMResponse> {
+    const fallbackAttempts: NonNullable<LLMResponse['fallbackAttempts']> = [];
+    const controllers: AbortController[] = [];
+    const errors: GeminiApiProviderError[] = [];
+    const launched = new Set<string>();
+    const claimedKeyIds = new Set<string>();
+    let active = 0;
+    let secondWaveLaunched = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    return await new Promise<LLMResponse>((resolve, reject) => {
+      const rejectIfDone = (): void => {
+        if (settled || active > 0 || !secondWaveLaunched) return;
+        settled = true;
+        const error = errors.at(-1) ?? new GeminiApiProviderError(
+          'gemini_api_upstream_error',
+          'No hedged Gemini API model could satisfy the request.',
+          { statusCode: 503, fallbackEligible: true, fallbackAttempts },
+        );
+        reject(withFallbackHistory(error, fallbackAttempts));
+      };
+
+      const launch = (model: string): void => {
+        if (settled || launched.has(model)) return;
+        launched.add(model);
+        const controller = new AbortController();
+        controllers.push(controller);
+        active += 1;
+        runSingleModelAttempt({
+          messages,
+          opts,
+          requestedModel,
+          model,
+          estimatedTokens,
+          started,
+          fallbackAttempts,
+          signal: controller.signal,
+          claimKeyId: (keyId) => {
+            if (claimedKeyIds.has(keyId)) return false;
+            claimedKeyIds.add(keyId);
+            return true;
+          },
+          releaseKeyId: (keyId) => {
+            claimedKeyIds.delete(keyId);
+          },
+        })
+          .then((response) => {
+            active -= 1;
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            for (const other of controllers) {
+              if (other !== controller) other.abort(new HedgedRequestCancelled());
+            }
+            resolve(response);
+          })
+          .catch((error) => {
+            active -= 1;
+            if (settled) return;
+            if (error instanceof GeminiApiProviderError) errors.push(error);
+            rejectIfDone();
+          });
+      };
+
+      launch(GEMMA_31B_HEDGED_MODEL);
+      for (const model of GEMMA_HEDGED_FALLBACK_MODELS) launch(model);
+
+      timer = setTimeout(() => {
+        if (settled) return;
+        secondWaveLaunched = true;
+        for (const model of GEMMA_HEDGED_SECOND_WAVE_MODELS) launch(model);
+        rejectIfDone();
+      }, GEMMA_HEDGED_SECOND_WAVE_DELAY_MS);
+    });
+  }
+
   async function generate(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
     if (!config.enabled) {
       throw new GeminiApiProviderError('backend_disabled', 'Gemini API backend is disabled.', {
@@ -648,6 +1011,10 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     void discovery.refreshIfStale();
     const started = Date.now();
     const requestedModel = normalizeGeminiApiModel(opts?.model);
+    const estimatedTokens = estimateReservationTokens(messages, opts);
+    if (isGemma31bHedgedRequest(requestedModel, opts)) {
+      return await generateGemma31bHedgedRace(messages, opts, requestedModel, estimatedTokens, started);
+    }
     const modelAttempts = config.strictModelIds.includes(requestedModel)
       ? [requestedModel]
       : [
@@ -660,7 +1027,6 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             opts,
           ),
         ];
-    const estimatedTokens = estimateTokens(messages);
     let lastProviderError: GeminiApiProviderError | null = null;
     const fallbackAttempts: NonNullable<LLMResponse['fallbackAttempts']> = [];
 
@@ -675,7 +1041,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       while (true) {
         let reservation: GeminiApiKeyReservation;
         try {
-          reservation = keyPool.reserve(model, estimatedTokens, {
+          reservation = await reserveWithLocalBackpressure(model, estimatedTokens, {
             excludeKeyIds: [...excludedKeyIds],
           });
         } catch (error) {
