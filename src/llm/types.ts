@@ -7,7 +7,7 @@ export interface LLMMessage {
   images?: string[];
 }
 
-export type LLMBackendId = 'gemini-api' | 'ollama';
+export type LLMBackendId = 'gemini-api' | 'ollama' | 'nvidia';
 export type LLMBackendPreference = 'auto' | LLMBackendId;
 
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */

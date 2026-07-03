@@ -43,6 +43,10 @@ export interface GeminiApiModelQuotaLedger {
   upstreamRpdRemaining?: number;
   upstreamHeadersRaw?: Record<string, string>;
   upstreamHeadersAt?: string;
+  // Real usage observed via Cloud Monitoring (quotaMonitor), for display/audit.
+  monitorRpdUsed?: number;
+  monitorRpdLimit?: number | null;
+  monitorSyncedAt?: string;
 }
 
 export interface GeminiApiQuotaGroupLedger {
@@ -258,6 +262,56 @@ export class GeminiApiQuotaLedger {
   getKeyState(keyId: string): GeminiApiKeyLedger {
     const key = this.getKeyLedger(keyId);
     return { ...key };
+  }
+
+  /**
+   * Realign local RPD counters with real usage observed via Cloud Monitoring.
+   * Upward gaps become synthetic events stamped at the Pacific day start (so they
+   * expire at the daily reset); downward gaps only shrink previous synthetic
+   * adjustments — real traffic events are never removed, because monitoring data
+   * lags a few minutes and must not make the router optimistic.
+   */
+  reconcileRpdUsage(entries: Array<{ quotaGroup: string; model: string; usedToday: number; limit?: number | null }>): {
+    reconciled: number;
+    adjustedUp: number;
+    adjustedDown: number;
+    unchanged: number;
+  } {
+    const now = Date.now();
+    const dayStart = pacificDayStartMs(now);
+    let adjustedUp = 0;
+    let adjustedDown = 0;
+    let unchanged = 0;
+    for (const entry of entries) {
+      const model = entry.model.trim().toLowerCase().replace(/^models\//, '');
+      const ledger = this.getModelLedger(entry.quotaGroup, model);
+      this.pruneRpdCounter(ledger.rpd, now);
+      const localUsed = sumEvents(ledger.rpd.events);
+      const target = Math.max(0, Math.round(entry.usedToday));
+      let delta = target - localUsed;
+      if (delta > 0) {
+        ledger.rpd.events.push({ ts: dayStart, count: delta, requestId: `quota-monitor:${now}` });
+        adjustedUp += 1;
+      } else if (delta < 0) {
+        let toRemove = -delta;
+        for (const event of ledger.rpd.events) {
+          if (toRemove <= 0) break;
+          if (!event.requestId?.startsWith('quota-monitor:')) continue;
+          const take = Math.min(event.count, toRemove);
+          event.count -= take;
+          toRemove -= take;
+        }
+        ledger.rpd.events = ledger.rpd.events.filter((event) => event.count > 0);
+        if (toRemove < -delta) adjustedDown += 1; else unchanged += 1;
+      } else {
+        unchanged += 1;
+      }
+      ledger.monitorRpdUsed = target;
+      if (entry.limit !== undefined) ledger.monitorRpdLimit = entry.limit;
+      ledger.monitorSyncedAt = nowIso();
+    }
+    if (entries.length > 0) this.persist();
+    return { reconciled: entries.length, adjustedUp, adjustedDown, unchanged };
   }
 
   private pruneCounter(counter: WindowCounter, windowMs: number, now: number): void {
