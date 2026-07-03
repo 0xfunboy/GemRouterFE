@@ -3955,7 +3955,7 @@ export function renderAppShell(input: {
             return;
           }
           const stamp = payload.createdAt || 'unknown date';
-          if (!window.confirm('Import snapshot from ' + stamp + '?\n\nThis OVERWRITES the current .env and all data files, then restarts GemRouter. A safety copy of the current state is kept in backups/.')) {
+          if (!window.confirm('Import snapshot from ' + stamp + '?\\n\\nThis OVERWRITES the current .env and all data files, then restarts GemRouter. A safety copy of the current state is kept in backups/.')) {
             setBackupStatus('Import cancelled.');
             return;
           }
