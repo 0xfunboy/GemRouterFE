@@ -877,6 +877,7 @@ function sanitizeLlmDiagnostics(
           quotaGroups: options?.includeSensitive ? rawGeminiApi.quotaGroups ?? [] : undefined,
           quotaUpdatedAt: rawGeminiApi.quotaUpdatedAt ?? null,
           modelDiscovery: rawGeminiApi.modelDiscovery ?? null,
+          accountModels: rawGeminiApi.accountModels ?? null,
           models: rawGeminiApi.models ?? [],
           lastSelectedKeyId: rawGeminiApi.lastSelectedKeyId ?? null,
           lastSelectedQuotaGroup: rawGeminiApi.lastSelectedQuotaGroup ?? null,
@@ -3489,6 +3490,13 @@ app.post('/v1/admin/quota-monitor/refresh', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const result = await geminiQuotaMonitor.refresh();
   return { ...result, monitor: geminiQuotaMonitor.getSnapshot() };
+});
+app.post('/v1/admin/gemini/account-models/refresh', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const client = geminiApiLlm as typeof geminiApiLlm & {
+    refreshAccountModels?: () => Promise<Record<string, unknown>>;
+  };
+  return await client.refreshAccountModels?.() ?? { ok: false, error: 'refresh_unavailable' };
 });
 app.get('/v1/provider/nvidia/scoreboard', async (request, reply) => {
   const access = await ensureClientAccess(request, reply);

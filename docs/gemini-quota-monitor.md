@@ -1,5 +1,8 @@
 # Gemini real-quota sync (Cloud Monitoring)
 
+> Guida operativa passo-passo (console web, in italiano):
+> [guida-quota-monitor-setup.md](./guida-quota-monitor-setup.md)
+
 The Gemini API has no quota-remaining endpoint, but every account is a Google Cloud
 project and quota usage for `generativelanguage.googleapis.com` is published as
 Cloud Monitoring time series. GemRouter reads them with a per-project service
@@ -50,6 +53,20 @@ git-ignored, keys never reach the repo.
 
 No credentials file → the monitor idles and reports `no_credentials` (nothing
 breaks). Config lives in `.env` under `GEMROUTER_GEMINI_QUOTA_MONITOR_*`.
+
+## Dynamic free-model catalog (related mechanism)
+
+Google changes the free-tier model set over time, so the curated `models` list
+in `data/gemini-api-accounts.json` is treated as a cap, not as truth:
+
+- `src/llm/providers/gemini-api/accountCatalog.ts` refreshes each account's own
+  `/models` catalog every 6h (`GEMROUTER_GEMINI_API_ACCOUNT_MODELS_REFRESH_MS`)
+  or on demand via `POST /v1/admin/gemini/account-models/refresh`. Key selection
+  serves a model only when the curated list allows it **and** the account still
+  serves it upstream; missing/stale live data fails open.
+- Real day limits observed by the quota monitor override the static RPD table
+  per model (`monitorRpdLimit` in the ledger).
+- The daily free-tier policy scan keeps alerting on added/removed free models.
 
 ## Caveats
 

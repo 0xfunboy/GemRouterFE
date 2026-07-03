@@ -32,6 +32,9 @@ export interface GeminiApiProviderConfig {
   ledgerPath: string;
   discoveryCachePath: string;
   discoveryRefreshMs: number;
+  /** Live per-account model catalog cache (see accountCatalog.ts). */
+  accountModelsCachePath: string;
+  accountModelsRefreshMs: number;
   quotaCooldownMs: number;
   rpdWindowMs: number;
   rpmWindowMs: number;

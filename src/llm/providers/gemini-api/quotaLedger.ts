@@ -248,7 +248,11 @@ export class GeminiApiQuotaLedger {
     };
     modelLedger.rpm.limit = limit.rpm;
     modelLedger.tpm.limit = limit.tpm;
-    modelLedger.rpd.limit = limit.rpd;
+    // A real per-day limit observed via Cloud Monitoring beats the static table:
+    // Google tunes free-tier quotas over time and the monitor sees the live value.
+    modelLedger.rpd.limit = typeof modelLedger.monitorRpdLimit === 'number' && modelLedger.monitorRpdLimit > 0
+      ? modelLedger.monitorRpdLimit
+      : limit.rpd;
     group.models[model] = modelLedger;
     return modelLedger;
   }
