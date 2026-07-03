@@ -49,6 +49,9 @@ import {
 } from './lib/ollama.js';
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
 import { nextPacificDayStartMs } from './llm/providers/gemini-api/quotaLedger.js';
+import { createGeminiQuotaMonitor } from './llm/providers/gemini-api/quotaMonitor.js';
+import { createNvidiaClient } from './llm/providers/nvidia/client.js';
+import { buildNvidiaServableModelIds } from './llm/providers/nvidia/naming.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
 import { createOllamaLocalClient } from './llm/providers/ollama-local/client.js';
 import { LLMProviderError } from './llm/errors.js';
@@ -73,14 +76,26 @@ const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
+const geminiQuotaMonitor = createGeminiQuotaMonitor(config.geminiQuotaMonitor, {
+  resolveQuotaGroup: (accountId) =>
+    config.geminiApi.keys.find((key) => key.id === accountId)?.quotaGroup ?? null,
+  onObservations: (observations) =>
+    (geminiApiLlm as typeof geminiApiLlm & {
+      reconcileDailyUsage: (input: typeof observations) => Record<string, unknown>;
+    }).reconcileDailyUsage(observations),
+});
+geminiQuotaMonitor.start();
+const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
 const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
+  nvidiaServableModelIds: buildNvidiaServableModelIds(config.nvidia.models),
 }, {
   geminiApi: geminiApiLlm,
   ollama: ollamaLlm,
+  nvidia: nvidiaLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
 const audit = new AuditLogger(config.auditLogPath);
@@ -532,6 +547,7 @@ function parseBackendPreference(request: FastifyRequest): LLMBackendPreference {
   const value = raw.trim().toLowerCase();
   if (value === 'auto') return 'auto';
   if (value === 'gemini-api' || value === 'gemini' || value === 'ai-studio') return 'gemini-api';
+  if (value === 'nvidia' || value === 'nvidia-api' || value === 'nim') return 'nvidia';
   throw new Error(`Unsupported backend override: ${raw}`);
 }
 
@@ -833,6 +849,9 @@ function sanitizeLlmDiagnostics(
   const rawOllama = input.ollama && typeof input.ollama === 'object'
     ? input.ollama as Record<string, unknown>
     : null;
+  const rawNvidia = input.nvidia && typeof input.nvidia === 'object'
+    ? input.nvidia as Record<string, unknown>
+    : null;
   return {
     provider: input.provider ?? null,
     model: input.model ?? null,
@@ -884,6 +903,27 @@ function sanitizeLlmDiagnostics(
         lastSuccessAt: rawOllama.lastSuccessAt ?? null,
         lastFailureAt: rawOllama.lastFailureAt ?? null,
         lastError: rawOllama.lastError ?? null,
+      }
+      : null,
+    nvidia: rawNvidia
+      ? {
+        provider: rawNvidia.provider ?? 'nvidia',
+        enabled: rawNvidia.enabled ?? null,
+        available: rawNvidia.available ?? null,
+        baseUrl: rawNvidia.baseUrl ?? null,
+        keyPreview: options?.includeSensitive ? rawNvidia.keyPreview ?? null : undefined,
+        rpm: rawNvidia.rpm ?? null,
+        inflight: rawNvidia.inflight ?? null,
+        race: rawNvidia.race ?? null,
+        probe: rawNvidia.probe ?? null,
+        models: rawNvidia.models ?? [],
+        lastResolvedModel: rawNvidia.lastResolvedModel ?? null,
+        lastError: rawNvidia.lastError ?? null,
+        lastUpstreamError: rawNvidia.lastUpstreamError ?? null,
+        lastSuccessAt: rawNvidia.lastSuccessAt ?? null,
+        lastFailureAt: rawNvidia.lastFailureAt ?? null,
+        lastLatencyMs: rawNvidia.lastLatencyMs ?? null,
+        scoreboardUpdatedAt: rawNvidia.scoreboardUpdatedAt ?? null,
       }
       : null,
   };
@@ -1163,9 +1203,11 @@ function buildProviderSnapshot(
 function resolveActiveDefaultBackend(
   backendOrder: LLMBackendId[],
   geminiApiAvailable: boolean,
+  nvidiaAvailable = false,
 ): LLMBackendId {
   for (const backend of backendOrder) {
     if (backend === 'gemini-api' && geminiApiAvailable) return backend;
+    if (backend === 'nvidia' && nvidiaAvailable) return backend;
   }
   return backendOrder[0] ?? 'gemini-api';
 }
@@ -1264,11 +1306,34 @@ function buildGuestSummary() {
         rpdByModel,
         rpdResetAt: new Date(nextPacificDayStartMs()).toISOString(),
         rpdWindow: 'America/Los_Angeles',
+        monitor: (() => {
+          const monitor = geminiQuotaMonitor.getSnapshot();
+          return {
+            enabled: monitor.enabled,
+            configuredProjects: Array.isArray(monitor.configuredProjects) ? monitor.configuredProjects.length : 0,
+            lastRunAt: monitor.lastRunAt ?? null,
+            lastError: monitor.lastError ?? null,
+          };
+        })(),
       },
     },
     ollamaLocal: config.ollamaLocal.enabled
       ? { enabled: true, models: ollamaLocalLlm.usage(), rpdResetAt: new Date(nextPacificDayStartMs()).toISOString() }
       : { enabled: false, models: [] },
+    nvidia: (() => {
+      const diagnostics = nvidiaLlm.getDiagnostics?.() ?? {};
+      if (diagnostics.enabled !== true) return { enabled: false, models: [] };
+      return {
+        enabled: true,
+        available: diagnostics.available === true,
+        rpm: diagnostics.rpm ?? null,
+        race: diagnostics.race ?? null,
+        probe: diagnostics.probe ?? null,
+        lastResolvedModel: diagnostics.lastResolvedModel ?? null,
+        lastSuccessAt: diagnostics.lastSuccessAt ?? null,
+        models: Array.isArray(diagnostics.models) ? diagnostics.models : [],
+      };
+    })(),
     stats: {
       requests: totalRequests,
       succeeded: totalSucceeded,
@@ -1299,10 +1364,12 @@ function getRuntimeSnapshot(
   const sanitizedLlmDiagnostics = sanitizeLlmDiagnostics(rawLlmDiagnostics, { includeSensitive: options?.includeSensitiveLlm });
   const geminiApiDiagnostics = ((sanitizedLlmDiagnostics?.geminiApi as Record<string, unknown> | undefined) ?? {});
   const ollamaDiagnostics = ((sanitizedLlmDiagnostics?.ollama as Record<string, unknown> | undefined) ?? {});
+  const nvidiaDiagnostics = ((sanitizedLlmDiagnostics?.nvidia as Record<string, unknown> | undefined) ?? {});
   const backendOrder = (sanitizedLlmDiagnostics?.backendOrder as LLMBackendId[] | undefined) ?? config.llmRouting.backendOrder;
   const configuredDefaultBackend = ((sanitizedLlmDiagnostics?.configuredDefaultBackend as LLMBackendId | undefined) ?? backendOrder[0] ?? 'gemini-api');
   const geminiApiAvailable = Boolean(geminiApiDiagnostics.enabled) && Boolean(geminiApiDiagnostics.available);
-  const activeDefaultBackend = resolveActiveDefaultBackend(backendOrder, geminiApiAvailable);
+  const nvidiaAvailable = Boolean(nvidiaDiagnostics.enabled) && Boolean(nvidiaDiagnostics.available);
+  const activeDefaultBackend = resolveActiveDefaultBackend(backendOrder, geminiApiAvailable, nvidiaAvailable);
   const provider = buildProviderSnapshot(geminiApiDiagnostics, ollamaDiagnostics);
 
   return {
@@ -1329,10 +1396,24 @@ function getRuntimeSnapshot(
       ...(Array.isArray(ollamaDiagnostics.models)
         ? (ollamaDiagnostics.models as Record<string, unknown>[]).map((model) => String(model.id ?? '').trim()).filter(Boolean)
         : []),
+      ...(nvidiaDiagnostics.available === true && Array.isArray(nvidiaDiagnostics.models)
+        ? (() => {
+          const enabledModels = (nvidiaDiagnostics.models as Record<string, unknown>[])
+            .filter((model) => model.enabled !== false);
+          // Advertise the same tier aliases the config allowlist derives: only populated tiers.
+          const tiers = [...new Set(enabledModels.map((model) => String(model.tier ?? '')).filter(Boolean))];
+          return [
+            ...enabledModels.map((model) => String(model.id ?? '').trim()).filter(Boolean),
+            'nvidia-auto',
+            ...tiers.map((tier) => `nvidia-${tier}`),
+          ];
+        })()
+        : []),
     ],
     backends: {
       geminiApi: geminiApiDiagnostics,
       ollama: ollamaDiagnostics,
+      nvidia: nvidiaDiagnostics,
     },
     compatibility: request ? getCompatibilitySnapshot(request) : compatibility.get(),
     llm: sanitizedLlmDiagnostics,
@@ -3391,6 +3472,30 @@ app.get('/v1/provider/models', async (request, reply) => {
       object: 'list',
       data: ((runtime.provider as Record<string, unknown>).models as unknown[]) ?? [],
     };
+  } finally {
+    access.release();
+  }
+});
+app.get('/v1/provider/quota-monitor', async (request, reply) => {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    return { ok: true, monitor: geminiQuotaMonitor.getSnapshot() };
+  } finally {
+    access.release();
+  }
+});
+app.post('/v1/admin/quota-monitor/refresh', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const result = await geminiQuotaMonitor.refresh();
+  return { ...result, monitor: geminiQuotaMonitor.getSnapshot() };
+});
+app.get('/v1/provider/nvidia/scoreboard', async (request, reply) => {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    const client = nvidiaLlm as typeof nvidiaLlm & { scoreboardReport?: () => Record<string, unknown> };
+    return client.scoreboardReport?.() ?? { ok: false, error: 'scoreboard_unavailable' };
   } finally {
     access.release();
   }

@@ -1,4 +1,5 @@
 import { LLMProviderError } from './errors.js';
+import { isNvidiaTierAlias } from './providers/nvidia/naming.js';
 import type { LLMBackendId, LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from './types.js';
 
 interface BackendClient extends LLMClient {
@@ -9,6 +10,12 @@ export interface LLMRouterConfig {
   backendOrder: LLMBackendId[];
   /** Models that must never silently spill into another backend. */
   strictModelIds?: string[];
+  /**
+   * Model ids (and aliases) the NVIDIA catalog can serve. Non-NVIDIA-prefixed models
+   * outside this set never spill into the nvidia backend, so a Gemini 429 surfaces
+   * as a 429 instead of an nvidia_model_not_found.
+   */
+  nvidiaServableModelIds?: string[];
 }
 
 interface RouterState {
@@ -56,15 +63,25 @@ function shouldFallback(
   if (config.strictModelIds?.includes(model)) return false;
   if (remainingBackends.length === 0) return false;
   if (error.options.fallbackEligible !== true) return false;
-  return backend === 'gemini-api' || backend === 'ollama';
+  return backend === 'gemini-api' || backend === 'ollama' || backend === 'nvidia';
 }
 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
   if (preference !== 'auto') return [preference];
-  const order = [...new Set(config.backendOrder)];
-  const model = String(opts?.model ?? '').trim().toLowerCase();
+  const rawOrder = [...new Set(config.backendOrder)];
+  const model = String(opts?.model ?? '').trim().toLowerCase().replace(/^models\//, '');
+  const nvidiaCanServe = config.nvidiaServableModelIds?.includes(model) === true;
   const isGeminiModel = /^(gemini|gemma)-/.test(model);
+  // NVIDIA-only when it's a tier alias or a catalog name no other backend understands.
+  // Gemini-named catalog entries (gemma-* aliases) stay gemini-first with nvidia as
+  // spill, so the free Gemini quota is always spent before the NVIDIA budget.
+  if (isNvidiaTierAlias(model) || (nvidiaCanServe && !isGeminiModel)) {
+    return rawOrder.includes('nvidia') ? ['nvidia'] : [];
+  }
+  // Models outside the NVIDIA catalog never spill into nvidia: a Gemini 429 must
+  // surface as a 429, and namespaced Ollama ids ("ns/model") stay on their backend.
+  const order = nvidiaCanServe ? rawOrder : rawOrder.filter((backend) => backend !== 'nvidia');
   if (isGeminiModel) {
     return [
       ...order.filter((backend) => backend === 'gemini-api'),
@@ -94,6 +111,7 @@ export function createLlmRouter(
   backends: {
     geminiApi: BackendClient;
     ollama?: BackendClient;
+    nvidia?: BackendClient;
   },
 ): LLMClient {
   const state: RouterState = {
@@ -106,6 +124,7 @@ export function createLlmRouter(
 
   function getBackendClient(backend: LLMBackendId): BackendClient | undefined {
     if (backend === 'ollama') return backends.ollama;
+    if (backend === 'nvidia') return backends.nvidia;
     return backends.geminiApi;
   }
 
@@ -265,6 +284,9 @@ export function createLlmRouter(
       const ollama = backends.ollama?.health
         ? (backends.ollama.health() as Record<string, unknown>)
         : backends.ollama?.getDiagnostics?.() ?? null;
+      const nvidia = backends.nvidia?.health
+        ? (backends.nvidia.health() as Record<string, unknown>)
+        : backends.nvidia?.getDiagnostics?.() ?? null;
       return {
         provider: 'router',
         model: 'gemini-router',
@@ -277,6 +299,7 @@ export function createLlmRouter(
         lastError: state.lastError,
         geminiApi,
         ollama,
+        nvidia,
       };
     },
   };

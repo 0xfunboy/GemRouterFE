@@ -1372,6 +1372,28 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       };
     },
 
+    // Realign local RPD counters with real usage observed via Cloud Monitoring.
+    // Only request-count quota metrics with a model dimension are actionable here;
+    // token metrics and undimensioned series are reported back as skipped.
+    reconcileDailyUsage(observations: Array<{
+      quotaGroup: string;
+      model: string | null;
+      quotaMetric: string;
+      usedToday: number;
+      limit?: number | null;
+    }>): Record<string, unknown> {
+      const entries = observations
+        .filter((observation) => observation.model && /request/i.test(observation.quotaMetric))
+        .map((observation) => ({
+          quotaGroup: observation.quotaGroup,
+          model: observation.model as string,
+          usedToday: observation.usedToday,
+          limit: observation.limit,
+        }));
+      const result = ledger.reconcileRpdUsage(entries);
+      return { ok: true, ...result, skipped: observations.length - entries.length };
+    },
+
     resetTelemetry(): Record<string, unknown> {
       ledger.reset();
       lastSelectedKeyId = null;
@@ -1437,6 +1459,13 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     discoverModels: () => Promise<Record<string, unknown>>;
     listModels: () => Promise<Record<string, unknown>>;
     clearCooldown: () => Record<string, unknown>;
+    reconcileDailyUsage: (observations: Array<{
+      quotaGroup: string;
+      model: string | null;
+      quotaMetric: string;
+      usedToday: number;
+      limit?: number | null;
+    }>) => Record<string, unknown>;
     resetTelemetry: () => Record<string, unknown>;
     reloadAccounts: (keys: GeminiApiKeyConfig[]) => Record<string, unknown>;
     listAccountModels: (accountId: string) => Promise<Record<string, unknown>>;

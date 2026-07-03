@@ -18,7 +18,17 @@ export type LLMProviderErrorCode =
   | 'ollama_model_not_found'
   | 'ollama_missing_endpoint'
   | 'ollama_upstream_error'
-  | 'ollama_timeout';
+  | 'ollama_timeout'
+  | 'nvidia_missing_key'
+  | 'nvidia_no_model_available'
+  | 'nvidia_rate_limited'
+  | 'nvidia_auth_failed'
+  | 'nvidia_invalid_request'
+  | 'nvidia_model_not_found'
+  | 'nvidia_upstream_error'
+  | 'nvidia_empty_response'
+  | 'nvidia_timeout'
+  | 'nvidia_stream_error';
 
 export interface LLMProviderErrorOptions {
   statusCode?: number;

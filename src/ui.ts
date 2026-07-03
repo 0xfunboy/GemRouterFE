@@ -1437,6 +1437,31 @@ export function renderAppShell(input: {
         </div>
       </section>
 
+      <section class="panel section" id="nvidia-section" style="display:none">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">${svgIcon('api')} NVIDIA NIM Models</h3>
+            <p class="section-copy">Free NVIDIA surface with per-hour scoring: the router races the best-ranked candidates and learns which model to prefer at each hour of the day.</p>
+          </div>
+          <div id="nvidia-meta" class="meta-row"></div>
+        </div>
+        <div class="table-wrap">
+          <table class="table responsive-table quota-table public-rpd-table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Tier</th>
+                <th>Score now</th>
+                <th>TTFB (hour)</th>
+                <th>Success</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="nvidia-table"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="panel section" id="ollama-local-section" style="display:none">
         <div class="section-head">
           <div>
@@ -1984,6 +2009,9 @@ export function renderAppShell(input: {
       const publicRpdAccountTable = document.getElementById('public-rpd-account-table');
       const ollamaLocalSection = document.getElementById('ollama-local-section');
       const ollamaLocalTable = document.getElementById('ollama-local-table');
+      const nvidiaSection = document.getElementById('nvidia-section');
+      const nvidiaTable = document.getElementById('nvidia-table');
+      const nvidiaMeta = document.getElementById('nvidia-meta');
       const hourlyChart = document.getElementById('hourly-chart');
       const routeChart = document.getElementById('route-chart');
       const adminDashboard = document.getElementById('admin-dashboard');
@@ -2776,7 +2804,14 @@ export function renderAppShell(input: {
         });
 
         const resetAt = quota.rpdResetAt ? formatTimestamp(quota.rpdResetAt) : 'the next Pacific midnight';
-        publicRpdCopy.textContent = 'Cumulative daily request capacity from the same ledger used by routing. RPD resets at ' + resetAt + '.';
+        const monitor = quota.monitor || null;
+        let monitorNote = '';
+        if (monitor && monitor.enabled && monitor.configuredProjects > 0) {
+          monitorNote = monitor.lastRunAt && !monitor.lastError
+            ? ' Real usage synced from Cloud Monitoring at ' + formatTimestamp(monitor.lastRunAt) + '.'
+            : ' Cloud Monitoring sync configured' + (monitor.lastError ? ' (last error: ' + monitor.lastError + ')' : '') + '.';
+        }
+        publicRpdCopy.textContent = 'Cumulative daily request capacity from the same ledger used by routing. RPD resets at ' + resetAt + '.' + monitorNote;
 
         const byModel = new Map();
         const perAccount = [];
@@ -2846,6 +2881,66 @@ export function renderAppShell(input: {
             });
           renderRpdRows(publicRpdAccountTable, accountRows, 5);
         }
+      }
+
+      function renderNvidiaModels(summary) {
+        if (!nvidiaSection || !nvidiaTable) return;
+        const nvidia = summary && summary.nvidia ? summary.nvidia : null;
+        const models = nvidia && Array.isArray(nvidia.models) ? nvidia.models : [];
+        if (!nvidia || nvidia.enabled !== true || models.length === 0) {
+          nvidiaSection.style.display = 'none';
+          return;
+        }
+        nvidiaSection.style.display = '';
+        if (nvidiaMeta) {
+          const pills = [];
+          pills.push('<span class="chip ' + (nvidia.available ? 'good' : 'bad') + '">' + (nvidia.available ? 'Available' : 'Unavailable') + '</span>');
+          if (nvidia.rpm && typeof nvidia.rpm.used === 'number') {
+            pills.push('<span class="chip">RPM ' + escapeHtml(String(nvidia.rpm.used)) + ' / ' + escapeHtml(String(nvidia.rpm.limit)) + '</span>');
+          }
+          if (nvidia.lastResolvedModel) {
+            pills.push('<span class="chip">Last winner ' + escapeHtml(String(nvidia.lastResolvedModel)) + '</span>');
+          }
+          if (nvidia.race && nvidia.race.enabled) {
+            pills.push('<span class="chip">Race ×' + escapeHtml(String(nvidia.race.maxCandidates)) + '</span>');
+          }
+          if (nvidia.probe && nvidia.probe.enabled) {
+            pills.push('<span class="chip">Probe ' + escapeHtml(String(Math.round((nvidia.probe.intervalMs || 0) / 60000))) + 'm</span>');
+          }
+          nvidiaMeta.innerHTML = pills.join('');
+        }
+        nvidiaTable.innerHTML = models.map(function(model) {
+          const hour = model.hour || null;
+          const overall = model.overall || null;
+          const ttfb = hour && hour.avgTtfbMs !== null && hour.avgTtfbMs !== undefined ? hour.avgTtfbMs
+            : (overall && overall.avgTtfbMs !== null && overall.avgTtfbMs !== undefined ? overall.avgTtfbMs : null);
+          const ttfbLabel = ttfb === null ? '—' : (ttfb >= 1000 ? (Math.round(ttfb / 100) / 10) + 's' : ttfb + 'ms');
+          const ttfbSource = hour && hour.avgTtfbMs !== null && hour.avgTtfbMs !== undefined ? '' : (ttfb === null ? '' : ' (all)');
+          const successRate = hour && typeof hour.successRate === 'number' ? hour.successRate
+            : (overall && typeof overall.successRate === 'number' ? overall.successRate : null);
+          const samples = (hour && hour.samples) || (overall && overall.samples) || 0;
+          const successLabel = successRate === null ? '—' : Math.round(successRate * 100) + '% · ' + samples;
+          let statusChip;
+          if (model.coolingDown) {
+            statusChip = '<span class="chip bad">cooldown</span>';
+          } else if (model.lastStatus === 'success') {
+            statusChip = '<span class="chip good">ok</span>';
+          } else if (model.lastStatus === 'timeout') {
+            statusChip = '<span class="chip warn">stalled</span>';
+          } else if (model.lastStatus === 'failure') {
+            statusChip = '<span class="chip warn">' + escapeHtml(String(model.lastErrorCode || 'error')) + '</span>';
+          } else {
+            statusChip = '<span class="chip">no data</span>';
+          }
+          return '<tr>' +
+            '<td data-label="Model"><strong>' + escapeHtml(String(model.id || '')) + '</strong></td>' +
+            '<td data-label="Tier"><span class="chip">' + escapeHtml(String(model.tier || '')) + '</span></td>' +
+            '<td data-label="Score now">' + escapeHtml(String(typeof model.score === 'number' ? Math.round(model.score) : '—')) + '</td>' +
+            '<td data-label="TTFB (hour)">' + escapeHtml(ttfbLabel + ttfbSource) + '</td>' +
+            '<td data-label="Success">' + escapeHtml(successLabel) + '</td>' +
+            '<td data-label="Status">' + statusChip + '</td>' +
+          '</tr>';
+        }).join('');
       }
 
       function renderOllamaLocalRpd(summary) {
@@ -3633,6 +3728,7 @@ export function renderAppShell(input: {
           renderPublicPills(data);
           renderPublicStats(data);
           renderPublicRpd(data);
+          renderNvidiaModels(data);
           renderOllamaLocalRpd(data);
           if (!state.authenticated) {
             renderProviderState(data);

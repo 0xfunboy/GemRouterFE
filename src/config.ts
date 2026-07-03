@@ -11,9 +11,10 @@ import {
   DEFAULT_FREE_TIER_TEXT_MODEL_IDS,
   DEFAULT_TEXT_FALLBACK_MODEL_IDS,
 } from './lib/models.js';
-import type { LLMBackendId } from './llm/types.js';
+import type { LLMBackendId, ModelTier } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
 import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
+import type { NvidiaModelConfig, NvidiaProviderConfig } from './llm/providers/nvidia/types.js';
 import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
 import type { OllamaLocalConfig } from './llm/providers/ollama-local/client.js';
 
@@ -49,6 +50,14 @@ export interface RuntimeConfig {
     enabledSurfaces: ApiSurface[];
   };
   geminiApi: GeminiApiProviderConfig;
+  geminiQuotaMonitor: {
+    enabled: boolean;
+    credentialsPath: string;
+    storePath: string;
+    refreshMs: number;
+    timeoutMs: number;
+  };
+  nvidia: NvidiaProviderConfig;
   ollama: OllamaRouterConfig;
   ollamaLocal: OllamaLocalConfig;
   llmRouting: {
@@ -156,7 +165,51 @@ function normalizeBackendId(value: string): LLMBackendId | null {
   const normalized = value.trim().toLowerCase();
   if (normalized === 'ollama') return 'ollama';
   if (normalized === 'gemini-api' || normalized === 'gemini' || normalized === 'ai-studio') return 'gemini-api';
+  if (normalized === 'nvidia' || normalized === 'nvidia-api' || normalized === 'nim') return 'nvidia';
   return null;
+}
+
+const DEFAULT_NVIDIA_MODELS: NvidiaModelConfig[] = [
+  { id: 'deepseek-ai/deepseek-v4-pro', tier: 'large', enabled: true, probe: true, aliases: ['deepseek4', 'deepseek-v4'] },
+  { id: 'moonshotai/kimi-k2.6', tier: 'large', enabled: true, probe: true },
+  { id: 'qwen/qwen3.5-397b-a17b', tier: 'large', enabled: true, probe: true },
+  { id: 'mistralai/mistral-large-3-675b-instruct-2512', tier: 'large', enabled: true, probe: true, aliases: ['mistral-large-3'] },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b', tier: 'large', enabled: true, probe: true },
+  { id: 'minimaxai/minimax-m3', tier: 'large', enabled: true, probe: true },
+  { id: 'deepseek-ai/deepseek-v4-flash', tier: 'medium', enabled: true, probe: true, aliases: ['deepseek4-flash'] },
+  { id: 'google/gemma-4-31b-it', tier: 'medium', enabled: true, probe: true, aliases: ['gemma-4-31b-it'] },
+  { id: 'nvidia/nemotron-3-super-120b-a12b', tier: 'medium', enabled: true, probe: true },
+];
+
+function readNvidiaModels(env: Record<string, string | undefined>, modelsPath: string): NvidiaModelConfig[] {
+  let parsed: unknown = null;
+  if (existsSync(modelsPath)) {
+    try {
+      parsed = JSON.parse(readFileSync(modelsPath, 'utf8'));
+    } catch {
+      parsed = null;
+    }
+  }
+  const envModels = readJsonValue<unknown>(env, null, 'GEMROUTER_NVIDIA_MODELS_JSON');
+  const source = Array.isArray(envModels) && envModels.length > 0 ? envModels : parsed;
+  if (!Array.isArray(source) || source.length === 0) return DEFAULT_NVIDIA_MODELS;
+  return source.flatMap((entry) => {
+    if (!entry || typeof entry !== 'object') return [];
+    const record = entry as Record<string, unknown>;
+    const id = String(record.id ?? '').trim().toLowerCase();
+    if (!id) return [];
+    const tierValue = String(record.tier ?? 'medium').trim().toLowerCase();
+    const tier: ModelTier = tierValue === 'small' || tierValue === 'large' ? tierValue : 'medium';
+    return [{
+      id,
+      tier,
+      enabled: record.enabled !== false,
+      probe: record.probe !== false,
+      aliases: Array.isArray(record.aliases)
+        ? record.aliases.map((alias) => String(alias).trim().toLowerCase()).filter(Boolean)
+        : undefined,
+    }];
+  });
 }
 
 function readOllamaInventoryModelIds(inventoryPath: string, excludeCloudModels: boolean): string[] {
@@ -380,7 +433,26 @@ export function loadConfig(
     DEFAULT_DIRECT_MODEL_IDS[0];
   const configuredOllamaModels = readList(env, ollamaModelIds, 'GEMROUTER_OLLAMA_MODELS')
     .map((model) => model.toLowerCase());
-  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels])];
+
+  const nvidiaApiKey = pick(env, 'GEMROUTER_NVIDIA_API_KEY', 'NVIDIA_API_KEY') ?? '';
+  // Without a key the backend can never serve traffic, so an explicit ENABLED=true
+  // must not advertise NVIDIA models that would all fail with nvidia_missing_key.
+  const nvidiaEnabled = readBoolean(env, nvidiaApiKey.length > 0, 'GEMROUTER_NVIDIA_ENABLED') && nvidiaApiKey.length > 0;
+  const nvidiaModelsPath = path.resolve(rootDir, pick(env, 'GEMROUTER_NVIDIA_MODELS_PATH') ?? 'data/nvidia-models.json');
+  const nvidiaModels = readNvidiaModels(env, nvidiaModelsPath);
+  const enabledNvidiaModels = nvidiaModels.filter((model) => model.enabled);
+  // Advertise tier aliases only for tiers that actually have models; nvidia-auto always
+  // works because the client falls back to the nearest populated tier.
+  const nvidiaTiers = new Set(enabledNvidiaModels.map((model) => model.tier));
+  const nvidiaModelIds = nvidiaEnabled && enabledNvidiaModels.length > 0
+    ? [
+      ...enabledNvidiaModels.map((model) => model.id),
+      'nvidia-auto',
+      ...[...nvidiaTiers].map((tier) => `nvidia-${tier}`),
+    ]
+    : [];
+
+  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels, ...nvidiaModelIds])];
   const modelIds = buildPublicModelIds(directModels);
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
@@ -398,9 +470,12 @@ export function loadConfig(
     ),
   });
   const backendOrder = readBackendOrder(env, ['gemini-api'], 'GEMROUTER_BACKEND_ORDER');
-  const effectiveBackendOrder = ollamaModelIds.length > 0 && !backendOrder.includes('ollama')
+  const backendOrderWithOllama = ollamaModelIds.length > 0 && !backendOrder.includes('ollama')
     ? [...backendOrder, 'ollama' as const]
     : backendOrder;
+  const effectiveBackendOrder = nvidiaEnabled && !backendOrderWithOllama.includes('nvidia')
+    ? [...backendOrderWithOllama, 'nvidia' as const]
+    : backendOrderWithOllama;
   const geminiApiDefaultTier = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_TIER') ?? 'tier1';
   const geminiApiQuotaGroupMode = pick(env, 'GEMROUTER_GEMINI_API_DEFAULT_QUOTA_GROUP_MODE') === 'shared'
     ? 'shared'
@@ -457,7 +532,7 @@ export function loadConfig(
           'BAIRBI_BOOTSTRAP_ALLOWED_MODELS',
           'BARIBI_BOOTSTRAP_ALLOWED_MODELS',
         ),
-        freeTierTextModelIds,
+        [...freeTierTextModelIds, ...nvidiaModelIds],
         modelIds,
       ),
       sessionNamespace: pick(
@@ -526,6 +601,44 @@ export function loadConfig(
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
       strictModelIds: readList(env, [], 'GEMROUTER_GEMINI_API_STRICT_MODELS')
         .map((model) => model.replace(/^models\//, '').toLowerCase()),
+    },
+    geminiQuotaMonitor: {
+      // The module no-ops gracefully while the credentials file is absent, so the
+      // default-on switch just means "start syncing as soon as credentials appear".
+      enabled: readBoolean(env, true, 'GEMROUTER_GEMINI_QUOTA_MONITOR_ENABLED'),
+      credentialsPath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_GEMINI_QUOTA_MONITOR_CREDENTIALS_PATH') ?? 'data/gcp-monitoring-credentials.json',
+      ),
+      storePath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_GEMINI_QUOTA_MONITOR_STORE_PATH') ?? 'data/gemini-quota-monitor.json',
+      ),
+      refreshMs: readNumber(env, 1_800_000, 'GEMROUTER_GEMINI_QUOTA_MONITOR_REFRESH_MS'),
+      timeoutMs: readNumber(env, 30_000, 'GEMROUTER_GEMINI_QUOTA_MONITOR_TIMEOUT_MS'),
+    },
+    nvidia: {
+      enabled: nvidiaEnabled,
+      apiKey: nvidiaApiKey,
+      baseUrl: pick(env, 'GEMROUTER_NVIDIA_BASE_URL') ?? 'https://integrate.api.nvidia.com',
+      modelsPath: nvidiaModelsPath,
+      models: nvidiaModels,
+      defaultTier: (() => {
+        const value = pick(env, 'GEMROUTER_NVIDIA_DEFAULT_TIER')?.toLowerCase();
+        return value === 'small' || value === 'medium' || value === 'large' ? value : 'large';
+      })(),
+      rpmLimit: readNumber(env, 36, 'GEMROUTER_NVIDIA_RPM_LIMIT'),
+      maxConcurrency: readNumber(env, 8, 'GEMROUTER_NVIDIA_MAX_CONCURRENCY'),
+      timeoutMs: readNumber(env, 120_000, 'GEMROUTER_NVIDIA_TIMEOUT_MS'),
+      firstTokenTimeoutMs: readNumber(env, 25_000, 'GEMROUTER_NVIDIA_FIRST_TOKEN_TIMEOUT_MS'),
+      rateLimitCooldownMs: readNumber(env, 60_000, 'GEMROUTER_NVIDIA_RATE_LIMIT_COOLDOWN_MS'),
+      scoreboardPath: path.resolve(rootDir, pick(env, 'GEMROUTER_NVIDIA_SCOREBOARD_PATH') ?? 'data/nvidia-scoreboard.json'),
+      probeEnabled: readBoolean(env, true, 'GEMROUTER_NVIDIA_PROBE_ENABLED'),
+      probeIntervalMs: readNumber(env, 3_600_000, 'GEMROUTER_NVIDIA_PROBE_INTERVAL_MS'),
+      probeMaxTokens: readNumber(env, 16, 'GEMROUTER_NVIDIA_PROBE_MAX_TOKENS'),
+      raceEnabled: readBoolean(env, true, 'GEMROUTER_NVIDIA_RACE_ENABLED'),
+      raceHedgeDelayMs: readNumber(env, 8_000, 'GEMROUTER_NVIDIA_RACE_HEDGE_DELAY_MS'),
+      raceMaxCandidates: readNumber(env, 3, 'GEMROUTER_NVIDIA_RACE_MAX_CANDIDATES'),
     },
     ollama: {
       enabled: readBoolean(env, ollamaModelIds.length > 0, 'GEMROUTER_OLLAMA_ENABLED'),
