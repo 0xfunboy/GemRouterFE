@@ -7,7 +7,7 @@ import path from 'node:path';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
-import { applyBackup, buildBackup } from './lib/backup.js';
+import { applyBackup, buildBackup, summarizeBackupContents } from './lib/backup.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
 import {
   buildDiscoveredModelCatalog,
@@ -3459,6 +3459,28 @@ app.get('/v1/provider/models', async (request, reply) => {
     access.release();
   }
 });
+// Counts-only inventory of what a snapshot contains: safe to render in the
+// dashboard, no secrets or file contents.
+app.get('/v1/admin/backup/summary', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const contents = summarizeBackupContents({ rootDir: config.rootDir, dataDir: config.dataDir });
+  const accounts = config.geminiApi.keys;
+  return {
+    ok: true,
+    geminiAccounts: accounts.length,
+    geminiAccountsEnabled: accounts.filter((key) => key.enabled).length,
+    quotaGroups: new Set(accounts.map((key) => key.quotaGroup)).size,
+    apps: appStore.list().filter((appRecord) => !appRecord.revokedAt).length,
+    surfaces: compatibility.get().enabledSurfaces,
+    geminiTextModels: config.freeTierPolicy.textModelIds.length,
+    nvidiaModels: config.nvidia.enabled ? config.nvidia.models.filter((model) => model.enabled).length : 0,
+    envVars: contents.envVars,
+    envPresent: contents.envPresent,
+    dataFiles: contents.dataFiles,
+    totalBytes: contents.totalBytes,
+  };
+});
+
 // Full-state snapshot: complete .env plus every file under data/. The response
 // contains every secret the router owns — admin session required, treat the
 // downloaded gemrouter.cfg like a private key.

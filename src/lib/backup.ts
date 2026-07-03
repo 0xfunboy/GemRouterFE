@@ -68,6 +68,35 @@ export function buildBackup(input: { rootDir: string; dataDir: string }): Gemrou
   };
 }
 
+/** Counts-only view of what a snapshot would contain — safe to show in the dashboard. */
+export function summarizeBackupContents(input: { rootDir: string; dataDir: string }): {
+  dataFiles: number;
+  totalBytes: number;
+  envVars: number;
+  envPresent: boolean;
+} {
+  let dataFiles = 0;
+  let totalBytes = 0;
+  if (existsSync(input.dataDir)) {
+    for (const relative of walkFiles(input.dataDir)) {
+      try {
+        const size = statSync(path.join(input.dataDir, relative)).size;
+        if (size > MAX_FILE_BYTES) continue;
+        dataFiles += 1;
+        totalBytes += size;
+      } catch {
+        // unreadable file: excluded from the snapshot too
+      }
+    }
+  }
+  const envPath = path.join(input.rootDir, '.env');
+  const envPresent = existsSync(envPath);
+  const envVars = envPresent
+    ? readFileSync(envPath, 'utf8').split('\n').filter((line) => /^[A-Z0-9_]+=/.test(line.trim())).length
+    : 0;
+  return { dataFiles, totalBytes, envVars, envPresent };
+}
+
 function safeRelativePath(candidate: string): string | null {
   const normalized = path.normalize(candidate.trim());
   if (!normalized || normalized === '.' || path.isAbsolute(normalized)) return null;
