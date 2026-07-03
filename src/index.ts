@@ -7,6 +7,7 @@ import path from 'node:path';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
+import { applyBackup, buildBackup } from './lib/backup.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
 import {
   buildDiscoveredModelCatalog,
@@ -49,7 +50,6 @@ import {
 } from './lib/ollama.js';
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
 import { nextPacificDayStartMs } from './llm/providers/gemini-api/quotaLedger.js';
-import { createGeminiQuotaMonitor } from './llm/providers/gemini-api/quotaMonitor.js';
 import { createNvidiaClient } from './llm/providers/nvidia/client.js';
 import { buildNvidiaServableModelIds } from './llm/providers/nvidia/naming.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
@@ -76,15 +76,6 @@ const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
-const geminiQuotaMonitor = createGeminiQuotaMonitor(config.geminiQuotaMonitor, {
-  resolveQuotaGroup: (accountId) =>
-    config.geminiApi.keys.find((key) => key.id === accountId)?.quotaGroup ?? null,
-  onObservations: (observations) =>
-    (geminiApiLlm as typeof geminiApiLlm & {
-      reconcileDailyUsage: (input: typeof observations) => Record<string, unknown>;
-    }).reconcileDailyUsage(observations),
-});
-geminiQuotaMonitor.start();
 const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
 const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
@@ -1307,15 +1298,6 @@ function buildGuestSummary() {
         rpdByModel,
         rpdResetAt: new Date(nextPacificDayStartMs()).toISOString(),
         rpdWindow: 'America/Los_Angeles',
-        monitor: (() => {
-          const monitor = geminiQuotaMonitor.getSnapshot();
-          return {
-            enabled: monitor.enabled,
-            configuredProjects: Array.isArray(monitor.configuredProjects) ? monitor.configuredProjects.length : 0,
-            lastRunAt: monitor.lastRunAt ?? null,
-            lastError: monitor.lastError ?? null,
-          };
-        })(),
       },
     },
     ollamaLocal: config.ollamaLocal.enabled
@@ -3477,20 +3459,42 @@ app.get('/v1/provider/models', async (request, reply) => {
     access.release();
   }
 });
-app.get('/v1/provider/quota-monitor', async (request, reply) => {
-  const access = await ensureClientAccess(request, reply);
-  if (!access) return reply;
-  try {
-    return { ok: true, monitor: geminiQuotaMonitor.getSnapshot() };
-  } finally {
-    access.release();
-  }
-});
-app.post('/v1/admin/quota-monitor/refresh', async (request, reply) => {
+// Full-state snapshot: complete .env plus every file under data/. The response
+// contains every secret the router owns — admin session required, treat the
+// downloaded gemrouter.cfg like a private key.
+app.get('/v1/admin/backup/export', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const result = await geminiQuotaMonitor.refresh();
-  return { ...result, monitor: geminiQuotaMonitor.getSnapshot() };
+  const backup = buildBackup({ rootDir: config.rootDir, dataDir: config.dataDir });
+  audit.write({ type: 'backup_export', route: '/v1/admin/backup/export', details: { files: Object.keys(backup.files).length } });
+  return reply
+    .type('application/json; charset=utf-8')
+    .header('content-disposition', 'attachment; filename="gemrouter.cfg"')
+    .send(`${JSON.stringify(backup, null, 2)}\n`);
 });
+
+// Restore a snapshot: writes .env and data/, keeps a safety copy of the current
+// state under backups/, then exits so systemd restarts the process with the
+// imported configuration fully applied.
+app.post('/v1/admin/backup/import', { bodyLimit: 64 * 1024 * 1024 }, async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const result = applyBackup({ rootDir: config.rootDir, dataDir: config.dataDir, payload: request.body });
+  if (!result.ok) {
+    return reply.code(400).send({ ok: false, error: result.error });
+  }
+  audit.write({ type: 'backup_import', route: '/v1/admin/backup/import', details: { files: result.restoredFiles, env: result.envRestored } });
+  // Give the response time to flush, then let systemd bring us back up on the
+  // imported .env and data. Restart=always makes this a clean reconfiguration.
+  setTimeout(() => process.exit(0), 800).unref();
+  return {
+    ok: true,
+    restoredFiles: result.restoredFiles,
+    envRestored: result.envRestored,
+    safetyCopyDir: result.safetyCopyDir,
+    skippedPaths: result.skippedPaths,
+    restarting: true,
+  };
+});
+
 app.post('/v1/admin/gemini/account-models/refresh', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const client = geminiApiLlm as typeof geminiApiLlm & {

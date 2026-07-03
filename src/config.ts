@@ -50,13 +50,6 @@ export interface RuntimeConfig {
     enabledSurfaces: ApiSurface[];
   };
   geminiApi: GeminiApiProviderConfig;
-  geminiQuotaMonitor: {
-    enabled: boolean;
-    credentialsPath: string;
-    storePath: string;
-    refreshMs: number;
-    timeoutMs: number;
-  };
   nvidia: NvidiaProviderConfig;
   ollama: OllamaRouterConfig;
   ollamaLocal: OllamaLocalConfig;
@@ -606,21 +599,6 @@ export function loadConfig(
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
       strictModelIds: readList(env, [], 'GEMROUTER_GEMINI_API_STRICT_MODELS')
         .map((model) => model.replace(/^models\//, '').toLowerCase()),
-    },
-    geminiQuotaMonitor: {
-      // The module no-ops gracefully while the credentials file is absent, so the
-      // default-on switch just means "start syncing as soon as credentials appear".
-      enabled: readBoolean(env, true, 'GEMROUTER_GEMINI_QUOTA_MONITOR_ENABLED'),
-      credentialsPath: path.resolve(
-        rootDir,
-        pick(env, 'GEMROUTER_GEMINI_QUOTA_MONITOR_CREDENTIALS_PATH') ?? 'data/gcp-monitoring-credentials.json',
-      ),
-      storePath: path.resolve(
-        rootDir,
-        pick(env, 'GEMROUTER_GEMINI_QUOTA_MONITOR_STORE_PATH') ?? 'data/gemini-quota-monitor.json',
-      ),
-      refreshMs: readNumber(env, 1_800_000, 'GEMROUTER_GEMINI_QUOTA_MONITOR_REFRESH_MS'),
-      timeoutMs: readNumber(env, 30_000, 'GEMROUTER_GEMINI_QUOTA_MONITOR_TIMEOUT_MS'),
     },
     nvidia: {
       enabled: nvidiaEnabled,
