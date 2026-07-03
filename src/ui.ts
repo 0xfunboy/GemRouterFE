@@ -1521,23 +1521,6 @@ export function renderAppShell(input: {
         <section class="panel section">
           <div class="section-head">
             <div>
-              <h3 class="section-title">${svgIcon('api')} Backup &amp; Restore</h3>
-              <p class="section-copy">Export downloads <span class="mono">gemrouter.cfg</span>: the full snapshot (complete .env, accounts and keys, registered apps, surfaces, model config, ledgers, statistics). Import restores it and restarts the router. The file contains every secret — store it safely.</p>
-            </div>
-            <div class="section-head-actions">
-              <div class="button-row">
-                <button id="backup-export-button" type="button" class="secondary">Export gemrouter.cfg</button>
-                <button id="backup-import-button" type="button" class="warn">Import…</button>
-                <input id="backup-import-file" type="file" accept=".cfg,.json,application/json" style="display:none" />
-              </div>
-            </div>
-          </div>
-          <div id="backup-status" class="footer-note"></div>
-        </section>
-
-        <section class="panel section">
-          <div class="section-head">
-            <div>
               <h3 class="section-title">Backend Routing</h3>
               <p class="section-copy">Requests stay on official Gemini API keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
             </div>
@@ -1552,6 +1535,30 @@ export function renderAppShell(input: {
           <div id="backend-section-body" class="section-body hidden">
             <div id="backend-output" class="mono-box">Loading backend routing snapshot…</div>
             <div id="backend-hint" class="footer-note" style="margin-top:10px"></div>
+          </div>
+        </section>
+
+        <section class="panel section">
+          <div class="section-head">
+            <div>
+              <h3 class="section-title">${svgIcon('api')} Backup &amp; Restore</h3>
+              <p class="section-copy">One-click snapshot of the full router state into <span class="mono">gemrouter.cfg</span>, and restore from a previous snapshot.</p>
+            </div>
+            <div class="section-head-actions">
+              <button type="button" class="secondary section-toggle" data-section-toggle="backup-section-body" aria-controls="backup-section-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
+              </button>
+            </div>
+          </div>
+          <div id="backup-section-body" class="section-body hidden">
+            <div id="backup-inventory" class="mono-box">Loading backup inventory…</div>
+            <div class="button-row" style="margin-top:12px">
+              <button id="backup-export-button" type="button" class="secondary">Export gemrouter.cfg</button>
+              <button id="backup-import-button" type="button" class="warn">Import…</button>
+              <input id="backup-import-file" type="file" accept=".cfg,.json,application/json" style="display:none" />
+            </div>
+            <div id="backup-status" class="footer-note" style="margin-top:8px">The exported file contains every secret (.env, account keys, app keys) — store it safely.</div>
           </div>
         </section>
 
@@ -3908,9 +3915,47 @@ export function renderAppShell(input: {
       const backupImportButton = document.getElementById('backup-import-button');
       const backupImportFile = document.getElementById('backup-import-file');
       const backupStatus = document.getElementById('backup-status');
+      const backupInventory = document.getElementById('backup-inventory');
+      let backupInventoryLoaded = false;
 
       function setBackupStatus(message) {
         if (backupStatus) backupStatus.textContent = message;
+      }
+
+      function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+        if (bytes >= 1048576) return (Math.round(bytes / 104857.6) / 10) + ' MB';
+        if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+        return bytes + ' B';
+      }
+
+      async function loadBackupInventory() {
+        if (!backupInventory) return;
+        try {
+          const data = await request('/v1/admin/backup/summary');
+          backupInventory.textContent = [
+            '[snapshot contents]',
+            'gemini_accounts   ' + String(data.geminiAccounts) + ' (' + String(data.geminiAccountsEnabled) + ' enabled, ' + String(data.quotaGroups) + ' quota groups)',
+            'api_apps          ' + String(data.apps),
+            'surfaces          ' + (Array.isArray(data.surfaces) ? data.surfaces.join(', ') : ''),
+            'gemini_models     ' + String(data.geminiTextModels) + ' text',
+            'nvidia_models     ' + String(data.nvidiaModels) + ' enabled',
+            'env_vars          ' + String(data.envVars) + (data.envPresent ? '' : ' (.env missing!)'),
+            'data_files        ' + String(data.dataFiles) + ' (' + formatBytes(data.totalBytes) + ')',
+          ].join('\\n');
+          backupInventoryLoaded = true;
+        } catch (error) {
+          backupInventory.textContent = 'Inventory unavailable: ' + error.message;
+        }
+      }
+
+      const backupToggle = document.querySelector('[data-section-toggle="backup-section-body"]');
+      if (backupToggle) {
+        backupToggle.addEventListener('click', function() {
+          if (backupToggle.getAttribute('aria-expanded') === 'true' && !backupInventoryLoaded) {
+            loadBackupInventory();
+          }
+        });
       }
 
       if (backupExportButton) {
