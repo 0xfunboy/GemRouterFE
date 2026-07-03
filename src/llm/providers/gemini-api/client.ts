@@ -108,7 +108,7 @@ const GEMMA_HEDGED_SECOND_WAVE_MODELS = [
   'gemini-3.1-flash-lite-preview',
   'gemini-3.1-flash-lite',
 ] as const;
-const GEMMA_HEDGED_SECOND_WAVE_DELAY_MS = 30_000;
+const GEMMA_HEDGED_SECOND_WAVE_DELAY_MS = 8_000;
 const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 65_000;
 
 class HedgedRequestCancelled extends Error {
@@ -253,7 +253,7 @@ function isHighDemandCondition(
   status: number,
   googleError: ReturnType<typeof parseGoogleError>,
 ): boolean {
-  if (status !== 503) return false;
+  if (status !== 500 && status !== 503) return false;
   const text = [
     googleError.status,
     googleError.reason,
@@ -267,6 +267,7 @@ function isHighDemandCondition(
     text.includes('unavailable') ||
     text.includes('overloaded') ||
     text.includes('capacity') ||
+    text.includes('internal') ||
     text.includes('try again')
   );
 }
@@ -962,6 +963,17 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         reject(withFallbackHistory(error, fallbackAttempts));
       };
 
+      const launchSecondWave = (): void => {
+        if (settled || secondWaveLaunched) return;
+        secondWaveLaunched = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        for (const model of GEMMA_HEDGED_SECOND_WAVE_MODELS) launch(model);
+        rejectIfDone();
+      };
+
       const launch = (model: string): void => {
         if (settled || launched.has(model)) return;
         launched.add(model);
@@ -1000,6 +1012,10 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             active -= 1;
             if (settled) return;
             if (error instanceof GeminiApiProviderError) errors.push(error);
+            if (active === 0 && !secondWaveLaunched) {
+              launchSecondWave();
+              return;
+            }
             rejectIfDone();
           });
       };
@@ -1007,12 +1023,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       launch(GEMMA_31B_HEDGED_MODEL);
       for (const model of GEMMA_HEDGED_FALLBACK_MODELS) launch(model);
 
-      timer = setTimeout(() => {
-        if (settled) return;
-        secondWaveLaunched = true;
-        for (const model of GEMMA_HEDGED_SECOND_WAVE_MODELS) launch(model);
-        rejectIfDone();
-      }, GEMMA_HEDGED_SECOND_WAVE_DELAY_MS);
+      timer = setTimeout(launchSecondWave, GEMMA_HEDGED_SECOND_WAVE_DELAY_MS);
     });
   }
 
