@@ -1521,6 +1521,23 @@ export function renderAppShell(input: {
         <section class="panel section">
           <div class="section-head">
             <div>
+              <h3 class="section-title">${svgIcon('api')} Backup &amp; Restore</h3>
+              <p class="section-copy">Export downloads <span class="mono">gemrouter.cfg</span>: the full snapshot (complete .env, accounts and keys, registered apps, surfaces, model config, ledgers, statistics). Import restores it and restarts the router. The file contains every secret — store it safely.</p>
+            </div>
+            <div class="section-head-actions">
+              <div class="button-row">
+                <button id="backup-export-button" type="button" class="secondary">Export gemrouter.cfg</button>
+                <button id="backup-import-button" type="button" class="warn">Import…</button>
+                <input id="backup-import-file" type="file" accept=".cfg,.json,application/json" style="display:none" />
+              </div>
+            </div>
+          </div>
+          <div id="backup-status" class="footer-note"></div>
+        </section>
+
+        <section class="panel section">
+          <div class="section-head">
+            <div>
               <h3 class="section-title">Backend Routing</h3>
               <p class="section-copy">Requests stay on official Gemini API keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
             </div>
@@ -2804,14 +2821,7 @@ export function renderAppShell(input: {
         });
 
         const resetAt = quota.rpdResetAt ? formatTimestamp(quota.rpdResetAt) : 'the next Pacific midnight';
-        const monitor = quota.monitor || null;
-        let monitorNote = '';
-        if (monitor && monitor.enabled && monitor.configuredProjects > 0) {
-          monitorNote = monitor.lastRunAt && !monitor.lastError
-            ? ' Real usage synced from Cloud Monitoring at ' + formatTimestamp(monitor.lastRunAt) + '.'
-            : ' Cloud Monitoring sync configured' + (monitor.lastError ? ' (last error: ' + monitor.lastError + ')' : '') + '.';
-        }
-        publicRpdCopy.textContent = 'Cumulative daily request capacity from the same ledger used by routing. RPD resets at ' + resetAt + '.' + monitorNote;
+        publicRpdCopy.textContent = 'Cumulative daily request capacity from the same ledger used by routing. RPD resets at ' + resetAt + '.';
 
         const byModel = new Map();
         const perAccount = [];
@@ -3893,6 +3903,88 @@ export function renderAppShell(input: {
       }
 
       logoutButton.addEventListener('click', logoutAdminSession);
+
+      const backupExportButton = document.getElementById('backup-export-button');
+      const backupImportButton = document.getElementById('backup-import-button');
+      const backupImportFile = document.getElementById('backup-import-file');
+      const backupStatus = document.getElementById('backup-status');
+
+      function setBackupStatus(message) {
+        if (backupStatus) backupStatus.textContent = message;
+      }
+
+      if (backupExportButton) {
+        backupExportButton.addEventListener('click', async function() {
+          setBackupStatus('Building snapshot…');
+          try {
+            const response = await fetch('/v1/admin/backup/export', { credentials: 'include' });
+            if (!response.ok) throw new Error('Export failed (HTTP ' + response.status + '). Are you logged in as admin?');
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = 'gemrouter.cfg';
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            URL.revokeObjectURL(url);
+            setBackupStatus('Snapshot downloaded. It contains every secret: store it safely.');
+          } catch (error) {
+            setBackupStatus(error.message);
+          }
+        });
+      }
+
+      if (backupImportButton && backupImportFile) {
+        backupImportButton.addEventListener('click', function() {
+          backupImportFile.value = '';
+          backupImportFile.click();
+        });
+        backupImportFile.addEventListener('change', async function() {
+          const file = backupImportFile.files && backupImportFile.files[0];
+          if (!file) return;
+          let payload;
+          try {
+            payload = JSON.parse(await file.text());
+          } catch (error) {
+            setBackupStatus('Invalid backup file: not JSON.');
+            return;
+          }
+          if (!payload || payload.format !== 'gemrouter-backup') {
+            setBackupStatus('Invalid backup file: missing gemrouter-backup marker.');
+            return;
+          }
+          const stamp = payload.createdAt || 'unknown date';
+          if (!window.confirm('Import snapshot from ' + stamp + '?\n\nThis OVERWRITES the current .env and all data files, then restarts GemRouter. A safety copy of the current state is kept in backups/.')) {
+            setBackupStatus('Import cancelled.');
+            return;
+          }
+          setBackupStatus('Importing snapshot…');
+          try {
+            const result = await request('/v1/admin/backup/import', {
+              method: 'POST',
+              body: JSON.stringify(payload),
+            });
+            setBackupStatus('Restored ' + String(result.restoredFiles) + ' files (env: ' + String(result.envRestored) + '). Router is restarting — the page reloads automatically.');
+            // Wait for the service to come back, then reload with the imported state.
+            const startedAt = Date.now();
+            const poll = setInterval(async function() {
+              try {
+                const health = await fetch('/health', { cache: 'no-store' });
+                if (health.ok) {
+                  clearInterval(poll);
+                  window.location.reload();
+                }
+              } catch (error) {
+                // still restarting
+              }
+              if (Date.now() - startedAt > 120000) clearInterval(poll);
+            }, 3000);
+          } catch (error) {
+            setBackupStatus('Import failed: ' + error.message);
+          }
+        });
+      }
       menuLogoutButton.addEventListener('click', logoutAdminSession);
 
       async function saveCompatibilitySurface() {

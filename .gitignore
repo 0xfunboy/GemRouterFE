@@ -7,3 +7,5 @@ data/
 profiles/
 coverage/
 *.log
+backups/
+gemrouter.cfg
