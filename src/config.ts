@@ -590,6 +590,11 @@ export function loadConfig(
         pick(env, 'GEMROUTER_GEMINI_API_DISCOVERY_CACHE_PATH') ?? 'data/gemini-api-models-cache.json',
       ),
       discoveryRefreshMs: readNumber(env, 21_600_000, 'GEMROUTER_GEMINI_API_DISCOVERY_REFRESH_MS'),
+      accountModelsCachePath: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_GEMINI_API_ACCOUNT_MODELS_PATH') ?? 'data/gemini-api-account-models.json',
+      ),
+      accountModelsRefreshMs: readNumber(env, 21_600_000, 'GEMROUTER_GEMINI_API_ACCOUNT_MODELS_REFRESH_MS'),
       quotaCooldownMs: readNumber(env, 600_000, 'GEMROUTER_GEMINI_API_QUOTA_COOLDOWN_MS'),
       rpdWindowMs: readNumber(env, 86_400_000, 'GEMROUTER_GEMINI_API_RPD_WINDOW_MS'),
       rpmWindowMs: readNumber(env, 60_000, 'GEMROUTER_GEMINI_API_RPM_WINDOW_MS'),

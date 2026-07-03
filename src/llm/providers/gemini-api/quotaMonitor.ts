@@ -301,6 +301,10 @@ export function createGeminiQuotaMonitor(
         const labels = collectLabels(series);
         const value = pointValue(series);
         if (value === null) continue;
+        // Only day-scoped limits map onto the ledger's RPD; passing a per-minute
+        // limit here would catastrophically shrink the daily budget.
+        const limitName = labels.limit_name ?? '';
+        if (!/day/i.test(limitName)) continue;
         const key = `${labels.quota_metric ?? ''}|${normalizeModelLabel(labels) ?? ''}`;
         limitByKey.set(key, Math.max(limitByKey.get(key) ?? 0, value));
       }

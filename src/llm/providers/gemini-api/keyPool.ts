@@ -18,8 +18,14 @@ export interface GeminiApiLocalBackpressure {
   quotaGroup: string;
 }
 
-function allowsModel(key: GeminiApiKeyConfig, model: string): boolean {
-  return !key.models || key.models.length === 0 || key.models.includes(model);
+/** A live catalog can veto models an account no longer serves upstream. */
+export interface AccountModelGate {
+  allows(accountId: string, model: string): boolean;
+}
+
+function allowsModel(key: GeminiApiKeyConfig, model: string, gate?: AccountModelGate): boolean {
+  const curated = !key.models || key.models.length === 0 || key.models.includes(model);
+  return curated && (gate?.allows(key.id, model) ?? true);
 }
 
 function capacityScore(input: {
@@ -74,6 +80,7 @@ export class GeminiApiKeyPool {
   constructor(
     private readonly config: GeminiApiProviderConfig,
     private readonly ledger: GeminiApiQuotaLedger,
+    private readonly accountModelGate?: AccountModelGate,
   ) {}
 
   nextLocalBackpressure(
@@ -86,7 +93,7 @@ export class GeminiApiKeyPool {
     const excludedKeyIds = new Set((options?.excludeKeyIds ?? []).map((value) => value.trim()).filter(Boolean));
     const waits = this.config.keys
       .filter((key) => key.enabled)
-      .filter((key) => allowsModel(key, model))
+      .filter((key) => allowsModel(key, model, this.accountModelGate))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => ({ key, availability: this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens) }))
       .filter((entry) => (entry.availability.reason === 'rpm' || entry.availability.reason === 'tpm' || entry.availability.reason === 'cooldown') && typeof entry.availability.waitMs === 'number')
@@ -130,7 +137,7 @@ export class GeminiApiKeyPool {
     const keyOrder = new Map(this.config.keys.map((key, index) => [key.id, index]));
     const candidates = this.config.keys
       .filter((key) => key.enabled)
-      .filter((key) => allowsModel(key, model))
+      .filter((key) => allowsModel(key, model, this.accountModelGate))
       .filter((key) => !excludedKeyIds.has(key.id))
       .map((key) => {
         const availability = this.ledger.getAvailability(key.quotaGroup, model, estimatedTokens);
@@ -177,7 +184,7 @@ export class GeminiApiKeyPool {
       });
 
     if (candidates.length === 0) {
-      const anyForModel = this.config.keys.some((key) => key.enabled && allowsModel(key, model));
+      const anyForModel = this.config.keys.some((key) => key.enabled && allowsModel(key, model, this.accountModelGate));
       throw new GeminiApiProviderError(
         anyForModel ? 'gemini_api_quota_unavailable' : 'gemini_api_no_key_for_model',
         anyForModel

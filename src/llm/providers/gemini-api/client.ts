@@ -7,6 +7,7 @@ import {
   isGeminiTtsModelId,
 } from '../../../lib/models.js';
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
+import { GeminiAccountModelCatalog } from './accountCatalog.js';
 import { GeminiApiProviderError } from './errors.js';
 import { GeminiApiKeyPool, type GeminiApiKeyReservation, type GeminiApiLocalBackpressure } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
@@ -664,8 +665,22 @@ function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Ar
 
 export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClient {
   const ledger = new GeminiApiQuotaLedger(config);
-  let keyPool = new GeminiApiKeyPool(config, ledger);
+  const accountCatalog = new GeminiAccountModelCatalog(config);
+  let keyPool = new GeminiApiKeyPool(config, ledger, accountCatalog);
   const discovery = new GeminiApiModelDiscovery(config);
+
+  // Google adds/removes free-tier models over time: keep every account's live
+  // catalog fresh so curated allowlists act as caps, not stale truth.
+  if (config.enabled && config.accountModelsRefreshMs > 0) {
+    const accountCatalogTimer = setInterval(() => {
+      void accountCatalog.refresh();
+    }, config.accountModelsRefreshMs);
+    accountCatalogTimer.unref?.();
+    if (accountCatalog.isStale(config.accountModelsRefreshMs)) {
+      const boot = setTimeout(() => { void accountCatalog.refresh(); }, 30_000);
+      boot.unref?.();
+    }
+  }
   let lastSelectedKeyId: string | null = null;
   let lastSelectedQuotaGroup: string | null = null;
   let lastResolvedModel: string | null = null;
@@ -1330,6 +1345,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           lastRefreshAt: discoverySnapshot.updatedAt || null,
           lastError: discoverySnapshot.lastError,
         },
+        accountModels: accountCatalog.snapshot(),
         models: discoverySnapshot.models,
         lastSelectedKeyId,
         lastSelectedQuotaGroup,
@@ -1353,6 +1369,11 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         models,
         modelDiscovery: discovery.snapshot(),
       };
+    },
+
+    // Refresh every account's live model catalog now (normally on a 6h timer).
+    async refreshAccountModels(): Promise<Record<string, unknown>> {
+      return accountCatalog.refresh();
     },
 
     async listModels(): Promise<Record<string, unknown>> {
@@ -1414,7 +1435,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     // process restart. The ledger is keyed by quotaGroup+keyId so usage history survives.
     reloadAccounts(keys: GeminiApiKeyConfig[]): Record<string, unknown> {
       config.keys = keys;
-      keyPool = new GeminiApiKeyPool(config, ledger);
+      keyPool = new GeminiApiKeyPool(config, ledger, accountCatalog);
+      void accountCatalog.refresh();
       return { ok: true, configuredKeyCount: keys.length, usableKeyCount: keys.filter((key) => key.enabled).length };
     },
 
@@ -1457,6 +1479,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
   } as LLMClient & {
     health: () => Record<string, unknown>;
     discoverModels: () => Promise<Record<string, unknown>>;
+    refreshAccountModels: () => Promise<Record<string, unknown>>;
     listModels: () => Promise<Record<string, unknown>>;
     clearCooldown: () => Record<string, unknown>;
     reconcileDailyUsage: (observations: Array<{
