@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=160&section=header&text=GemRouterFE&fontSize=50&fontColor=fff&animation=fadeIn&fontAlignY=38&desc=GemRouter%20is%20an%20OpenAI-compatible%20backend%20router%20for%20Gemini%20API%2C%20designed%20t...&descAlignY=60&descSize=14" width="100%"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=160&section=header&text=GemRouterFE&fontSize=50&fontColor=fff&animation=fadeIn&fontAlignY=38&desc=GemRouter%20is%20an%20OpenAI-compatible%20backend%20router%20for%20Gemini%20API%2C%20designed...&descAlignY=60&descSize=14" width="100%"/>
 
 <img src="https://skillicons.dev/icons?i=ts,bash,nodejs&theme=dark" alt="Tech stack"/>
 
