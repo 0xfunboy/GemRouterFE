@@ -114,6 +114,14 @@ const HIGH_DEMAND_COOLDOWN_MS = 30_000;
  * explicit day-scope upstream errors park a model until the Pacific reset.
  */
 const RATE_LIMIT_STRIKE_LADDER = [60_000, 300_000, 600_000, 900_000];
+/**
+ * A day-scope 429 is only trusted as a real daily exhaustion when our own RPD counter
+ * confirms we are near the limit. Below this fraction the day-429 is treated as suspect
+ * (shared/lower real quota, or a Google transient) and parked for a bounded window so the
+ * account+model recovers instead of being lost for the whole Pacific day.
+ */
+const DAY_SCOPE_TRUST_FRACTION = 0.5;
+const DAY_SCOPE_SOFT_COOLDOWN_MS = 30 * 60_000;
 
 function pacificDateParts(epochMs: number): { year: number; month: number; day: number } {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -293,17 +301,25 @@ export class GeminiApiQuotaLedger {
   }
 
   private reconcileDailyDepletion(model: GeminiApiModelQuotaLedger, now: number): void {
+    // Any expired cooldown (short 429-backoff, high-demand, soft daily, or the full
+    // Pacific-reset park) clears here — so a model is never parked past its window.
     if (model.cooldownUntil && Date.parse(model.cooldownUntil) <= now) {
       delete model.cooldownUntil;
       delete model.cooldownSource;
       model.dailyDepleted = false;
+      return;
     }
-    if (model.cooldownSource !== 'daily-depleted') return;
-    const rpd = metric(model.rpd);
-    if (rpd.remaining !== null && rpd.remaining > 0) {
-      delete model.cooldownUntil;
-      delete model.cooldownSource;
-      model.dailyDepleted = false;
+    // Migration/self-heal: a model parked to the Pacific reset as daily-depleted while
+    // its own RPD counter shows plenty remaining is a stale false positive (older bug
+    // where the recovery check never matched the 'pacific-reset' source). Release it.
+    if (model.dailyDepleted && model.cooldownSource === 'pacific-reset') {
+      const rpd = metric(model.rpd);
+      const rpdLimit = model.rpd.limit;
+      if (rpd.remaining !== null && rpdLimit !== null && rpd.remaining >= rpdLimit * (1 - DAY_SCOPE_TRUST_FRACTION)) {
+        delete model.cooldownUntil;
+        delete model.cooldownSource;
+        model.dailyDepleted = false;
+      }
     }
   }
 
@@ -452,9 +468,22 @@ export class GeminiApiQuotaLedger {
         ledger.cooldownUntil = new Date(now + Math.max(input.retryAfterMs, 60_000)).toISOString();
         ledger.cooldownSource = 'retry-after';
       } else if (input.rateLimitScope === 'day') {
-        // Explicit per-day quota exhaustion: park until the Pacific reset.
-        ledger.cooldownUntil = new Date(nextPacificDayStartMs(now)).toISOString();
-        ledger.cooldownSource = 'pacific-reset';
+        // Explicit per-day quota exhaustion — but only trust it as a full-day park when
+        // our local RPD counter agrees we are near the limit. Google sometimes reports
+        // day-scope for preview models that share/lower a quota, or under transient load;
+        // parking those until the Pacific reset silently removes a healthy account for
+        // the whole day (the flash-lite "everything depleted at rpd=0" failure).
+        const rpdUsed = sumEvents(ledger.rpd.events);
+        const rpdLimit = ledger.rpd.limit;
+        const nearLimit = rpdLimit !== null && rpdUsed >= rpdLimit * DAY_SCOPE_TRUST_FRACTION;
+        if (nearLimit || rpdLimit === null) {
+          ledger.cooldownUntil = new Date(nextPacificDayStartMs(now)).toISOString();
+          ledger.cooldownSource = 'pacific-reset';
+        } else {
+          // Suspect day-429 with low local usage: bounded backoff, recovers on expiry.
+          ledger.cooldownUntil = new Date(now + DAY_SCOPE_SOFT_COOLDOWN_MS).toISOString();
+          ledger.cooldownSource = 'daily-depleted';
+        }
         ledger.dailyDepleted = true;
       } else {
         // Generic 429 with no scope hint: treat as RPM/short-window pressure. Do not

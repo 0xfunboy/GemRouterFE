@@ -55,6 +55,8 @@ export interface RuntimeConfig {
   ollamaLocal: OllamaLocalConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
+    /** Hard ceiling for the whole request across all backends/fallbacks. */
+    requestDeadlineMs: number;
   };
   modelIds: string[];
   freeTierPolicy: {
@@ -655,6 +657,7 @@ export function loadConfig(
     },
     llmRouting: {
       backendOrder: effectiveBackendOrder,
+      requestDeadlineMs: readNumber(env, 75_000, 'GEMROUTER_REQUEST_DEADLINE_MS'),
     },
     modelIds,
     freeTierPolicy: {
