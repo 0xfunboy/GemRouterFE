@@ -109,7 +109,10 @@ const GEMMA_HEDGED_SECOND_WAVE_MODELS = [
   'gemini-3.1-flash-lite',
 ] as const;
 const GEMMA_HEDGED_SECOND_WAVE_DELAY_MS = 8_000;
-const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 65_000;
+// Cap how long a single model waits for local RPM/cooldown pressure before giving up on
+// that model and moving to the next fallback. Kept short so the fallback chain flows
+// instead of stalling on a busy account; the global request deadline is the hard ceiling.
+const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 20_000;
 
 class HedgedRequestCancelled extends Error {
   constructor() {
@@ -630,6 +633,21 @@ function effectiveRequestTimeoutMs(timeoutMs: number): number {
   return Math.max(1_000, Math.min(timeoutMs, 90_000));
 }
 
+// A single attempt never outlives the whole-request deadline: clamp its fetch timeout to
+// the time left in the budget so a slow model can't consume the entire request.
+function deadlineClampedTimeoutMs(timeoutMs: number, opts?: LLMOptions): number {
+  const base = effectiveRequestTimeoutMs(timeoutMs);
+  if (typeof opts?.deadline === 'number') return Math.max(1_000, Math.min(base, opts.deadline - Date.now()));
+  return base;
+}
+
+// Combine the per-attempt timeout with the router's global abort signal, so either the
+// attempt timeout or the request deadline cancels the in-flight fetch.
+function attemptFetchSignal(timeoutMs: number, opts?: LLMOptions): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return opts?.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+}
+
 function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   const byId = new Map(ledgerGroups.map((group) => [String(group.id), group]));
   const modelIds = Object.keys(config.limits);
@@ -705,15 +723,19 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     const timeoutController = new AbortController();
     const timeout = setTimeout(() => {
       timeoutController.abort(new Error('gemrouter_attempt_timeout'));
-    }, effectiveRequestTimeoutMs(config.timeoutMs));
+    }, deadlineClampedTimeoutMs(config.timeoutMs, opts));
     const abortFromExternal = (): void => {
       timeoutController.abort(new HedgedRequestCancelled());
     };
-    if (externalSignal?.aborted) {
+    const abortFromDeadline = (): void => {
+      timeoutController.abort(new HedgedRequestCancelled());
+    };
+    if (externalSignal?.aborted || opts?.signal?.aborted) {
       clearTimeout(timeout);
       throw new HedgedRequestCancelled();
     }
     externalSignal?.addEventListener('abort', abortFromExternal, { once: true });
+    opts?.signal?.addEventListener('abort', abortFromDeadline, { once: true });
     try {
       const response = await fetch(withKey(endpoint, reservation.key.key), {
         method: 'POST',
@@ -724,13 +746,14 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       const payload = await response.json().catch(() => ({}));
       return { response, payload };
     } catch (error) {
-      if (externalSignal?.aborted || error instanceof HedgedRequestCancelled) {
+      if (externalSignal?.aborted || opts?.signal?.aborted || error instanceof HedgedRequestCancelled) {
         throw new HedgedRequestCancelled();
       }
       throw error;
     } finally {
       clearTimeout(timeout);
       externalSignal?.removeEventListener('abort', abortFromExternal);
+      opts?.signal?.removeEventListener('abort', abortFromDeadline);
     }
   }
 
@@ -1069,6 +1092,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         try {
           reservation = await reserveWithLocalBackpressure(model, estimatedTokens, {
             excludeKeyIds: [...excludedKeyIds],
+            signal: opts?.signal,
           });
         } catch (error) {
           if (error instanceof GeminiApiProviderError) {
@@ -1101,7 +1125,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(toGenerationBody(messages, effectiveOptions)),
-            signal: AbortSignal.timeout(effectiveRequestTimeoutMs(config.timeoutMs)),
+            signal: attemptFetchSignal(deadlineClampedTimeoutMs(config.timeoutMs, opts), opts),
           });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok) {

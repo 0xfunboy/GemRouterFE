@@ -46,6 +46,10 @@ export interface LLMOptions {
     imageSize?: string;
     responseModalities?: Array<'TEXT' | 'IMAGE'>;
   };
+  /** Aborts in-flight work when the global request deadline is hit. */
+  signal?: AbortSignal;
+  /** Absolute epoch-ms deadline for the whole request; backends clamp their timeouts to it. */
+  deadline?: number;
 }
 
 export interface LLMResponse {

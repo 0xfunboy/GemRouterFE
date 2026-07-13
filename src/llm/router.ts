@@ -16,6 +16,8 @@ export interface LLMRouterConfig {
    * as a 429 instead of an nvidia_model_not_found.
    */
   nvidiaServableModelIds?: string[];
+  /** Hard ceiling for the whole request across all backends/fallbacks (ms). */
+  requestDeadlineMs?: number;
 }
 
 interface RouterState {
@@ -128,14 +130,50 @@ export function createLlmRouter(
     return backends.geminiApi;
   }
 
-  async function dispatchChat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
-    const sequence = resolveBackendSequence(config, opts);
+  // Arm a single hard deadline for the whole request. Every backend attempt shares the
+  // same absolute `deadline` and abort `signal`, so the total time a caller waits is
+  // bounded no matter how many fallbacks/timeouts stack underneath (a single stuck
+  // upstream can no longer run the request for minutes).
+  function withRequestDeadline(opts?: LLMOptions): {
+    opts: LLMOptions;
+    isExpired: () => boolean;
+    remainingMs: () => number;
+    dispose: () => void;
+  } {
+    const deadlineMs = config.requestDeadlineMs ?? 75_000;
+    const deadline = opts?.deadline ?? Date.now() + deadlineMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('gemrouter_request_deadline')), Math.max(0, deadline - Date.now()));
+    timer.unref?.();
+    if (opts?.signal) {
+      if (opts.signal.aborted) controller.abort(opts.signal.reason);
+      else opts.signal.addEventListener('abort', () => controller.abort(opts.signal?.reason), { once: true });
+    }
+    return {
+      opts: { ...opts, deadline, signal: controller.signal },
+      isExpired: () => Date.now() >= deadline,
+      remainingMs: () => Math.max(0, deadline - Date.now()),
+      dispose: () => clearTimeout(timer),
+    };
+  }
+
+  async function dispatchChat(messages: LLMMessage[], rawOpts?: LLMOptions): Promise<LLMResponse> {
+    const sequence = resolveBackendSequence(config, rawOpts);
+    const deadline = withRequestDeadline(rawOpts);
+    const opts = deadline.opts;
     let lastError: LLMProviderError | null = null;
 
+    try {
     for (let index = 0; index < sequence.length; index++) {
       const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
+        if (deadline.isExpired()) {
+          throw new LLMProviderError('backend_unavailable', backend, `Request deadline reached before ${backend} could respond.`, {
+            statusCode: 504,
+            fallbackEligible: false,
+          });
+        }
         const client = getBackendClient(backend);
         if (!client) {
           throw new LLMProviderError('backend_disabled', backend, `Backend ${backend} is not configured.`, {
@@ -187,6 +225,9 @@ export function createLlmRouter(
     state.lastResolutionAt = new Date().toISOString();
     state.lastError = error.message;
     throw error;
+    } finally {
+      deadline.dispose();
+    }
   }
 
   return {
@@ -197,14 +238,23 @@ export function createLlmRouter(
       return await dispatchChat(messages, opts);
     },
 
-    async *streamChat(messages: LLMMessage[], opts?: LLMOptions): AsyncGenerator<LLMStreamChunk, LLMResponse, void> {
-      const sequence = resolveBackendSequence(config, opts);
+    async *streamChat(messages: LLMMessage[], rawOpts?: LLMOptions): AsyncGenerator<LLMStreamChunk, LLMResponse, void> {
+      const sequence = resolveBackendSequence(config, rawOpts);
+      const deadline = withRequestDeadline(rawOpts);
+      const opts = deadline.opts;
       let lastError: LLMProviderError | null = null;
 
+      try {
       for (let index = 0; index < sequence.length; index++) {
         const backend = sequence[index];
         const remaining = sequence.slice(index + 1);
         try {
+          if (deadline.isExpired()) {
+            throw new LLMProviderError('backend_unavailable', backend, `Request deadline reached before ${backend} could respond.`, {
+              statusCode: 504,
+              fallbackEligible: false,
+            });
+          }
           const client = getBackendClient(backend);
           if (!client) {
             throw new LLMProviderError('backend_disabled', backend, `Backend ${backend} is not configured.`, {
@@ -275,6 +325,9 @@ export function createLlmRouter(
       state.lastResolutionAt = new Date().toISOString();
       state.lastError = error.message;
       throw error;
+      } finally {
+        deadline.dispose();
+      }
     },
 
     getDiagnostics(): Record<string, unknown> {

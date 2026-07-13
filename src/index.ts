@@ -1,6 +1,6 @@
 import 'dotenv/config';
 
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -1075,6 +1075,33 @@ function buildProviderModelState(
   });
 }
 
+// NVIDIA catalog entries for the app model picker: the tier aliases (nvidia-auto / …)
+// plus each enabled vendor-prefixed model. All are chat-capable so the admin can grant
+// them to an app exactly like Gemini models.
+function buildNvidiaCatalogEntries(): Array<Record<string, unknown>> {
+  if (!config.nvidia.enabled) return [];
+  const enabled = config.nvidia.models.filter((model) => model.enabled);
+  const tiers = [...new Set(enabled.map((model) => model.tier))];
+  const chatCaps = { chat: true, imageGeneration: false, live: false, nativeAudio: false, tts: false, embeddings: false };
+  const aliasEntries = ['nvidia-auto', ...tiers.map((tier) => `nvidia-${tier}`)].map((id) => ({
+    id,
+    displayName: id,
+    label: id,
+    provider: 'nvidia',
+    supportedGenerationMethods: ['generateContent'],
+    capabilities: chatCaps,
+  }));
+  const modelEntries = enabled.map((model) => ({
+    id: model.id,
+    displayName: model.id,
+    label: `${model.id} [${model.tier}]`,
+    provider: 'nvidia',
+    supportedGenerationMethods: ['generateContent'],
+    capabilities: chatCaps,
+  }));
+  return [...aliasEntries, ...modelEntries];
+}
+
 function buildAdminModelCatalog(
   geminiApi: Record<string, unknown>,
 ): Array<Record<string, unknown>> {
@@ -1105,6 +1132,13 @@ function buildAdminModelCatalog(
     supportedGenerationMethods: ['generateContent'],
     capabilities: inferModelCapabilities(modelId, ['generateContent']),
   }));
+}
+
+// The app model picker should offer every routable model, not just Gemini. Appended
+// only to the admin catalog (not the public surface lists, which handle NVIDIA
+// separately) so the operator can grant NVIDIA models/aliases to an app.
+function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<Record<string, unknown>> {
+  return [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries()];
 }
 
 function modelSupportsSurface(
@@ -2866,7 +2900,7 @@ app.get('/admin/summary', async (request, reply) => {
     backends: backendSnapshot,
     llm: llmSnapshot,
     models: buildCompatibleSurfaceModelIds(geminiApiSnapshot, 'chat-or-image'),
-    modelCatalog: buildAdminModelCatalog(geminiApiSnapshot),
+    modelCatalog: buildAppPickerModelCatalog(geminiApiSnapshot),
     freeTierPolicy: {
       ...freeTierPolicyState,
       configured: config.freeTierPolicy,
@@ -3706,9 +3740,16 @@ app.post<{
 }>('/admin/apps', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const body = request.body ?? {};
-  // Optional caller-supplied key (e.g. a custom prefix like goon_...). Reject collisions.
+  // Custom API key field, two modes:
+  //  - a full key (e.g. "myapp_ab12…")  → stored verbatim
+  //  - a bare prefix ending in "_" (e.g. "esempio_") → a fresh random suffix is appended,
+  //    so the operator brands the key without having to invent the random part.
   const requestedKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
-  if (requestedKey && appStore.verify(requestedKey)) {
+  let rawKey = requestedKey;
+  if (requestedKey.endsWith('_')) {
+    rawKey = `${requestedKey}${randomBytes(24).toString('base64url')}`;
+  }
+  if (rawKey && appStore.verify(rawKey)) {
     return sendError(reply, 409, { message: 'API key already in use', type: 'invalid_request_error', code: 'duplicate_api_key' });
   }
   const created = appStore.create({
@@ -3719,7 +3760,7 @@ app.post<{
     rateLimitPerMinute:
       typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
     maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : config.bootstrapApp.maxConcurrency,
-    ...(requestedKey ? { rawKey: requestedKey } : {}),
+    ...(rawKey ? { rawKey } : {}),
   });
   audit.write({
     type: 'admin.app.created',

@@ -1812,8 +1812,8 @@ export function renderAppShell(input: {
                   <input type="text" name="sessionNamespace" placeholder="client-app" />
                 </label>
                 <label>
-                  <span class="field-inline">Custom API key <span class="field-help" title="Optional. Leave empty to auto-generate. Use to set a custom prefix, e.g. goon_...">?</span></span>
-                  <input type="text" name="apiKey" placeholder="(optional) e.g. goon_..." autocomplete="off" />
+                  <span class="field-inline">Custom API key <span class="field-help" title="Optional. Empty = auto-generate. Ending in '_' (e.g. esempio_) = brand prefix, a random suffix is appended. A full value is stored verbatim.">?</span></span>
+                  <input type="text" name="apiKey" placeholder="(optional) esempio_ = prefix · or a full key" autocomplete="off" />
                 </label>
                 <label>
                   <span class="field-inline">Rate limit per minute <span class="field-help" title="Zero for no limits">?</span></span>

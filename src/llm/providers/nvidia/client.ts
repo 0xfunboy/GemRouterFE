@@ -218,21 +218,28 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
     if (signal.aborted) controller.abort(new AttemptAborted());
     signal.addEventListener('abort', onOuterAbort, { once: true });
 
+    // Never let one attempt outlive the whole-request deadline: clamp its ceiling to
+    // whatever time is left so a stalled model can't eat the entire budget.
+    const remainingDeadlineMs = typeof opts?.deadline === 'number'
+      ? Math.max(1_000, opts.deadline - Date.now())
+      : config.timeoutMs;
+    const attemptTimeoutMs = Math.min(config.timeoutMs, remainingDeadlineMs);
+    const firstTokenMs = Math.min(config.firstTokenTimeoutMs, remainingDeadlineMs);
     const overallTimer = setTimeout(
-      () => controller.abort(new NvidiaProviderError('nvidia_timeout', `NVIDIA request to ${model} exceeded ${config.timeoutMs}ms.`, {
+      () => controller.abort(new NvidiaProviderError('nvidia_timeout', `NVIDIA request to ${model} exceeded ${attemptTimeoutMs}ms.`, {
         statusCode: 504,
         fallbackEligible: true,
         upstreamModel: model,
       })),
-      config.timeoutMs,
+      attemptTimeoutMs,
     );
     let firstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(
-      () => controller.abort(new NvidiaProviderError('nvidia_timeout', `NVIDIA model ${model} produced no token within ${config.firstTokenTimeoutMs}ms.`, {
+      () => controller.abort(new NvidiaProviderError('nvidia_timeout', `NVIDIA model ${model} produced no token within ${firstTokenMs}ms.`, {
         statusCode: 504,
         fallbackEligible: true,
         upstreamModel: model,
       })),
-      config.firstTokenTimeoutMs,
+      firstTokenMs,
     );
     const clearFirstTokenTimer = () => {
       if (firstTokenTimer) {
@@ -555,6 +562,18 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
             scheduleHedge();
           });
       };
+
+      // The router's global deadline (or an upstream cancel) aborts the whole race at
+      // once — no candidate keeps running past the request the caller already gave up on.
+      if (opts?.signal) {
+        if (opts.signal.aborted) {
+          finish(() => reject(new NvidiaProviderError('nvidia_timeout', 'NVIDIA request aborted by deadline.', { statusCode: 504, fallbackEligible: false })));
+        } else {
+          opts.signal.addEventListener('abort', () => {
+            finish(() => reject(new NvidiaProviderError('nvidia_timeout', 'NVIDIA request aborted by deadline.', { statusCode: 504, fallbackEligible: false, fallbackAttempts: attempts })));
+          }, { once: true });
+        }
+      }
 
       launchNext();
       scheduleHedge();
