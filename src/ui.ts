@@ -864,6 +864,29 @@ export function renderAppShell(input: {
       .public-rpd-table th:nth-child(3), .public-rpd-table td:nth-child(3) { width: 22%; }
       .public-rpd-table th:nth-child(4), .public-rpd-table td:nth-child(4) { width: 16%; }
       .public-rpd-table th:nth-child(5), .public-rpd-table td:nth-child(5) { width: 14%; }
+      /* NVIDIA models: 7 columns, compact single-line rows that never grow in height. */
+      .nvidia-models-table {
+        min-width: 0;
+        table-layout: fixed;
+      }
+      .nvidia-models-table th, .nvidia-models-table td {
+        padding: 4px 10px;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .nvidia-models-table th:nth-child(1), .nvidia-models-table td:nth-child(1) { width: 27%; }
+      .nvidia-models-table th:nth-child(2), .nvidia-models-table td:nth-child(2) { width: 11%; }
+      .nvidia-models-table th:nth-child(3), .nvidia-models-table td:nth-child(3) { width: 11%; }
+      .nvidia-models-table th:nth-child(4), .nvidia-models-table td:nth-child(4) { width: 13%; }
+      .nvidia-models-table th:nth-child(5), .nvidia-models-table td:nth-child(5) { width: 13%; }
+      .nvidia-models-table th:nth-child(6), .nvidia-models-table td:nth-child(6) { width: 13%; }
+      .nvidia-models-table th:nth-child(7), .nvidia-models-table td:nth-child(7) { width: 12%; }
+      .nvidia-models-table .chip {
+        padding: 1px 7px;
+        white-space: nowrap;
+      }
       .quota-meter {
         width: 76px;
         height: 7px;
@@ -1446,7 +1469,7 @@ export function renderAppShell(input: {
           <div id="nvidia-meta" class="meta-row"></div>
         </div>
         <div class="table-wrap">
-          <table class="table responsive-table quota-table public-rpd-table">
+          <table class="table responsive-table nvidia-models-table">
             <thead>
               <tr>
                 <th>Model</th>
