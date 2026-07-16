@@ -1441,7 +1441,7 @@ export function renderAppShell(input: {
         <div class="section-head">
           <div>
             <h3 class="section-title">${svgIcon('api')} NVIDIA NIM Models</h3>
-            <p class="section-copy">Free NVIDIA surface with per-hour scoring: the router races the best-ranked candidates and learns which model to prefer at each hour of the day.</p>
+            <p class="section-copy">Free NVIDIA surface with per-hour scoring. Score = success rate / first-token latency, so faster and more reliable models rank higher and win the race; models that stall or time out are cooled down. "Avg resp" is the mean full response time (wall clock).</p>
           </div>
           <div id="nvidia-meta" class="meta-row"></div>
         </div>
@@ -1453,6 +1453,7 @@ export function renderAppShell(input: {
                 <th>Tier</th>
                 <th>Score now</th>
                 <th>TTFB (hour)</th>
+                <th>Avg resp</th>
                 <th>Success</th>
                 <th>Status</th>
               </tr>
@@ -2933,6 +2934,11 @@ export function renderAppShell(input: {
             : (overall && overall.avgTtfbMs !== null && overall.avgTtfbMs !== undefined ? overall.avgTtfbMs : null);
           const ttfbLabel = ttfb === null ? '—' : (ttfb >= 1000 ? (Math.round(ttfb / 100) / 10) + 's' : ttfb + 'ms');
           const ttfbSource = hour && hour.avgTtfbMs !== null && hour.avgTtfbMs !== undefined ? '' : (ttfb === null ? '' : ' (all)');
+          // Average full response time (total latency): prefer the stable overall history,
+          // fall back to the current hour. This is what the model actually costs in wall time.
+          const respMs = overall && overall.avgLatencyMs !== null && overall.avgLatencyMs !== undefined ? overall.avgLatencyMs
+            : (hour && hour.avgLatencyMs !== null && hour.avgLatencyMs !== undefined ? hour.avgLatencyMs : null);
+          const respLabel = respMs === null ? '—' : (respMs >= 1000 ? (Math.round(respMs / 100) / 10) + 's' : Math.round(respMs) + 'ms');
           const successRate = hour && typeof hour.successRate === 'number' ? hour.successRate
             : (overall && typeof overall.successRate === 'number' ? overall.successRate : null);
           const samples = (hour && hour.samples) || (overall && overall.samples) || 0;
@@ -2954,6 +2960,7 @@ export function renderAppShell(input: {
             '<td data-label="Tier"><span class="chip">' + escapeHtml(String(model.tier || '')) + '</span></td>' +
             '<td data-label="Score now">' + escapeHtml(String(typeof model.score === 'number' ? Math.round(model.score) : '—')) + '</td>' +
             '<td data-label="TTFB (hour)">' + escapeHtml(ttfbLabel + ttfbSource) + '</td>' +
+            '<td data-label="Avg resp">' + escapeHtml(respLabel) + '</td>' +
             '<td data-label="Success">' + escapeHtml(successLabel) + '</td>' +
             '<td data-label="Status">' + statusChip + '</td>' +
           '</tr>';
