@@ -123,15 +123,24 @@ class HedgedRequestCancelled extends Error {
 
 function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
-  // Gemma 4 and Gemini 3.5 reject any thinkingConfig, including an otherwise harmless
-  // `includeThoughts: false`. Omit the field entirely for those models.
-  if (!model.startsWith('gemini-') || /^gemma-/i.test(model) || /^gemini-3\.5-flash/i.test(model)) {
+  // Gemma 4 rejects any thinkingConfig, including an otherwise harmless `includeThoughts: false`.
+  // Omit the field entirely for those models.
+  if (!model.startsWith('gemini-') || /^gemma-/i.test(model)) {
     return null;
   }
   const includeThoughts = opts?.thinking?.includeThoughts === true;
-  // gemini-3.5-flash rejects thinkingLevel ("Thinking level is not supported for this model"),
-  // so only the gemini-3 reasoning variants (pro / flash-preview / 3.1) get a thinkingLevel.
-  if (/^gemini-3/i.test(model) && !/^gemini-3\.5-flash/i.test(model)) {
+  // gemini-3.5-flash is a thinking model: with no thinkingConfig it burns the whole output
+  // budget on default (dynamic) reasoning and truncates the visible answer (finishReason=length,
+  // ~all tokens counted as thoughtsTokenCount). It rejects `thinkingLevel` but DOES accept
+  // `thinkingBudget: 0`, which disables thinking so the full answer fits.
+  if (/^gemini-3\.5-flash/i.test(model)) {
+    return {
+      includeThoughts,
+      thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
+    };
+  }
+  // Other gemini-3.x reasoning variants (pro / flash-preview / 3.1) take a thinkingLevel.
+  if (/^gemini-3/i.test(model)) {
     return {
       includeThoughts,
       thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
