@@ -859,6 +859,14 @@ export function renderAppShell(input: {
         min-width: 0;
         table-layout: fixed;
       }
+      /* Thin, single-line rows for the quota tables (cumulative + per-account). */
+      .public-rpd-table th, .public-rpd-table td {
+        padding: 4px 12px;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .public-rpd-table th:nth-child(1), .public-rpd-table td:nth-child(1) { width: 34%; }
       .public-rpd-table th:nth-child(2), .public-rpd-table td:nth-child(2) { width: 14%; }
       .public-rpd-table th:nth-child(3), .public-rpd-table td:nth-child(3) { width: 22%; }
