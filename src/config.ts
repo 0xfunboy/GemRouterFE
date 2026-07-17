@@ -17,6 +17,7 @@ import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } 
 import type { NvidiaModelConfig, NvidiaProviderConfig } from './llm/providers/nvidia/types.js';
 import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
 import type { OllamaLocalConfig } from './llm/providers/ollama-local/client.js';
+import type { AgnesConfig } from './llm/providers/agnes/client.js';
 
 export interface BootstrapAppConfig {
   name: string;
@@ -53,6 +54,7 @@ export interface RuntimeConfig {
   nvidia: NvidiaProviderConfig;
   ollama: OllamaRouterConfig;
   ollamaLocal: OllamaLocalConfig;
+  agnes: AgnesConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
     /** Hard ceiling for the whole request across all backends/fallbacks. */
@@ -447,7 +449,13 @@ export function loadConfig(
     ]
     : [];
 
-  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels, ...nvidiaModelIds])];
+  const agnesApiKey = pick(env, 'GEMROUTER_AGNES_API_KEY', 'AGNES_API_KEY') ?? '';
+  const agnesEnabled = readBoolean(env, agnesApiKey.length > 0, 'GEMROUTER_AGNES_ENABLED') && agnesApiKey.length > 0;
+  const agnesImageModels = readList(env, ['agnes-image-2.1-flash', 'agnes-image-2.0-flash'], 'GEMROUTER_AGNES_IMAGE_MODELS').map((m) => m.toLowerCase());
+  const agnesVideoModels = readList(env, ['agnes-video-v2.0'], 'GEMROUTER_AGNES_VIDEO_MODELS').map((m) => m.toLowerCase());
+  const agnesModelIds = agnesEnabled ? [...agnesImageModels, ...agnesVideoModels] : [];
+
+  const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels, ...nvidiaModelIds, ...agnesModelIds])];
   const modelIds = buildPublicModelIds(directModels);
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
@@ -654,6 +662,17 @@ export function loadConfig(
       visionRpd: readNumber(env, 0, 'GEMROUTER_OLLAMA_LOCAL_VISION_RPD') || null,
       timeoutMs: readNumber(env, 120_000, 'GEMROUTER_OLLAMA_LOCAL_TIMEOUT_MS'),
       usageStorePath: path.resolve(rootDir, pick(env, 'GEMROUTER_OLLAMA_LOCAL_USAGE_PATH') ?? 'data/ollama-local-usage.json'),
+    },
+    agnes: {
+      enabled: agnesEnabled,
+      apiKey: agnesApiKey,
+      baseUrl: pick(env, 'GEMROUTER_AGNES_BASE_URL') ?? 'https://apihub.agnes-ai.com/v1',
+      imageModels: agnesImageModels,
+      videoModels: agnesVideoModels,
+      imageTimeoutMs: readNumber(env, 90_000, 'GEMROUTER_AGNES_IMAGE_TIMEOUT_MS'),
+      videoTimeoutMs: readNumber(env, 300_000, 'GEMROUTER_AGNES_VIDEO_TIMEOUT_MS'),
+      videoPollMs: readNumber(env, 12_000, 'GEMROUTER_AGNES_VIDEO_POLL_MS'),
+      usageStorePath: path.resolve(rootDir, pick(env, 'GEMROUTER_AGNES_USAGE_PATH') ?? 'data/agnes-usage.json'),
     },
     llmRouting: {
       backendOrder: effectiveBackendOrder,

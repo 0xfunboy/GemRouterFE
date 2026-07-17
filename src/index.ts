@@ -54,6 +54,7 @@ import { createNvidiaClient } from './llm/providers/nvidia/client.js';
 import { buildNvidiaServableModelIds } from './llm/providers/nvidia/naming.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
 import { createOllamaLocalClient } from './llm/providers/ollama-local/client.js';
+import { createAgnesClient } from './llm/providers/agnes/client.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -79,6 +80,7 @@ const geminiApiLlm = createGeminiApiClient(config.geminiApi);
 const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
 const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
+const agnesLlm = createAgnesClient(config.agnes);
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
@@ -1337,6 +1339,9 @@ function buildGuestSummary() {
     ollamaLocal: config.ollamaLocal.enabled
       ? { enabled: true, models: ollamaLocalLlm.usage(), rpdResetAt: new Date(nextPacificDayStartMs()).toISOString() }
       : { enabled: false, models: [] },
+    agnes: config.agnes.enabled
+      ? { enabled: true, models: agnesLlm.usage(), rpdResetAt: new Date(nextPacificDayStartMs()).toISOString() }
+      : { enabled: false, models: [] },
     nvidia: (() => {
       const diagnostics = nvidiaLlm.getDiagnostics?.() ?? {};
       if (diagnostics.enabled !== true) return { enabled: false, models: [] };
@@ -2200,6 +2205,36 @@ async function handleImageGenerationsRequest(
 
   try {
     if (!ensureModelAllowed(reply, access.app, parsed.model)) return reply;
+
+    // Agnes AI image models are served by the external Agnes gateway, not the Gemini pool.
+    if (config.agnes.enabled && agnesLlm.isImageModel(parsed.model)) {
+      try {
+        const images = await agnesLlm.generateImage(parsed.model, parsed.prompt, { size: parsed.size.raw });
+        recordInteraction({
+          request,
+          route: request.url,
+          appRecord: access.app,
+          model: parsed.model,
+          messages: [{ role: 'user', content: parsed.prompt }],
+          responseText: images[0]?.url ?? '[generated image]',
+          usage: estimateUsage([{ role: 'user', content: parsed.prompt }], parsed.prompt),
+          status: 'succeeded',
+          statusCode: 200,
+          provider: 'agnes',
+        });
+        return {
+          created: Math.floor(Date.now() / 1000),
+          data: images.map((image) => ({ url: image.url, revised_prompt: image.revisedPrompt })),
+        };
+      } catch (error) {
+        return sendError(reply, 502, {
+          message: error instanceof Error ? error.message : 'Agnes image generation failed',
+          type: 'server_error',
+          code: 'agnes_image_failed',
+        });
+      }
+    }
+
     if (!isGeminiImageGenerationModelId(parsed.model)) {
       return sendError(reply, 400, {
         message: `Model ${parsed.model} is not configured as an image generation model`,
@@ -3655,6 +3690,57 @@ app.post<{ Body: { model?: string; input?: unknown } }>('/v1/embeddings', async 
 app.post<{ Body: { model?: string; input?: unknown } }>('/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
 app.post<{ Body: ChatCompletionsRequest }>('/v1/vision', async (request, reply) => handleVisionRequest(request, reply));
 app.post<{ Body: ChatCompletionsRequest }>('/vision', async (request, reply) => handleVisionRequest(request, reply));
+
+// Agnes AI video generation. Authenticated; submits the task and polls to completion, then
+// returns the finished video URL (synchronous from the caller's point of view).
+async function handleVideoRequest(
+  request: FastifyRequest<{ Body: { model?: string; prompt?: string; size?: string } }>,
+  reply: FastifyReply,
+): Promise<FastifyReply | Record<string, unknown>> {
+  const token = getBearerToken(request);
+  if (!token) return sendError(reply, 401, { message: 'Missing API key', type: 'authentication_error', code: 'missing_api_key' });
+  const clientApp = appStore.verify(token);
+  if (!clientApp) return sendError(reply, 401, { message: 'Invalid API key', type: 'authentication_error', code: 'invalid_api_key' });
+  const origin = getRequestOrigin(request) ?? null;
+  if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
+    return sendError(reply, 403, { message: `Origin not allowed for app ${clientApp.name}`, type: 'permission_error', code: 'origin_not_allowed' });
+  }
+  const model = normalizeModelId(String(request.body?.model ?? ''));
+  const prompt = String(request.body?.prompt ?? '').trim();
+  if (!config.agnes.enabled || !agnesLlm.isVideoModel(model)) {
+    return sendError(reply, 404, { message: `Video model ${model || '(none)'} is not available`, type: 'invalid_request_error', code: 'video_model_not_available', param: 'model' });
+  }
+  if (!appStore.isModelAllowed(clientApp, model)) {
+    return sendError(reply, 403, { message: `Model ${model} is not enabled for app ${clientApp.name}`, type: 'permission_error', code: 'model_not_allowed', param: 'model' });
+  }
+  if (!prompt) {
+    return sendError(reply, 400, { message: 'prompt is required', type: 'invalid_request_error', code: 'missing_prompt', param: 'prompt' });
+  }
+  try {
+    const video = await agnesLlm.generateVideo(model, prompt, request.body?.size ? { size: String(request.body.size) } : undefined);
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: clientApp,
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      responseText: video.url,
+      usage: estimateUsage([{ role: 'user', content: prompt }], prompt),
+      status: 'succeeded',
+      statusCode: 200,
+      provider: 'agnes',
+    });
+    return { created: Math.floor(Date.now() / 1000), model, data: [{ url: video.url, size: video.size, seconds: video.seconds }] };
+  } catch (error) {
+    return sendError(reply, 502, {
+      message: error instanceof Error ? error.message : 'Agnes video generation failed',
+      type: 'server_error',
+      code: 'agnes_video_failed',
+    });
+  }
+}
+app.post<{ Body: { model?: string; prompt?: string; size?: string } }>('/v1/videos', async (request, reply) => handleVideoRequest(request, reply));
+app.post<{ Body: { model?: string; prompt?: string; size?: string } }>('/videos', async (request, reply) => handleVideoRequest(request, reply));
 app.post<{ Body: ResponsesRequest }>('/v1/responses', async (request, reply) => handleResponsesRequest(request, reply));
 app.post<{ Body: ImageGenerationsRequest }>('/v1/images/generations', async (request, reply) =>
   handleImageGenerationsRequest(request, reply, 'openai'),

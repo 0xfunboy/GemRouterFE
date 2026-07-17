@@ -872,6 +872,22 @@ export function renderAppShell(input: {
       .public-rpd-table th:nth-child(3), .public-rpd-table td:nth-child(3) { width: 22%; }
       .public-rpd-table th:nth-child(4), .public-rpd-table td:nth-child(4) { width: 16%; }
       .public-rpd-table th:nth-child(5), .public-rpd-table td:nth-child(5) { width: 14%; }
+      /* Compact 4-column usage tables (Ollama Local RPD, Agnes): thin single-line rows. */
+      .usage-mini-table {
+        min-width: 0;
+        table-layout: fixed;
+      }
+      .usage-mini-table th, .usage-mini-table td {
+        padding: 4px 12px;
+        vertical-align: middle;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .usage-mini-table th:nth-child(1), .usage-mini-table td:nth-child(1) { width: 42%; }
+      .usage-mini-table th:nth-child(2), .usage-mini-table td:nth-child(2) { width: 18%; }
+      .usage-mini-table th:nth-child(3), .usage-mini-table td:nth-child(3) { width: 24%; }
+      .usage-mini-table th:nth-child(4), .usage-mini-table td:nth-child(4) { width: 16%; }
       /* NVIDIA models: 7 columns, compact single-line rows that never grow in height. */
       .nvidia-models-table {
         min-width: 0;
@@ -1502,11 +1518,28 @@ export function renderAppShell(input: {
           </div>
         </div>
         <div class="table-wrap">
-          <table class="table responsive-table quota-table public-rpd-table">
+          <table class="table responsive-table usage-mini-table">
             <thead>
               <tr><th>Model</th><th>Type</th><th>RPD</th><th></th></tr>
             </thead>
             <tbody id="ollama-local-table"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel section" id="agnes-section" style="display:none">
+        <div class="section-head">
+          <div>
+            <h3 class="section-title">${svgIcon('api')} Agnes AI (image + video)</h3>
+            <p class="section-copy">External Agnes AI gateway for image and video generation, with daily request counts (resets America/Los_Angeles).</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="table responsive-table usage-mini-table">
+            <thead>
+              <tr><th>Model</th><th>Type</th><th>Requests today</th><th></th></tr>
+            </thead>
+            <tbody id="agnes-table"></tbody>
           </table>
         </div>
       </section>
@@ -2065,6 +2098,8 @@ export function renderAppShell(input: {
       const publicRpdAccountTable = document.getElementById('public-rpd-account-table');
       const ollamaLocalSection = document.getElementById('ollama-local-section');
       const ollamaLocalTable = document.getElementById('ollama-local-table');
+      const agnesSection = document.getElementById('agnes-section');
+      const agnesTable = document.getElementById('agnes-table');
       const nvidiaSection = document.getElementById('nvidia-section');
       const nvidiaTable = document.getElementById('nvidia-table');
       const nvidiaMeta = document.getElementById('nvidia-meta');
@@ -3024,6 +3059,28 @@ export function renderAppShell(input: {
         }).join('');
       }
 
+      function renderAgnes(summary) {
+        if (!agnesSection || !agnesTable) return;
+        const agnes = summary && summary.agnes ? summary.agnes : null;
+        const models = agnes && Array.isArray(agnes.models) ? agnes.models : [];
+        if (!agnes || agnes.enabled !== true || models.length === 0) {
+          agnesSection.style.display = 'none';
+          return;
+        }
+        agnesSection.style.display = '';
+        agnesTable.innerHTML = models.map(function(model) {
+          const id = String(model.model || 'unknown');
+          const kind = String(model.kind || 'image');
+          const used = typeof model.used === 'number' ? model.used : 0;
+          return '<tr>' +
+            '<td data-label="Model"><strong>' + escapeHtml(id) + '</strong></td>' +
+            '<td data-label="Type"><span class="chip">' + escapeHtml(kind) + '</span></td>' +
+            '<td data-label="Requests today">' + escapeHtml(fmtNumber(used)) + '</td>' +
+            '<td data-label=""></td>' +
+          '</tr>';
+        }).join('');
+      }
+
       function renderHourlyChart(summary) {
         const points = (summary.charts && summary.charts.hourly) || [];
         const maxRequests = points.reduce(function(max, item) { return Math.max(max, item.requests || 0); }, 0) || 1;
@@ -3785,6 +3842,7 @@ export function renderAppShell(input: {
           renderPublicRpd(data);
           renderNvidiaModels(data);
           renderOllamaLocalRpd(data);
+          renderAgnes(data);
           if (!state.authenticated) {
             renderProviderState(data);
           }
