@@ -127,6 +127,33 @@ const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 20_000;
  */
 const RATE_LIMIT_KEY_FANOUT_LIMIT = 3;
 
+/**
+ * Error codes whose repetition across accounts means "this model is a dead end right now",
+ * so walking the rest of the pool only burns quota and latency:
+ *
+ * - rate_limited: consecutive 429s from separate accounts are model-wide pressure at Google.
+ * - model_not_found: availability is per project and `models.list` lies about it. Models
+ *   closed to new projects (gemini-2.5-flash) are advertised by the discovery catalog on
+ *   every account but 404 on the newer ones, so the pool gets walked on every single call.
+ */
+export function isKeyFanoutCappedCode(code: string): boolean {
+  return code === 'gemini_api_rate_limited' || code === 'gemini_api_model_not_found';
+}
+
+/**
+ * Whether to stop trying further accounts for this model and move to the next fallback.
+ * Extracted so the fan-out budget is unit-testable without driving a full request.
+ */
+export function shouldStopKeyFanout(input: {
+  code: string;
+  cappedAttempts: number;
+  hasRemainingModels: boolean;
+}): boolean {
+  if (!input.hasRemainingModels) return false;
+  if (!isKeyFanoutCappedCode(input.code)) return false;
+  return input.cappedAttempts >= RATE_LIMIT_KEY_FANOUT_LIMIT;
+}
+
 class HedgedRequestCancelled extends Error {
   constructor() {
     super('Gemini API hedged request was cancelled after another model won.');
@@ -1126,7 +1153,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       const excludedKeyIds = new Set<string>();
       let emptyResponseRetries = 0;
       let effectiveOptions = attemptOptions;
-      let rateLimitedKeyAttempts = 0;
+      let cappedKeyAttempts = 0;
 
       while (true) {
         let reservation: GeminiApiKeyReservation;
@@ -1257,11 +1284,12 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           lastFailureAt = nowIso();
           lastLatencyMs = Date.now() - started;
           excludedKeyIds.add(reservation.key.id);
-          if (providerError.code === 'gemini_api_rate_limited') rateLimitedKeyAttempts += 1;
-          const keyFanoutExhausted =
-            providerError.code === 'gemini_api_rate_limited' &&
-            rateLimitedKeyAttempts >= RATE_LIMIT_KEY_FANOUT_LIMIT &&
-            remainingModels.length > 0;
+          if (isKeyFanoutCappedCode(providerError.code)) cappedKeyAttempts += 1;
+          const keyFanoutExhausted = shouldStopKeyFanout({
+            code: providerError.code,
+            cappedAttempts: cappedKeyAttempts,
+            hasRemainingModels: remainingModels.length > 0,
+          });
           if (
             !keyFanoutExhausted &&
             shouldRetryWithAnotherKey(providerError) &&
