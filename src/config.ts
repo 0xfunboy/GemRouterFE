@@ -59,6 +59,8 @@ export interface RuntimeConfig {
     backendOrder: LLMBackendId[];
     /** Hard ceiling for the whole request across all backends/fallbacks. */
     requestDeadlineMs: number;
+    /** Gemini model substituted when a NVIDIA-only request falls back to gemini-api. */
+    nvidiaFallbackModel?: string;
   };
   modelIds: string[];
   freeTierPolicy: {
@@ -677,6 +679,8 @@ export function loadConfig(
     llmRouting: {
       backendOrder: effectiveBackendOrder,
       requestDeadlineMs: readNumber(env, 75_000, 'GEMROUTER_REQUEST_DEADLINE_MS'),
+      // Empty value disables the downgrade (NVIDIA-only requests hard-fail again).
+      nvidiaFallbackModel: (pick(env, 'GEMROUTER_NVIDIA_FALLBACK_MODEL') ?? 'gemini-3.5-flash').trim().toLowerCase() || undefined,
     },
     modelIds,
     freeTierPolicy: {

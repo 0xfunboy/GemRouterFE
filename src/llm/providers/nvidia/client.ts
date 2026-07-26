@@ -162,7 +162,10 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       enabledModels(tierOf(direct)).filter((model) => model !== direct),
       now,
     );
-    return { candidates: [direct, ...mates], requested, raceEligible: false };
+    // Explicit ids keep the requested model first in line but are race-eligible too:
+    // tier mates already substitute it on sequential failover, so hedging them after
+    // the delay only shortens the wall time, it does not change the semantics.
+    return { candidates: [direct, ...mates], requested, raceEligible: true };
   }
 
   function pruneRpmWindow(now = Date.now()): void {
@@ -421,8 +424,20 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       });
     }
 
-    const { candidates, requested, raceEligible } = resolveCandidates(opts);
-    const useRace = raceEligible && config.raceEnabled;
+    const resolved = resolveCandidates(opts);
+    const requested = resolved.requested;
+    // NVIDIA is a best-effort quality surface: never pay a first-token timeout for a
+    // model that just failed. Candidates still cooling down are skipped outright, and
+    // when every candidate is cooling the request fails fast (fallbackEligible) so the
+    // router can downgrade to Gemini immediately instead of stacking 12s timeouts.
+    const candidates = resolved.candidates.filter((model) => !scoreboard.isCoolingDown(model));
+    if (candidates.length === 0) {
+      throw new NvidiaProviderError('nvidia_cooling_down', 'All NVIDIA candidates are cooling down after recent failures.', {
+        statusCode: 503,
+        fallbackEligible: true,
+      });
+    }
+    const useRace = resolved.raceEligible && config.raceEnabled;
     const maxAttempts = useRace
       ? Math.min(candidates.length, Math.max(1, config.raceMaxCandidates))
       : candidates.length;
