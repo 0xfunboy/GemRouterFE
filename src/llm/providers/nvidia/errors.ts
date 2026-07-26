@@ -5,6 +5,7 @@ export type NvidiaErrorCode =
   | 'backend_disabled'
   | 'nvidia_missing_key'
   | 'nvidia_no_model_available'
+  | 'nvidia_cooling_down'
   | 'nvidia_rate_limited'
   | 'nvidia_auth_failed'
   | 'nvidia_invalid_request'

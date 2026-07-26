@@ -18,6 +18,13 @@ export interface LLMRouterConfig {
   nvidiaServableModelIds?: string[];
   /** Hard ceiling for the whole request across all backends/fallbacks (ms). */
   requestDeadlineMs?: number;
+  /**
+   * Gemini model substituted when a NVIDIA-only request (tier alias or namespaced
+   * catalog id) falls back to gemini-api. NVIDIA is a best-effort quality surface:
+   * when it is cooling down or times out the request downgrades to this model
+   * instead of failing. Empty/undefined keeps the old hard-fail behavior.
+   */
+  nvidiaFallbackModel?: string;
 }
 
 interface RouterState {
@@ -68,6 +75,18 @@ function shouldFallback(
   return backend === 'gemini-api' || backend === 'ollama' || backend === 'nvidia';
 }
 
+/**
+ * True when only the nvidia backend understands this model id (tier alias or a
+ * namespaced catalog name). Such requests need a model remap before any other
+ * backend can serve them.
+ */
+function isNvidiaOnlyModel(config: LLMRouterConfig, rawModel: unknown): boolean {
+  const model = String(rawModel ?? '').trim().toLowerCase().replace(/^models\//, '');
+  const nvidiaCanServe = config.nvidiaServableModelIds?.includes(model) === true;
+  const isGeminiModel = /^(gemini|gemma)-/.test(model);
+  return isNvidiaTierAlias(model) || (nvidiaCanServe && !isGeminiModel);
+}
+
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
   if (preference !== 'auto') return [preference];
@@ -75,11 +94,16 @@ function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLM
   const model = String(opts?.model ?? '').trim().toLowerCase().replace(/^models\//, '');
   const nvidiaCanServe = config.nvidiaServableModelIds?.includes(model) === true;
   const isGeminiModel = /^(gemini|gemma)-/.test(model);
-  // NVIDIA-only when it's a tier alias or a catalog name no other backend understands.
+  // NVIDIA-first when it's a tier alias or a catalog name no other backend understands.
   // Gemini-named catalog entries (gemma-* aliases) stay gemini-first with nvidia as
   // spill, so the free Gemini quota is always spent before the NVIDIA budget.
   if (isNvidiaTierAlias(model) || (nvidiaCanServe && !isGeminiModel)) {
-    return rawOrder.includes('nvidia') ? ['nvidia'] : [];
+    if (!rawOrder.includes('nvidia')) return [];
+    // NVIDIA is a quality surface, not a hard dependency: when it fails or cools
+    // down, dispatch remaps the model and downgrades to the Gemini fallback.
+    return config.nvidiaFallbackModel && rawOrder.includes('gemini-api')
+      ? ['nvidia', 'gemini-api']
+      : ['nvidia'];
   }
   // Models outside the NVIDIA catalog never spill into nvidia: a Gemini 429 must
   // surface as a 429, and namespaced Ollama ids ("ns/model") stay on their backend.
@@ -157,6 +181,14 @@ export function createLlmRouter(
     };
   }
 
+  // Non-nvidia backends can't serve a NVIDIA-only id: substitute the configured
+  // Gemini fallback model for their attempt (the response keeps the real model used).
+  function optsForBackend(backend: LLMBackendId, opts: LLMOptions): LLMOptions {
+    if (backend === 'nvidia' || !config.nvidiaFallbackModel) return opts;
+    if (!isNvidiaOnlyModel(config, opts.model)) return opts;
+    return { ...opts, model: config.nvidiaFallbackModel };
+  }
+
   async function dispatchChat(messages: LLMMessage[], rawOpts?: LLMOptions): Promise<LLMResponse> {
     const sequence = resolveBackendSequence(config, rawOpts);
     const deadline = withRequestDeadline(rawOpts);
@@ -181,7 +213,7 @@ export function createLlmRouter(
             fallbackEligible: true,
           });
         }
-        const rawResponse = await client.chat(messages, opts);
+        const rawResponse = await client.chat(messages, optsForBackend(backend, opts));
         const response = annotateResponse(rawResponse, backend, lastError?.backend, lastError?.code);
         state.lastBackendUsed = response.backend ?? backend;
         state.lastFallbackFrom = response.fallbackFrom ?? null;
@@ -262,7 +294,8 @@ export function createLlmRouter(
               fallbackEligible: true,
             });
           }
-          const stream = client.streamChat ? client.streamChat(messages, opts) : singleResponseStream(client, messages, opts);
+          const backendOpts = optsForBackend(backend, opts);
+          const stream = client.streamChat ? client.streamChat(messages, backendOpts) : singleResponseStream(client, messages, backendOpts);
           let finalResponse: LLMResponse | null = null;
           while (true) {
             const next = await stream.next();
