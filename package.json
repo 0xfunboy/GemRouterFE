@@ -16,7 +16,8 @@
     "start": "pnpm run start:app",
     "start:app": "node dist/index.js",
     "smoke": "pnpm build && bash ./scripts/smoke.sh",
-    "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh"
+    "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh",
+    "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

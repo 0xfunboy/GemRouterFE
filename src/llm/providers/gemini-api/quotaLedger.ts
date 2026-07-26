@@ -115,6 +115,17 @@ const HIGH_DEMAND_COOLDOWN_MS = 30_000;
  */
 const RATE_LIMIT_STRIKE_LADDER = [60_000, 300_000, 600_000, 900_000];
 /**
+ * Strikes decay: a 429 this long after the previous one starts the ladder over.
+ *
+ * Strikes used to clear only on a success or at the Pacific rollover, which starved any
+ * model that never gets to report a success — a hedged model (gemma-4-31b-it) is cancelled
+ * whenever a faster sibling wins the race, so its strikes only ever grew. One transient
+ * burst then escalated it to the 15 min rung and kept it there all day, even though the
+ * model itself was healthy and its RPD untouched. Decay makes the ladder measure *current*
+ * pressure instead of accumulating unrelated incidents.
+ */
+const RATE_LIMIT_STRIKE_DECAY_MS = 10 * 60_000;
+/**
  * A day-scope 429 is only trusted as a real daily exhaustion when our own RPD counter
  * confirms we are near the limit. Below this fraction the day-429 is treated as suspect
  * (shared/lower real quota, or a Google transient) and parked for a bounded window so the
@@ -461,6 +472,9 @@ export class GeminiApiQuotaLedger {
       }
     }
     if (input.rateLimited) {
+      // Captured before the overwrite below: the generic-429 branch needs the age of the
+      // *previous* strike to decide whether the ladder has gone stale.
+      const previous429Ms = ledger.last429At ? Date.parse(ledger.last429At) : Number.NaN;
       ledger.last429At = nowString;
       if (typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0 && input.rateLimitScope !== 'day') {
         // Any 429 parks this model+account for at least one RPM window, even if
@@ -492,6 +506,11 @@ export class GeminiApiQuotaLedger {
         if (ledger.rateLimitStrikesDay !== today) {
           ledger.rateLimitStrikes = 0;
           ledger.rateLimitStrikesDay = today;
+        }
+        // Quiet period since the last 429 means the earlier pressure is gone: restart the
+        // ladder instead of compounding an old incident onto a currently healthy model.
+        if (Number.isFinite(previous429Ms) && now - previous429Ms >= RATE_LIMIT_STRIKE_DECAY_MS) {
+          ledger.rateLimitStrikes = 0;
         }
         const strikes = (ledger.rateLimitStrikes ?? 0) + 1;
         ledger.rateLimitStrikes = strikes;

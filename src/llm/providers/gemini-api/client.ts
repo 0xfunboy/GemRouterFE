@@ -113,6 +113,19 @@ const GEMMA_HEDGED_SECOND_WAVE_DELAY_MS = 8_000;
 // that model and moving to the next fallback. Kept short so the fallback chain flows
 // instead of stalling on a busy account; the global request deadline is the hard ceiling.
 const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 20_000;
+/**
+ * How many upstream 429s a single model may collect from *different* accounts before the
+ * request gives up on that model and moves to the next fallback.
+ *
+ * Without a cap, one rate-limited model walked the entire key pool (10 accounts) and the
+ * chain then repeated that for every fallback model — up to models x accounts upstream
+ * calls for a single client request. A handful of concurrent clients turned a genuine
+ * daily exhaustion on one model into a self-inflicted burst that rate-limited *healthy*
+ * models (their RPD untouched) and parked them on the strike ladder. Consecutive 429s
+ * from separate accounts mean the pressure is model-wide at Google, not key-specific,
+ * so the next fallback model is both faster for the caller and far cheaper upstream.
+ */
+const RATE_LIMIT_KEY_FANOUT_LIMIT = 3;
 
 class HedgedRequestCancelled extends Error {
   constructor() {
@@ -1113,6 +1126,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       const excludedKeyIds = new Set<string>();
       let emptyResponseRetries = 0;
       let effectiveOptions = attemptOptions;
+      let rateLimitedKeyAttempts = 0;
 
       while (true) {
         let reservation: GeminiApiKeyReservation;
@@ -1243,7 +1257,13 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           lastFailureAt = nowIso();
           lastLatencyMs = Date.now() - started;
           excludedKeyIds.add(reservation.key.id);
+          if (providerError.code === 'gemini_api_rate_limited') rateLimitedKeyAttempts += 1;
+          const keyFanoutExhausted =
+            providerError.code === 'gemini_api_rate_limited' &&
+            rateLimitedKeyAttempts >= RATE_LIMIT_KEY_FANOUT_LIMIT &&
+            remainingModels.length > 0;
           if (
+            !keyFanoutExhausted &&
             shouldRetryWithAnotherKey(providerError) &&
             hasAnotherConfiguredKeyForModel(config, model, excludedKeyIds)
           ) {
