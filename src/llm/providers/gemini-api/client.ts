@@ -132,14 +132,17 @@ function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Re
   // gemini-3.5-flash is a thinking model: with no thinkingConfig it burns the whole output
   // budget on default (dynamic) reasoning and truncates the visible answer (finishReason=length,
   // ~all tokens counted as thoughtsTokenCount). It rejects `thinkingLevel` but DOES accept
-  // `thinkingBudget: 0`, which disables thinking so the full answer fits.
-  if (/^gemini-3\.5-flash/i.test(model)) {
+  // `thinkingBudget: 0`, which disables thinking so the full answer fits. The negative
+  // lookahead excludes gemini-3.5-flash-lite, which instead REJECTS thinkingBudget (400
+  // INVALID_ARGUMENT) and only accepts thinkingLevel — it falls through to the branch below.
+  if (/^gemini-3\.5-flash(?!-lite)/i.test(model)) {
     return {
       includeThoughts,
       thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
     };
   }
-  // Other gemini-3.x reasoning variants (pro / flash-preview / 3.1) take a thinkingLevel.
+  // Other gemini-3.x reasoning variants (3.6-flash, 3.5-flash-lite, pro, flash-preview, 3.1)
+  // take a thinkingLevel; 3.6-flash and 3.5-flash-lite both reject thinkingBudget:0.
   if (/^gemini-3/i.test(model)) {
     return {
       includeThoughts,
@@ -688,7 +691,22 @@ function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Ar
     const knownModels = new Set(models.map((model) => String(model.model)));
     existing.models = [...models, ...modelIds.filter((model) => !knownModels.has(model)).map(configuredModel)];
   }
-  return [...byId.values()];
+  // Present every group's models in the configured order (enabled/fallback chain
+  // first, then the remaining catalogued models), not in the ledger's historical
+  // first-use order — otherwise a newly enabled default model renders last.
+  const enabledOrder = new Map(config.fallbackModelIds.map((model, index) => [model.toLowerCase(), index]));
+  const limitsOrder = new Map(modelIds.map((model, index) => [model, index]));
+  const rank = (model: string): number => {
+    const id = model.toLowerCase();
+    const enabled = enabledOrder.get(id);
+    if (enabled !== undefined) return enabled;
+    const catalogued = limitsOrder.get(id);
+    return 1_000 + (catalogued !== undefined ? catalogued : 1_000);
+  };
+  return [...byId.values()].map((group) => {
+    const models = Array.isArray(group.models) ? group.models as Record<string, unknown>[] : [];
+    return { ...group, models: [...models].sort((a, b) => rank(String(a.model)) - rank(String(b.model))) };
+  });
 }
 
 export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClient {
