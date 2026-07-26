@@ -1,6 +1,13 @@
 import type { GeminiApiRateLimit } from './types.js';
 
 export const GEMINI_API_TIER1_LIMITS = {
+  // Default text model: listed first so every limits-ordered view (per-group
+  // quota panels, provider model list) shows it at the top, above 3.5-flash.
+  'gemini-3.6-flash': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
+  },
   'gemini-2.5-flash': {
     rpm: 5,
     tpm: 250_000,
@@ -37,6 +44,12 @@ export const GEMINI_API_TIER1_LIMITS = {
     rpm: 5,
     tpm: 250_000,
     rpd: 20,
+  },
+  // Lite sibling: higher free-tier ceilings than 3.5-flash (mirrors 3.1-flash-lite).
+  'gemini-3.5-flash-lite': {
+    rpm: 15,
+    tpm: 250_000,
+    rpd: 500,
   },
   'gemini-3-flash-preview': {
     rpm: 5,
