@@ -9,6 +9,11 @@ export interface WindowCounterEvent {
   count: number;
   tokens?: number;
   requestId?: string;
+  /**
+   * Reservation lifecycle for requests created by current versions of the router.
+   * Legacy events have no state and are treated as already consumed.
+   */
+  reservationState?: 'reserved' | 'dispatched' | 'completed';
 }
 
 export interface WindowCounter {
@@ -167,17 +172,28 @@ function pacificOffsetMs(epochMs: number): number {
   ) - epochMs;
 }
 
-/** Gemini RPD resets at midnight in America/Los_Angeles, including PST/PDT changes. */
-export function pacificDayStartMs(now = Date.now()): number {
-  const { year, month, day } = pacificDateParts(now);
+function pacificMidnightMs(year: number, month: number, day: number): number {
   const nominalUtcMidnight = Date.UTC(year, month - 1, day);
   return nominalUtcMidnight - pacificOffsetMs(nominalUtcMidnight);
 }
 
+/** Gemini RPD resets at midnight in America/Los_Angeles, including PST/PDT changes. */
+export function pacificDayStartMs(now = Date.now()): number {
+  const { year, month, day } = pacificDateParts(now);
+  return pacificMidnightMs(year, month, day);
+}
+
 export function nextPacificDayStartMs(now = Date.now()): number {
-  const tomorrow = pacificDateParts(now + 30 * 60 * 60_000);
-  const nominalUtcMidnight = Date.UTC(tomorrow.year, tomorrow.month - 1, tomorrow.day);
-  return nominalUtcMidnight - pacificOffsetMs(nominalUtcMidnight);
+  const { year, month, day } = pacificDateParts(now);
+  // Increment the Pacific civil date rather than adding elapsed hours to `now`.
+  // Adding 30h skipped a day when called late in the Pacific evening, and adding 24h
+  // would be incorrect across the 23h/25h DST transition days.
+  const nextCivilDate = new Date(Date.UTC(year, month - 1, day + 1));
+  return pacificMidnightMs(
+    nextCivilDate.getUTCFullYear(),
+    nextCivilDate.getUTCMonth() + 1,
+    nextCivilDate.getUTCDate(),
+  );
 }
 
 function parseHeaderInt(headers: Record<string, string>, ...names: string[]): number | undefined {
@@ -323,10 +339,14 @@ export class GeminiApiQuotaLedger {
     // Migration/self-heal: a model parked to the Pacific reset as daily-depleted while
     // its own RPD counter shows plenty remaining is a stale false positive (older bug
     // where the recovery check never matched the 'pacific-reset' source). Release it.
-    if (model.dailyDepleted && model.cooldownSource === 'pacific-reset') {
+    if (model.cooldownSource === 'pacific-reset') {
       const rpd = metric(model.rpd);
       const rpdLimit = model.rpd.limit;
-      if (rpd.remaining !== null && rpdLimit !== null && rpd.remaining >= rpdLimit * (1 - DAY_SCOPE_TRUST_FRACTION)) {
+      const contradictoryLegacyState = model.dailyDepleted !== true;
+      if (
+        contradictoryLegacyState ||
+        (rpd.remaining !== null && rpdLimit !== null && rpd.remaining >= rpdLimit * (1 - DAY_SCOPE_TRUST_FRACTION))
+      ) {
         delete model.cooldownUntil;
         delete model.cooldownSource;
         model.dailyDepleted = false;
@@ -393,17 +413,68 @@ export class GeminiApiQuotaLedger {
     const now = Date.now();
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     this.pruneModel(ledger, now);
-    ledger.rpm.events.push({ ts: now, count: 1, requestId: input.requestId });
-    if (ledger.rpd.limit !== null) ledger.rpd.events.push({ ts: now, count: 1, requestId: input.requestId });
-    ledger.tpm.events.push({ ts: now, count: 1, tokens: input.estimatedTokens, requestId: input.requestId });
+    const event = { ts: now, count: 1, requestId: input.requestId, reservationState: 'reserved' as const };
+    ledger.rpm.events.push({ ...event });
+    if (ledger.rpd.limit !== null) ledger.rpd.events.push({ ...event });
+    ledger.tpm.events.push({ ...event, tokens: input.estimatedTokens });
     this.getKeyLedger(input.keyId).lastUsedAt = nowIso();
     this.persist();
   }
 
-  cancelReservation(input: { quotaGroup: string; keyId: string; model: string; requestId: string }): void {
+  /**
+   * Marks the point immediately before the upstream fetch is dispatched.
+   *
+   * This intentionally does not persist on its own: the next success/failure/reservation
+   * persists the transition, while avoiding another synchronous full-ledger write in the
+   * hot path. A process crash remains conservative because the already persisted event is
+   * still counted and no future caller can cancel its unique request id.
+   */
+  markDispatched(input: { quotaGroup: string; keyId: string; model: string; requestId: string }): void {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
-      counter.events = counter.events.filter((event) => event.requestId !== input.requestId);
+      for (const event of counter.events) {
+        if (event.requestId === input.requestId && event.reservationState === 'reserved') {
+          event.reservationState = 'dispatched';
+        }
+      }
+    }
+  }
+
+  /**
+   * Cancels only a reservation which never reached the provider.
+   *
+   * Once `markDispatched` has run, an abort/hedge loss must retain RPM/RPD and the
+   * estimated TPM reservation because Google may already have accepted the request.
+   * The boolean lets callers/tests distinguish a real pre-dispatch cancellation.
+   */
+  cancelReservation(input: { quotaGroup: string; keyId: string; model: string; requestId: string }): boolean {
+    const ledger = this.getModelLedger(input.quotaGroup, input.model);
+    let cancelled = false;
+    for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
+      counter.events = counter.events.filter((event) => {
+        if (event.requestId !== input.requestId) return true;
+        // Missing lifecycle state means a legacy, already-consumed event.
+        if (event.reservationState !== 'reserved') return true;
+        cancelled = true;
+        return false;
+      });
+    }
+    if (cancelled) this.persist();
+    return cancelled;
+  }
+
+  /**
+   * Completes a dispatched reservation cancelled only because another backend won.
+   * The upstream request may have consumed quota, so its counters stay intact, but
+   * cancellation is control flow rather than a provider failure and must not poison
+   * model/key diagnostics.
+   */
+  markAbortedAfterDispatch(input: { quotaGroup: string; keyId: string; model: string; requestId: string }): void {
+    const ledger = this.getModelLedger(input.quotaGroup, input.model);
+    for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
+      for (const event of counter.events) {
+        if (event.requestId === input.requestId) event.reservationState = 'completed';
+      }
     }
     this.persist();
   }
@@ -413,19 +484,34 @@ export class GeminiApiQuotaLedger {
     keyId: string;
     model: string;
     requestId: string;
-    totalTokens?: number;
+    promptTokens?: number;
     upstreamHeaders?: Record<string, string>;
   }): void {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = nowIso();
+    for (const event of ledger.rpm.events) {
+      if (event.requestId === input.requestId) event.reservationState = 'completed';
+    }
+    for (const event of ledger.rpd.events) {
+      if (event.requestId === input.requestId) event.reservationState = 'completed';
+    }
+    for (const event of ledger.tpm.events) {
+      if (event.requestId !== input.requestId) continue;
+      event.reservationState = 'completed';
+      // Gemini TPM is based on input tokens. Replace the admission estimate with the
+      // authoritative prompt-token count, never total input+output usage.
+      if (typeof input.promptTokens === 'number' && Number.isFinite(input.promptTokens) && input.promptTokens >= 0) {
+        event.tokens = Math.ceil(input.promptTokens);
+      }
+    }
     ledger.lastSuccessAt = now;
-    // A success clears the 429 backoff state for this model+account.
+    // A successful response from this exact quota-group+model proves that any older
+    // quota/high-demand park is stale. The live RPM/TPM/RPD counters still gate the next
+    // request, so releasing the cooldown cannot bypass locally known capacity.
     ledger.rateLimitStrikes = 0;
     ledger.dailyDepleted = false;
-    if (ledger.cooldownSource === '429-backoff' || ledger.cooldownSource === 'daily-depleted') {
-      delete ledger.cooldownUntil;
-      delete ledger.cooldownSource;
-    }
+    delete ledger.cooldownUntil;
+    delete ledger.cooldownSource;
     if (input.upstreamHeaders && Object.keys(input.upstreamHeaders).length > 0) {
       ledger.upstreamHeadersRaw = input.upstreamHeaders;
       ledger.upstreamHeadersAt = now;
@@ -457,6 +543,11 @@ export class GeminiApiQuotaLedger {
     const ledger = this.getModelLedger(input.quotaGroup, input.model);
     const now = Date.now();
     const nowString = new Date(now).toISOString();
+    for (const counter of [ledger.rpm, ledger.tpm, ledger.rpd]) {
+      for (const event of counter.events) {
+        if (event.requestId === input.requestId) event.reservationState = 'completed';
+      }
+    }
     ledger.lastFailureAt = nowString;
     ledger.lastFailureCode = input.code;
     ledger.lastFailureReason = input.reason;
@@ -539,6 +630,7 @@ export class GeminiApiQuotaLedger {
         if (model && model !== modelId) continue;
         delete modelLedger.cooldownUntil;
         delete modelLedger.cooldownSource;
+        modelLedger.dailyDepleted = false;
       }
     }
     this.persist();

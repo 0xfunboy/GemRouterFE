@@ -6,6 +6,7 @@ import type {
   NvidiaModelScore,
   NvidiaSampleSource,
   NvidiaScoreboardData,
+  NvidiaSourceScore,
 } from './types.js';
 
 // Newer samples dominate so the ranking follows intraday shifts instead of ancient history.
@@ -15,6 +16,13 @@ const EMA_ALPHA = 0.3;
 const EXPLORATION_SAMPLE_THRESHOLD = 5;
 const EXPLORATION_BONUS = 250;
 const MAX_FAILURE_COOLDOWN_MS = 10 * 60_000;
+const MODEL_NOT_FOUND_COOLDOWN_MS = 24 * 60 * 60_000;
+const MODEL_GONE_COOLDOWN_UNTIL = '9999-12-31T23:59:59.999Z';
+const SOURCE_SCORE_WEIGHT: Record<NvidiaSampleSource, number> = {
+  traffic: 1,
+  hedge: 0.85,
+  probe: 0.6,
+};
 
 function emptyBucket(): NvidiaHourBucket {
   return {
@@ -32,6 +40,7 @@ function emptyScore(): NvidiaModelScore {
   return {
     hours: {},
     overall: emptyBucket(),
+    sources: {},
     consecutiveFailures: 0,
     cooldownUntil: null,
     last429At: null,
@@ -39,6 +48,13 @@ function emptyScore(): NvidiaModelScore {
     lastLatencyMs: null,
     lastErrorCode: null,
     lastAt: null,
+  };
+}
+
+function emptySourceScore(): NvidiaSourceScore {
+  return {
+    hours: {},
+    overall: emptyBucket(),
   };
 }
 
@@ -105,11 +121,14 @@ export class NvidiaScoreboard {
     return created;
   }
 
-  private touchBuckets(model: string, now: Date): NvidiaHourBucket[] {
+  private touchBuckets(model: string, now: Date, source: NvidiaSampleSource): NvidiaHourBucket[] {
     const score = this.scoreFor(model);
     const hourKey = String(now.getHours());
     const hourBucket = score.hours[hourKey] ?? (score.hours[hourKey] = emptyBucket());
-    return [hourBucket, score.overall];
+    const sources = score.sources ?? (score.sources = {});
+    const sourceScore = sources[source] ?? (sources[source] = emptySourceScore());
+    const sourceHourBucket = sourceScore.hours[hourKey] ?? (sourceScore.hours[hourKey] = emptyBucket());
+    return [hourBucket, score.overall, sourceHourBucket, sourceScore.overall];
   }
 
   recordSuccess(model: string, input: {
@@ -120,7 +139,7 @@ export class NvidiaScoreboard {
   }): void {
     const now = new Date();
     const score = this.scoreFor(model);
-    for (const bucket of this.touchBuckets(model, now)) {
+    for (const bucket of this.touchBuckets(model, now, input.source)) {
       bucket.samples += 1;
       bucket.successes += 1;
       bucket.avgLatencyMs = ema(bucket.avgLatencyMs, input.latencyMs);
@@ -154,7 +173,7 @@ export class NvidiaScoreboard {
   }): void {
     const now = new Date();
     const score = this.scoreFor(model);
-    for (const bucket of this.touchBuckets(model, now)) {
+    for (const bucket of this.touchBuckets(model, now, input.source)) {
       bucket.samples += 1;
       bucket.failures += 1;
       if (input.timeout) bucket.timeouts += 1;
@@ -165,7 +184,16 @@ export class NvidiaScoreboard {
     score.lastErrorCode = input.code;
     score.lastAt = now.toISOString();
 
-    if (input.status === 429) {
+    if (input.status === 410) {
+      // HTTP 410 is an explicit provider statement that this catalog entry is gone.
+      // Persist the quarantine across restarts; an admin scoreboard reset is the
+      // deliberate recovery mechanism if NVIDIA ever reintroduces it.
+      score.cooldownUntil = MODEL_GONE_COOLDOWN_UNTIL;
+    } else if (input.status === 404) {
+      // 404 can also mean a temporarily stale regional catalog, so quarantine it
+      // for a day rather than forever.
+      score.cooldownUntil = new Date(now.getTime() + MODEL_NOT_FOUND_COOLDOWN_MS).toISOString();
+    } else if (input.status === 429) {
       score.last429At = now.toISOString();
       const waitMs = typeof input.retryAfterMs === 'number' && input.retryAfterMs > 0
         ? input.retryAfterMs
@@ -193,12 +221,35 @@ export class NvidiaScoreboard {
   score(model: string, now = new Date()): number {
     const score = this.data.models[model];
     if (!score) return EXPLORATION_BONUS;
-    const hourBucket = score.hours[String(now.getHours())];
-    const hourScore = hourBucket ? bucketScore(hourBucket) : null;
-    const overallScore = bucketScore(score.overall);
-    let value = hourScore ?? overallScore ?? 0;
-    if (!hourBucket || hourBucket.samples < EXPLORATION_SAMPLE_THRESHOLD) {
-      value += EXPLORATION_BONUS * (1 - (hourBucket?.samples ?? 0) / EXPLORATION_SAMPLE_THRESHOLD);
+    const hourKey = String(now.getHours());
+
+    // Real foreground traffic is the strongest ranking signal. Hedge samples are
+    // useful but selection-biased, while probes are synthetic and only seed an
+    // otherwise unknown model. Legacy scoreboards without source buckets retain
+    // their aggregate behavior until fresh samples arrive.
+    let selectedBucket: NvidiaHourBucket | undefined;
+    let selectedOverall: NvidiaHourBucket | undefined;
+    let sourceWeight = 1;
+    let sourceFound = false;
+    for (const source of ['traffic', 'hedge', 'probe'] as const) {
+      const sourceScore = score.sources?.[source];
+      if (!sourceScore || sourceScore.overall.samples === 0) continue;
+      sourceFound = true;
+      selectedBucket = sourceScore.hours[hourKey];
+      selectedOverall = sourceScore.overall;
+      sourceWeight = SOURCE_SCORE_WEIGHT[source];
+      break;
+    }
+    if (!sourceFound) {
+      selectedBucket = score.hours[hourKey];
+      selectedOverall = score.overall;
+    }
+
+    const hourScore = selectedBucket ? bucketScore(selectedBucket) : null;
+    const overallScore = selectedOverall ? bucketScore(selectedOverall) : null;
+    let value = (hourScore ?? overallScore ?? 0) * sourceWeight;
+    if (!selectedBucket || selectedBucket.samples < EXPLORATION_SAMPLE_THRESHOLD) {
+      value += EXPLORATION_BONUS * (1 - (selectedBucket?.samples ?? 0) / EXPLORATION_SAMPLE_THRESHOLD);
     }
     return value;
   }

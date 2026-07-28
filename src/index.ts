@@ -76,6 +76,45 @@ const PROJECT_NAME = 'GemRouter';
 const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
+const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
+
+/** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
+function knownGeminiTextModels(): string[] {
+  return Object.keys(config.geminiApi.limits)
+    .map((id) => id.toLowerCase())
+    .filter((id) => /^(gemini|gemma)-/.test(id) && !id.includes('embedding'));
+}
+
+function applyModelConfig(orderedModels: string[]): void {
+  const known = new Set(knownGeminiTextModels());
+  const ordered = orderedModels.map((model) => model.toLowerCase()).filter((model) => known.has(model));
+  if (ordered.length === 0) return;
+  config.freeTierPolicy.textModelIds = ordered;
+  config.freeTierPolicy.fallbackModelIds = ordered;
+  config.geminiApi.fallbackModelIds = ordered;
+  const audio = config.freeTierPolicy.audioModelIds;
+  const embedding = config.freeTierPolicy.embeddingModelIds;
+  config.freeTierPolicy.allModelIds = [...new Set([...ordered, ...audio, ...embedding])];
+  // Public model list leads with the ordered text models and keeps non-text/provider
+  // entries after it.
+  const nonText = config.modelIds.filter((model) => !known.has(model.toLowerCase()));
+  config.modelIds = [...new Set([...ordered, ...nonText])];
+}
+
+function loadModelConfig(): void {
+  if (!existsSync(MODEL_CONFIG_PATH)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(MODEL_CONFIG_PATH, 'utf8')) as { textModels?: unknown };
+    if (Array.isArray(parsed.textModels)) applyModelConfig(parsed.textModels.map(String));
+  } catch {
+    // Ignore a malformed override and retain the environment configuration.
+  }
+}
+
+// The persisted model override must be applied before clients and app policies are
+// initialized. Otherwise startup prunes app allowlists against the stale .env set.
+loadModelConfig();
+
 const geminiApiLlm = createGeminiApiClient(config.geminiApi);
 const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
@@ -85,6 +124,7 @@ const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
   nvidiaServableModelIds: buildNvidiaServableModelIds(config.nvidia.models),
+  nvidiaHedgeDelayMs: config.nvidia.raceHedgeDelayMs,
 }, {
   geminiApi: geminiApiLlm,
   ollama: ollamaLlm,
@@ -475,10 +515,9 @@ function isConfiguredTextModel(modelId: string): boolean {
 }
 
 function textModelsAllowedForApp(clientApp: AuthenticatedClientApp | ApiAppRecord): string[] {
-  const appAllowed = new Set(clientApp.allowedModels.map((model) => normalizeModelId(model)));
   return config.modelIds
     .map((model) => normalizeModelId(model))
-    .filter((modelId) => appAllowed.has(modelId) && isConfiguredTextModel(modelId));
+    .filter((modelId) => appStore.isModelAllowed(clientApp, modelId) && isConfiguredTextModel(modelId));
 }
 
 function resolveTextModelForApp(
@@ -1136,11 +1175,47 @@ function buildAdminModelCatalog(
   }));
 }
 
-// The app model picker should offer every routable model, not just Gemini. Appended
-// only to the admin catalog (not the public surface lists, which handle NVIDIA
-// separately) so the operator can grant NVIDIA models/aliases to an app.
+// The app model picker is an authorization surface, so it must represent every ID
+// accepted by config.modelIds. Provider-specific entries carry richer metadata;
+// configured entries absent from discovery still receive a safe capability fallback.
 function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<Record<string, unknown>> {
-  return [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries()];
+  const providerEntries = [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries()];
+  const byId = new Map(
+    providerEntries.map((entry) => [String(entry.id ?? '').trim().toLowerCase(), entry] as const),
+  );
+  const agnesImageModels = new Set(config.agnes.imageModels);
+  const agnesVideoModels = new Set(config.agnes.videoModels);
+
+  return config.modelIds.map((modelId) => {
+    const normalized = modelId.trim().toLowerCase();
+    const providerEntry = byId.get(normalized);
+    if (providerEntry) return providerEntry;
+
+    const isAgnesImage = agnesImageModels.has(normalized);
+    const isAgnesVideo = agnesVideoModels.has(normalized);
+    const provider = isAgnesImage || isAgnesVideo
+      ? 'agnes'
+      : /^(gemini|gemma)-/.test(normalized)
+        ? 'gemini-api'
+        : 'ollama';
+    const capabilities = {
+      chat: !isAgnesImage && !isAgnesVideo,
+      imageGeneration: isAgnesImage,
+      live: false,
+      nativeAudio: false,
+      tts: false,
+      embeddings: false,
+      longRunning: isAgnesVideo,
+    };
+    return {
+      id: normalized,
+      displayName: normalized,
+      label: isAgnesVideo ? `${normalized} [video]` : normalized,
+      provider,
+      supportedGenerationMethods: isAgnesImage || !isAgnesVideo ? ['generateContent'] : [],
+      capabilities,
+    };
+  });
 }
 
 function modelSupportsSurface(
@@ -1442,11 +1517,29 @@ function getRuntimeSnapshot(
   };
 }
 
-function normalizeAllowedModels(values: unknown): string[] {
-  if (!Array.isArray(values) || values.length === 0) return config.bootstrapApp.allowedModels;
+function normalizeAllowedModels(
+  values: unknown,
+  emptyFallback: string[] = config.bootstrapApp.allowedModels,
+): string[] {
   const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
-  const models = values.map((value) => normalizeModelId(String(value))).filter((modelId) => knownModels.has(modelId));
-  return models.length > 0 ? [...new Set(models)] : config.bootstrapApp.allowedModels;
+  const fallback = emptyFallback
+    .map((modelId) => String(modelId).trim().toLowerCase().replace(/^models\//, ''))
+    .filter((modelId) => knownModels.has(modelId));
+  if (!Array.isArray(values) || values.length === 0) return [...new Set(fallback)];
+  const models = values
+    .map((value) => String(value ?? '').trim().toLowerCase().replace(/^models\//, ''))
+    .filter((modelId) => modelId && knownModels.has(modelId));
+  return models.length > 0 ? [...new Set(models)] : [...new Set(fallback)];
+}
+
+function unknownAllowedModels(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
+  return [...new Set(
+    values
+      .map((value) => String(value ?? '').trim().toLowerCase().replace(/^models\//, ''))
+      .filter((modelId) => modelId && !knownModels.has(modelId)),
+  )];
 }
 
 function listPublicEndpoints(): string[] {
@@ -3215,40 +3308,6 @@ app.post<{ Body: { enabled?: boolean; strategy?: string; urls?: string[]; bypass
 });
 
 // ---- Global model list editor (enabled set + order, applied live) ----
-const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
-
-/** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
-function knownGeminiTextModels(): string[] {
-  return Object.keys(config.geminiApi.limits)
-    .map((id) => id.toLowerCase())
-    .filter((id) => /^(gemini|gemma)-/.test(id) && !id.includes('embedding'));
-}
-
-function applyModelConfig(orderedModels: string[]): void {
-  const known = new Set(knownGeminiTextModels());
-  const ordered = orderedModels.map((m) => m.toLowerCase()).filter((m) => known.has(m));
-  if (ordered.length === 0) return;
-  config.freeTierPolicy.textModelIds = ordered;
-  config.freeTierPolicy.fallbackModelIds = ordered;
-  config.geminiApi.fallbackModelIds = ordered;
-  const audio = config.freeTierPolicy.audioModelIds;
-  const embedding = config.freeTierPolicy.embeddingModelIds;
-  config.freeTierPolicy.allModelIds = [...new Set([...ordered, ...audio, ...embedding])];
-  // Public model list leads with the ordered text models, keeps any other entries after.
-  const nonText = config.modelIds.filter((m) => !known.has(m.toLowerCase()));
-  config.modelIds = [...new Set([...ordered, ...nonText])];
-}
-
-function loadModelConfig(): void {
-  if (!existsSync(MODEL_CONFIG_PATH)) return;
-  try {
-    const parsed = JSON.parse(readFileSync(MODEL_CONFIG_PATH, 'utf8')) as { textModels?: unknown };
-    if (Array.isArray(parsed.textModels)) applyModelConfig(parsed.textModels.map(String));
-  } catch {
-    // ignore malformed override
-  }
-}
-loadModelConfig();
 
 app.get('/admin/provider/models-config', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
@@ -3817,6 +3876,7 @@ app.post<{
   Body: {
     name?: string;
     allowedOrigins?: string[];
+    modelAccess?: string;
     allowedModels?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
@@ -3838,10 +3898,31 @@ app.post<{
   if (rawKey && appStore.verify(rawKey)) {
     return sendError(reply, 409, { message: 'API key already in use', type: 'invalid_request_error', code: 'duplicate_api_key' });
   }
+  if (body.modelAccess !== undefined && body.modelAccess !== 'all' && body.modelAccess !== 'custom') {
+    return sendError(reply, 400, {
+      message: 'modelAccess must be "all" or "custom"',
+      type: 'invalid_request_error',
+      code: 'invalid_model_access',
+      param: 'modelAccess',
+    });
+  }
+  const modelAccess = body.modelAccess === 'all' ? 'all' : 'custom';
+  const unknownModels = modelAccess === 'custom' ? unknownAllowedModels(body.allowedModels) : [];
+  if (unknownModels.length > 0) {
+    return sendError(reply, 400, {
+      message: `Unknown or disabled model ids: ${unknownModels.join(', ')}`,
+      type: 'invalid_request_error',
+      code: 'unknown_allowed_models',
+      param: 'allowedModels',
+    });
+  }
   const created = appStore.create({
     name: String(body.name ?? '').trim() || 'local-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
-    allowedModels: normalizeAllowedModels(body.allowedModels),
+    modelAccess,
+    allowedModels: modelAccess === 'all'
+      ? config.modelIds
+      : normalizeAllowedModels(body.allowedModels, body.modelAccess === 'custom' ? [] : config.bootstrapApp.allowedModels),
     sessionNamespace: String(body.sessionNamespace ?? body.name ?? 'local-app'),
     rateLimitPerMinute:
       typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : config.bootstrapApp.rateLimitPerMinute,
@@ -3855,6 +3936,10 @@ app.post<{
     route: request.url,
     statusCode: 201,
     latencyMs: Date.now() - getStartedAt(request),
+    details: {
+      modelAccess: created.record.modelAccess,
+      allowedModelCount: created.record.allowedModels.length,
+    },
   });
   return reply.code(201).send({
     ok: true,
@@ -3868,6 +3953,7 @@ app.put<{
   Body: {
     name?: string;
     allowedOrigins?: string[];
+    modelAccess?: string;
     allowedModels?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
@@ -3876,10 +3962,39 @@ app.put<{
 }>('/admin/apps/:id', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const body = request.body ?? {};
+  if (body.modelAccess !== undefined && body.modelAccess !== 'all' && body.modelAccess !== 'custom') {
+    return sendError(reply, 400, {
+      message: 'modelAccess must be "all" or "custom"',
+      type: 'invalid_request_error',
+      code: 'invalid_model_access',
+      param: 'modelAccess',
+    });
+  }
+  // Existing API clients that send only allowedModels retain the historical
+  // explicit-allowlist behavior. The dashboard always sends modelAccess.
+  const modelAccess = body.modelAccess === 'all' || body.modelAccess === 'custom'
+    ? body.modelAccess
+    : Array.isArray(body.allowedModels)
+      ? 'custom'
+      : undefined;
+  const unknownModels = modelAccess !== 'all' ? unknownAllowedModels(body.allowedModels) : [];
+  if (unknownModels.length > 0) {
+    return sendError(reply, 400, {
+      message: `Unknown or disabled model ids: ${unknownModels.join(', ')}`,
+      type: 'invalid_request_error',
+      code: 'unknown_allowed_models',
+      param: 'allowedModels',
+    });
+  }
   const updated = appStore.update(request.params.id, {
     name: typeof body.name === 'string' ? body.name : undefined,
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : undefined,
-    allowedModels: Array.isArray(body.allowedModels) ? normalizeAllowedModels(body.allowedModels) : undefined,
+    modelAccess,
+    allowedModels: modelAccess === 'all'
+      ? config.modelIds
+      : Array.isArray(body.allowedModels)
+        ? normalizeAllowedModels(body.allowedModels, body.modelAccess === 'custom' ? [] : config.bootstrapApp.allowedModels)
+        : undefined,
     sessionNamespace: typeof body.sessionNamespace === 'string' ? body.sessionNamespace : undefined,
     rateLimitPerMinute: typeof body.rateLimitPerMinute === 'number' ? body.rateLimitPerMinute : undefined,
     maxConcurrency: typeof body.maxConcurrency === 'number' ? body.maxConcurrency : undefined,
@@ -3898,6 +4013,10 @@ app.put<{
     route: request.url,
     statusCode: 200,
     latencyMs: Date.now() - getStartedAt(request),
+    details: {
+      modelAccess: updated.modelAccess,
+      allowedModelCount: updated.allowedModels.length,
+    },
   });
   return {
     ok: true,

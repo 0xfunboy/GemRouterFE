@@ -1,6 +1,14 @@
-import { LLMProviderError } from './errors.js';
+import { LLMHedgeCancelled, LLMProviderError } from './errors.js';
 import { isNvidiaTierAlias } from './providers/nvidia/naming.js';
-import type { LLMBackendId, LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from './types.js';
+import type {
+  LLMBackendId,
+  LLMClient,
+  LLMFallbackAttempt,
+  LLMMessage,
+  LLMOptions,
+  LLMResponse,
+  LLMStreamChunk,
+} from './types.js';
 
 interface BackendClient extends LLMClient {
   health?(): unknown;
@@ -25,6 +33,11 @@ export interface LLMRouterConfig {
    * instead of failing. Empty/undefined keeps the old hard-fail behavior.
    */
   nvidiaFallbackModel?: string;
+  /**
+   * Head start granted to Gemini before one best-effort NVIDIA candidate is
+   * launched for a model both providers can serve.
+   */
+  nvidiaHedgeDelayMs?: number;
 }
 
 interface RouterState {
@@ -57,6 +70,107 @@ function annotateResponse(
     backend,
     fallbackFrom: fallbackFrom ?? response.fallbackFrom,
     fallbackReason: fallbackReason ?? response.fallbackReason,
+  };
+}
+
+interface NvidiaRouterHedgeOptions extends LLMOptions {
+  /** Internal marker: the NVIDIA client must launch exactly one candidate. */
+  __nvidiaRouterHedge?: true;
+}
+
+type BackendOutcome =
+  | { ok: true; backend: 'gemini-api' | 'nvidia'; response: LLMResponse }
+  | { ok: false; backend: 'gemini-api' | 'nvidia'; error: LLMProviderError };
+
+type NvidiaHedgeOutcome =
+  | { ok: true; backend: 'nvidia'; response: LLMResponse }
+  | { ok: false; backend: 'nvidia'; error: LLMProviderError };
+
+function normalizedModel(rawModel: unknown): string {
+  return String(rawModel ?? '').trim().toLowerCase().replace(/^models\//, '');
+}
+
+function responseHasUsableOutput(response: LLMResponse): boolean {
+  return response.content.trim().length > 0 || (response.images?.length ?? 0) > 0;
+}
+
+interface CrossBackendNvidiaHedgePlan {
+  model: string;
+  tier?: LLMOptions['tier'];
+}
+
+function normalizedAllowedModels(opts?: LLMOptions): Set<string> | null {
+  if (!Array.isArray(opts?.allowedModelIds)) return null;
+  return new Set(opts.allowedModelIds.map(normalizedModel).filter(Boolean));
+}
+
+function resolveCrossBackendNvidiaHedge(
+  config: LLMRouterConfig,
+  sequence: LLMBackendId[],
+  opts?: LLMOptions,
+): CrossBackendNvidiaHedgePlan | null {
+  if ((opts?.backendPreference ?? 'auto') !== 'auto') return null;
+  if (sequence[0] !== 'gemini-api' || !config.backendOrder.includes('nvidia')) return null;
+  const model = normalizedModel(opts?.model);
+  const textGeminiModel = /^(gemini|gemma)-/.test(model)
+    && !/(?:embedding|image|audio|tts|live|veo)/.test(model);
+  if (!textGeminiModel || config.strictModelIds?.includes(model)) return null;
+
+  const allowed = normalizedAllowedModels(opts);
+  if (allowed?.has('nvidia-auto')) {
+    return {
+      model: 'nvidia-auto',
+      tier: model.includes('lite')
+        ? 'medium'
+        : model.includes('flash')
+          ? 'large'
+          : opts?.tier,
+    };
+  }
+
+  // Without explicit nvidia-auto permission, the hedge may preserve only an exact
+  // alias that is already allowed for this request. It must never widen an app policy.
+  const exactServable = config.nvidiaServableModelIds?.includes(model) === true;
+  const exactAllowed = allowed === null || allowed.has(model);
+  return exactServable && exactAllowed ? { model, tier: opts?.tier } : null;
+}
+
+function nvidiaFailureAttempts(
+  error: LLMProviderError | null,
+  hedgeModel: string,
+): LLMFallbackAttempt[] {
+  if (!error) return [];
+  if (error.options.fallbackAttempts?.length) {
+    return error.options.fallbackAttempts.map((attempt) => ({ ...attempt }));
+  }
+  const statusCode = error.options.statusCode;
+  const hasUpstreamEvidence = Boolean(
+    error.options.upstreamModel || error.options.lastUpstreamError,
+  );
+  return [{
+    model: error.options.upstreamModel ?? hedgeModel,
+    backend: 'nvidia',
+    provider: 'nvidia',
+    reason: error.code,
+    // Local cooldown/budget errors carry an HTTP-shaped status for the caller, but
+    // it is not an upstream response and must not be rendered as one.
+    ...(hasUpstreamEvidence && typeof statusCode === 'number' ? { statusCode } : {}),
+  }];
+}
+
+function withNvidiaFailureTelemetry(
+  response: LLMResponse,
+  error: LLMProviderError | null,
+  hedgeModel: string,
+): LLMResponse {
+  const hedgeAttempts = nvidiaFailureAttempts(error, hedgeModel);
+  if (hedgeAttempts.length === 0) return response;
+  return {
+    ...response,
+    fallbackAttempts: [
+      ...(response.fallbackAttempts ?? []),
+      ...hedgeAttempts,
+    ],
   };
 }
 
@@ -194,10 +308,153 @@ export function createLlmRouter(
     const deadline = withRequestDeadline(rawOpts);
     const opts = deadline.opts;
     let lastError: LLMProviderError | null = null;
+    const crossBackendHedge = backends.nvidia
+      ? resolveCrossBackendNvidiaHedge(config, sequence, opts)
+      : null;
 
     try {
+    if (crossBackendHedge) {
+      const geminiController = new AbortController();
+      const nvidiaController = new AbortController();
+      const signalFor = (controller: AbortController): AbortSignal => (
+        opts.signal
+          ? AbortSignal.any([opts.signal, controller.signal])
+          : controller.signal
+      );
+      const geminiOpts: LLMOptions = { ...opts, signal: signalFor(geminiController) };
+      const nvidiaOpts: NvidiaRouterHedgeOptions = {
+        ...opts,
+        model: crossBackendHedge.model,
+        tier: crossBackendHedge.tier,
+        signal: signalFor(nvidiaController),
+        __nvidiaRouterHedge: true,
+      };
+      let nvidiaHedgeFailure: LLMProviderError | null = null;
+      let releaseNvidia!: () => void;
+      let nvidiaReleased = false;
+      let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
+      const nvidiaGate = new Promise<void>((resolve) => {
+        releaseNvidia = () => {
+          if (nvidiaReleased) return;
+          nvidiaReleased = true;
+          if (hedgeTimer) {
+            clearTimeout(hedgeTimer);
+            hedgeTimer = null;
+          }
+          resolve();
+        };
+        hedgeTimer = setTimeout(releaseNvidia, Math.max(0, config.nvidiaHedgeDelayMs ?? 8_000));
+        hedgeTimer.unref?.();
+      });
+
+      const geminiOutcome = backends.geminiApi.chat(messages, geminiOpts)
+        .then<BackendOutcome>((response) => {
+          if (!responseHasUsableOutput(response)) {
+            throw new LLMProviderError(
+              'gemini_api_empty_response',
+              'gemini-api',
+              'Gemini returned no usable content.',
+              { statusCode: 502, fallbackEligible: true },
+            );
+          }
+          return { ok: true, backend: 'gemini-api', response };
+        })
+        .catch<BackendOutcome>((error: unknown) => ({
+          ok: false,
+          backend: 'gemini-api',
+          error: normalizeBackendError('gemini-api', error),
+        }));
+      // If Gemini fails before its head start expires, there is no reason to keep the
+      // hedge asleep. It still gets exactly one NVIDIA candidate.
+      void geminiOutcome.then((outcome) => {
+        if (!outcome.ok) releaseNvidia();
+      });
+
+      const nvidiaOutcome = nvidiaGate
+        .then(() => {
+          if (nvidiaOpts.signal?.aborted) throw new LLMHedgeCancelled();
+          return backends.nvidia!.chat(messages, nvidiaOpts);
+        })
+        .then<BackendOutcome>((response) => {
+          if (!response.content.trim()) {
+            throw new LLMProviderError(
+              'nvidia_empty_response',
+              'nvidia',
+              'NVIDIA hedge returned no usable visible content.',
+              { statusCode: 502, fallbackEligible: true },
+            );
+          }
+          return { ok: true, backend: 'nvidia', response };
+        })
+        .catch<BackendOutcome>((error: unknown) => {
+          const normalized = normalizeBackendError('nvidia', error);
+          if (!(error instanceof LLMHedgeCancelled)) nvidiaHedgeFailure = normalized;
+          return {
+            ok: false,
+            backend: 'nvidia',
+            error: normalized,
+          };
+        });
+
+      const first = await Promise.race([geminiOutcome, nvidiaOutcome]);
+      let resolved = first;
+      if (!resolved.ok) {
+        // Do not let an opportunistic NVIDIA failure disturb a still-running Gemini
+        // request. Conversely, a fast Gemini failure wakes NVIDIA immediately.
+        resolved = await (resolved.backend === 'gemini-api' ? nvidiaOutcome : geminiOutcome);
+      }
+
+      if (resolved.ok && responseHasUsableOutput(resolved.response)) {
+        if (resolved.backend === 'gemini-api') {
+          nvidiaController.abort(new LLMHedgeCancelled());
+          // Settle a not-yet-launched hedge so it cannot wake up after this request.
+          releaseNvidia();
+        } else {
+          geminiController.abort(new LLMHedgeCancelled());
+        }
+        const responseWithTelemetry = resolved.backend === 'gemini-api'
+          ? withNvidiaFailureTelemetry(
+            resolved.response,
+            nvidiaHedgeFailure,
+            crossBackendHedge.model,
+          )
+          : resolved.response;
+        const response = annotateResponse(
+          responseWithTelemetry,
+          resolved.backend,
+          resolved.backend === 'nvidia' ? 'gemini-api' : undefined,
+          resolved.backend === 'nvidia' ? 'nvidia_hedge_won' : undefined,
+        );
+        state.lastBackendUsed = response.backend ?? resolved.backend;
+        state.lastFallbackFrom = response.fallbackFrom ?? null;
+        state.lastFallbackReason = response.fallbackReason ?? null;
+        state.lastResolutionAt = new Date().toISOString();
+        state.lastError = null;
+        return response;
+      }
+
+      // Both branches failed (or a backend violated the non-empty response contract).
+      // Preserve Gemini as the primary error so the remaining serial fallback policy
+      // sees the same status/retry semantics it would have seen without the hedge.
+      const [geminiResult, nvidiaResult] = await Promise.all([geminiOutcome, nvidiaOutcome]);
+      const primaryError = !geminiResult.ok
+        ? geminiResult.error
+        : !nvidiaResult.ok
+          ? nvidiaResult.error
+          : new LLMProviderError('backend_unavailable', 'gemini-api', 'Both hedged backends returned empty output.', {
+            statusCode: 502,
+            fallbackEligible: true,
+          });
+      lastError = primaryError;
+    }
+
     for (let index = 0; index < sequence.length; index++) {
       const backend = sequence[index];
+        // The cross-backend hedge above already spent both the primary Gemini path and
+        // the single NVIDIA candidate. If both failed, continue only with other backends.
+        if (crossBackendHedge && (backend === 'gemini-api' || backend === 'nvidia')) {
+          continue;
+        }
         const remaining = sequence.slice(index + 1);
         try {
         if (deadline.isExpired()) {
@@ -275,10 +532,203 @@ export function createLlmRouter(
       const deadline = withRequestDeadline(rawOpts);
       const opts = deadline.opts;
       let lastError: LLMProviderError | null = null;
+      const crossBackendHedge = backends.nvidia
+        ? resolveCrossBackendNvidiaHedge(config, sequence, opts)
+        : null;
 
       try {
+      if (crossBackendHedge) {
+        const geminiController = new AbortController();
+        const nvidiaController = new AbortController();
+        const signalFor = (controller: AbortController): AbortSignal => (
+          opts.signal
+            ? AbortSignal.any([opts.signal, controller.signal])
+            : controller.signal
+        );
+        const geminiOpts: LLMOptions = { ...opts, signal: signalFor(geminiController) };
+        const nvidiaOpts: NvidiaRouterHedgeOptions = {
+          ...opts,
+          model: crossBackendHedge.model,
+          tier: crossBackendHedge.tier,
+          signal: signalFor(nvidiaController),
+          __nvidiaRouterHedge: true,
+        };
+        let nvidiaHedgeFailure: LLMProviderError | null = null;
+        const geminiStream = backends.geminiApi.streamChat
+          ? backends.geminiApi.streamChat(messages, geminiOpts)
+          : singleResponseStream(backends.geminiApi, messages, geminiOpts);
+
+        type GeminiStreamStart =
+          | { ok: true; backend: 'gemini-api'; kind: 'chunk'; chunk: LLMStreamChunk }
+          | { ok: true; backend: 'gemini-api'; kind: 'done'; response: LLMResponse }
+          | { ok: false; backend: 'gemini-api'; error: LLMProviderError };
+
+        let releaseNvidia!: () => void;
+        let nvidiaReleased = false;
+        let hedgeTimer: ReturnType<typeof setTimeout> | null = null;
+        const nvidiaGate = new Promise<void>((resolve) => {
+          releaseNvidia = () => {
+            if (nvidiaReleased) return;
+            nvidiaReleased = true;
+            if (hedgeTimer) {
+              clearTimeout(hedgeTimer);
+              hedgeTimer = null;
+            }
+            resolve();
+          };
+          hedgeTimer = setTimeout(releaseNvidia, Math.max(0, config.nvidiaHedgeDelayMs ?? 8_000));
+          hedgeTimer.unref?.();
+        });
+
+        // Commit to Gemini as soon as it has visible output. Until then NVIDIA may
+        // complete a full response and safely win without mixing two streams.
+        const geminiStart = (async (): Promise<GeminiStreamStart> => {
+          try {
+            while (true) {
+              const next = await geminiStream.next();
+              if (next.done) {
+                if (!responseHasUsableOutput(next.value)) {
+                  throw new LLMProviderError(
+                    'gemini_api_empty_response',
+                    'gemini-api',
+                    'Gemini returned no usable streamed content.',
+                    { statusCode: 502, fallbackEligible: true },
+                  );
+                }
+                return { ok: true, backend: 'gemini-api', kind: 'done', response: next.value };
+              }
+              if (next.value.content.trim()) {
+                return { ok: true, backend: 'gemini-api', kind: 'chunk', chunk: next.value };
+              }
+            }
+          } catch (error) {
+            return {
+              ok: false,
+              backend: 'gemini-api',
+              error: normalizeBackendError('gemini-api', error),
+            };
+          }
+        })();
+        void geminiStart.then((outcome) => {
+          if (!outcome.ok) releaseNvidia();
+        });
+
+        const nvidiaOutcome: Promise<NvidiaHedgeOutcome> = nvidiaGate
+          .then(() => {
+            if (nvidiaOpts.signal?.aborted) throw new LLMHedgeCancelled();
+            return backends.nvidia!.chat(messages, nvidiaOpts);
+          })
+          .then<NvidiaHedgeOutcome>((response) => {
+            if (!response.content.trim()) {
+              throw new LLMProviderError(
+                'nvidia_empty_response',
+                'nvidia',
+                'NVIDIA hedge returned no usable visible content.',
+                { statusCode: 502, fallbackEligible: true },
+              );
+            }
+            return { ok: true, backend: 'nvidia', response };
+          })
+          .catch<NvidiaHedgeOutcome>((error: unknown) => {
+            const normalized = normalizeBackendError('nvidia', error);
+            if (!(error instanceof LLMHedgeCancelled)) nvidiaHedgeFailure = normalized;
+            return {
+              ok: false,
+              backend: 'nvidia',
+              error: normalized,
+            };
+          });
+
+        const first = await Promise.race([geminiStart, nvidiaOutcome]);
+        let resolved: GeminiStreamStart | NvidiaHedgeOutcome = first;
+        if (!resolved.ok) {
+          resolved = await (
+            resolved.backend === 'gemini-api'
+              ? nvidiaOutcome
+              : geminiStart
+          );
+        }
+
+        if (resolved.ok && resolved.backend === 'nvidia') {
+          geminiController.abort(new LLMHedgeCancelled());
+          void geminiStream.return?.(undefined as never).catch(() => {});
+          const response = annotateResponse(
+            resolved.response,
+            'nvidia',
+            'gemini-api',
+            'nvidia_hedge_won',
+          );
+          yield { content: response.content };
+          state.lastBackendUsed = 'nvidia';
+          state.lastFallbackFrom = 'gemini-api';
+          state.lastFallbackReason = 'nvidia_hedge_won';
+          state.lastResolutionAt = new Date().toISOString();
+          state.lastError = null;
+          return response;
+        }
+
+        if (resolved.ok && resolved.backend === 'gemini-api') {
+          nvidiaController.abort(new LLMHedgeCancelled());
+          releaseNvidia();
+          try {
+            let finalResponse: LLMResponse;
+            if (resolved.kind === 'done') {
+              finalResponse = resolved.response;
+              if (finalResponse.content) yield { content: finalResponse.content };
+            } else {
+              yield resolved.chunk;
+              while (true) {
+                const next = await geminiStream.next();
+                if (next.done) {
+                  finalResponse = next.value;
+                  break;
+                }
+                yield next.value;
+              }
+            }
+            const response = annotateResponse(
+              withNvidiaFailureTelemetry(
+                finalResponse,
+                nvidiaHedgeFailure,
+                crossBackendHedge.model,
+              ),
+              'gemini-api',
+            );
+            state.lastBackendUsed = 'gemini-api';
+            state.lastFallbackFrom = response.fallbackFrom ?? null;
+            state.lastFallbackReason = response.fallbackReason ?? null;
+            state.lastResolutionAt = new Date().toISOString();
+            state.lastError = null;
+            return response;
+          } catch (error) {
+            const normalized = normalizeBackendError('gemini-api', error);
+            state.lastBackendUsed = null;
+            state.lastFallbackFrom = normalized.options.fallbackFrom ?? null;
+            state.lastFallbackReason = normalized.options.fallbackReason ?? normalized.code;
+            state.lastResolutionAt = new Date().toISOString();
+            state.lastError = normalized.message;
+            throw normalized;
+          }
+        }
+
+        // Both pre-commit branches failed. Preserve Gemini as the primary error and
+        // continue with any non-NVIDIA serial fallback that has not already run.
+        const [geminiResult, nvidiaResult] = await Promise.all([geminiStart, nvidiaOutcome]);
+        lastError = !geminiResult.ok
+          ? geminiResult.error
+          : !nvidiaResult.ok
+            ? nvidiaResult.error
+            : new LLMProviderError('backend_unavailable', 'gemini-api', 'Both stream hedges failed.', {
+              statusCode: 502,
+              fallbackEligible: true,
+            });
+      }
+
       for (let index = 0; index < sequence.length; index++) {
         const backend = sequence[index];
+        if (crossBackendHedge && (backend === 'gemini-api' || backend === 'nvidia')) {
+          continue;
+        }
         const remaining = sequence.slice(index + 1);
         try {
           if (deadline.isExpired()) {
@@ -378,6 +828,12 @@ export function createLlmRouter(
         model: 'gemini-router',
         backendOrder: config.backendOrder,
         configuredDefaultBackend: config.backendOrder[0] ?? 'gemini-api',
+        crossBackendNvidiaHedge: {
+          enabled: Boolean(backends.nvidia && config.backendOrder.includes('nvidia')),
+          delayMs: config.nvidiaHedgeDelayMs ?? 8_000,
+          maxCandidates: 1,
+          policy: 'gemini-first',
+        },
         lastBackendUsed: state.lastBackendUsed,
         lastFallbackFrom: state.lastFallbackFrom,
         lastFallbackReason: state.lastFallbackReason,

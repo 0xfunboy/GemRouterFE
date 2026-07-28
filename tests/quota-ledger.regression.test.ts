@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
 
-import { GeminiApiQuotaLedger } from '../src/llm/providers/gemini-api/quotaLedger.js';
+import {
+  GeminiApiQuotaLedger,
+  nextPacificDayStartMs,
+  pacificDayStartMs,
+} from '../src/llm/providers/gemini-api/quotaLedger.js';
 import type { GeminiApiProviderConfig } from '../src/llm/providers/gemini-api/types.js';
 
 const workDirs: string[] = [];
@@ -65,6 +69,15 @@ interface RawModelLedger {
   cooldownUntil?: string;
   cooldownSource?: string;
   last429At?: string;
+  rpm: { events: RawCounterEvent[] };
+  tpm: { events: RawCounterEvent[] };
+  rpd: { events: RawCounterEvent[] };
+}
+
+interface RawCounterEvent {
+  requestId?: string;
+  tokens?: number;
+  reservationState?: string;
 }
 
 /**
@@ -164,5 +177,183 @@ describe('quota ledger: generic 429 strike ladder', () => {
     assert.equal(state?.cooldownSource, 'daily-depleted', 'bounded cooldown, not pacific-reset');
     const cooldownMs = Date.parse(String(state?.cooldownUntil)) - Date.now();
     assert.ok(cooldownMs <= 31 * 60_000, `expected a bounded window, got ${cooldownMs}ms`);
+  });
+});
+
+describe('quota ledger: Pacific daily boundary', () => {
+  it('returns the immediately following midnight when called late in the PDT evening', () => {
+    const lateEvening = Date.parse('2026-07-28T06:30:00.000Z'); // Jul 27, 23:30 PDT
+    assert.equal(
+      new Date(nextPacificDayStartMs(lateEvening)).toISOString(),
+      '2026-07-28T07:00:00.000Z',
+    );
+  });
+
+  it('returns the immediately following midnight when called late in the PST evening', () => {
+    const lateEvening = Date.parse('2026-12-15T07:30:00.000Z'); // Dec 14, 23:30 PST
+    assert.equal(
+      new Date(nextPacificDayStartMs(lateEvening)).toISOString(),
+      '2026-12-15T08:00:00.000Z',
+    );
+  });
+
+  it('handles the 23-hour spring DST day', () => {
+    const afterMidnight = Date.parse('2026-03-08T08:01:00.000Z'); // Mar 8, 00:01 PST
+    assert.equal(
+      new Date(pacificDayStartMs(afterMidnight)).toISOString(),
+      '2026-03-08T08:00:00.000Z',
+    );
+    assert.equal(
+      new Date(nextPacificDayStartMs(afterMidnight)).toISOString(),
+      '2026-03-09T07:00:00.000Z',
+    );
+  });
+
+  it('handles the 25-hour autumn DST day', () => {
+    const afterMidnight = Date.parse('2026-11-01T07:01:00.000Z'); // Nov 1, 00:01 PDT
+    assert.equal(
+      new Date(pacificDayStartMs(afterMidnight)).toISOString(),
+      '2026-11-01T07:00:00.000Z',
+    );
+    assert.equal(
+      new Date(nextPacificDayStartMs(afterMidnight)).toISOString(),
+      '2026-11-02T08:00:00.000Z',
+    );
+  });
+});
+
+describe('quota ledger: reservation lifecycle', () => {
+  const model = 'gemma-4-31b-it';
+
+  it('removes a reservation cancelled before dispatch', () => {
+    const ledger = makeLedger();
+    ledger.reserve({
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      estimatedTokens: 500,
+      requestId: 'pre-dispatch',
+    });
+
+    assert.equal(ledger.cancelReservation({
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      requestId: 'pre-dispatch',
+    }), true);
+    const state = stateOf(ledger, model);
+    assert.equal(state.rpm.events.length, 0);
+    assert.equal(state.tpm.events.length, 0);
+    assert.equal(state.rpd.events.length, 0);
+  });
+
+  it('retains quota after an upstream dispatch is aborted', () => {
+    const ledger = makeLedger();
+    const reservation = {
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      estimatedTokens: 500,
+      requestId: 'post-dispatch',
+    };
+    ledger.reserve(reservation);
+    ledger.markDispatched(reservation);
+
+    assert.equal(ledger.cancelReservation(reservation), false);
+    const state = stateOf(ledger, model);
+    assert.equal(state.rpm.events.length, 1);
+    assert.equal(state.tpm.events.length, 1);
+    assert.equal(state.rpd.events.length, 1);
+    assert.equal(state.rpm.events[0]?.reservationState, 'dispatched');
+  });
+
+  it('completes a hedge loser without recording a false provider failure', () => {
+    const ledger = makeLedger();
+    const reservation = {
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      estimatedTokens: 500,
+      requestId: 'hedge-loser',
+    };
+    ledger.reserve(reservation);
+    ledger.markDispatched(reservation);
+    ledger.markAbortedAfterDispatch(reservation);
+
+    const state = stateOf(ledger, model);
+    assert.equal(state.rpm.events.length, 1);
+    assert.equal(state.rpm.events[0]?.reservationState, 'completed');
+    assert.equal(state.tpm.events[0]?.reservationState, 'completed');
+    assert.equal(state.rpd.events[0]?.reservationState, 'completed');
+    assert.equal((state as RawModelLedger & { lastFailureCode?: string }).lastFailureCode, undefined);
+  });
+
+  it('reconciles the estimated TPM reservation with actual successful usage', () => {
+    const ledger = makeLedger();
+    const reservation = {
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      estimatedTokens: 10_000,
+      requestId: 'success',
+    };
+    ledger.reserve(reservation);
+    ledger.markDispatched(reservation);
+    ledger.markSuccess({ ...reservation, promptTokens: 1_234 });
+
+    const state = stateOf(ledger, model);
+    assert.equal(state.tpm.events[0]?.tokens, 1_234);
+    assert.equal(state.tpm.events[0]?.reservationState, 'completed');
+    assert.equal(ledger.snapshot().quotaGroups[0]?.models[0]?.tpm.used, 1_234);
+  });
+
+  it('a success clears every stale cooldown for the same quota group and model', () => {
+    const ledger = makeLedger({ [model]: { rpm: 15, tpm: null, rpd: 2 } });
+    const reservation = {
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      estimatedTokens: 500,
+      requestId: 'daily-failure',
+    };
+    ledger.reserve(reservation);
+    ledger.markDispatched(reservation);
+    ledger.markFailure({
+      ...reservation,
+      code: 'gemini_api_rate_limited',
+      status: 429,
+      rateLimited: true,
+      rateLimitScope: 'day',
+    });
+    assert.equal(stateOf(ledger, model).cooldownSource, 'pacific-reset');
+
+    ledger.markSuccess({
+      quotaGroup: 'group1',
+      keyId: 'account1',
+      model,
+      requestId: 'concurrent-success',
+      promptTokens: 100,
+    });
+    const state = stateOf(ledger, model);
+    assert.equal(state.cooldownUntil, undefined);
+    assert.equal(state.cooldownSource, undefined);
+    assert.equal(state.dailyDepleted, false);
+  });
+
+  it('self-heals the legacy success-after-429 state persisted with a Pacific cooldown', () => {
+    const ledger = makeLedger({ [model]: { rpm: 15, tpm: null, rpd: 20 } });
+    ledger.getAvailability('group1', model, 1);
+    // Older markSuccess() cleared dailyDepleted but accidentally left the
+    // pacific-reset cooldown in place. This is the exact state seen in production.
+    const state = stateOf(ledger, model);
+    state.cooldownUntil = new Date(nextPacificDayStartMs()).toISOString();
+    state.cooldownSource = 'pacific-reset';
+    state.dailyDepleted = false;
+
+    ledger.pruneAll();
+
+    assert.equal(state.cooldownUntil, undefined);
+    assert.equal(state.cooldownSource, undefined);
+    assert.equal(state.dailyDepleted, false);
   });
 });

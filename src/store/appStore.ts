@@ -1,6 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+
+export type AppModelAccess = 'all' | 'custom';
 
 export interface ApiAppRecord {
   id: string;
@@ -8,6 +10,7 @@ export interface ApiAppRecord {
   apiKeyHash: string;
   keyPreview: string;
   allowedOrigins: string[];
+  modelAccess: AppModelAccess;
   allowedModels: string[];
   sessionNamespace: string;
   rateLimitPerMinute: number;
@@ -21,6 +24,7 @@ interface CreateAppInput {
   name: string;
   rawKey?: string;
   allowedOrigins: string[];
+  modelAccess?: AppModelAccess;
   allowedModels: string[];
   sessionNamespace: string;
   rateLimitPerMinute: number;
@@ -30,6 +34,7 @@ interface CreateAppInput {
 interface UpdateAppInput {
   name?: string;
   allowedOrigins?: string[];
+  modelAccess?: AppModelAccess;
   allowedModels?: string[];
   sessionNamespace?: string;
   rateLimitPerMinute?: number;
@@ -46,6 +51,14 @@ function nowIso(): string {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function normalizedModelIds(values: string[]): string[] {
+  return uniqueStrings(values.map((value) => value.toLowerCase()));
+}
+
+function sameStrings(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function hashApiKey(rawKey: string): string {
@@ -80,6 +93,7 @@ function stableCompare(left: string, right: string): boolean {
 
 export class AppStore {
   private state: PersistedState = { apps: [] };
+  private modelUniverse = new Set<string>();
   private readonly rateWindows = new Map<string, { startedAt: number; count: number }>();
   private readonly concurrency = new Map<string, {
     inFlight: number;
@@ -101,13 +115,17 @@ export class AppStore {
   }
 
   restrictAllowedModels(allowedModels: string[]): number {
-    const allowed = new Set(allowedModels.map((model) => model.trim()).filter(Boolean));
+    const normalizedAllowedModels = normalizedModelIds(allowedModels);
+    const allowed = new Set(normalizedAllowedModels);
+    this.modelUniverse = allowed;
     let changed = 0;
     for (const app of this.state.apps) {
       if (app.revokedAt) continue;
-      const next = app.allowedModels.filter((model) => allowed.has(model));
-      if (next.length === app.allowedModels.length) continue;
-      app.allowedModels = next.length > 0 ? next : allowedModels;
+      const next = app.modelAccess === 'all'
+        ? normalizedAllowedModels
+        : normalizedModelIds(app.allowedModels).filter((model) => allowed.has(model));
+      if (sameStrings(next, app.allowedModels)) continue;
+      app.allowedModels = next;
       app.updatedAt = nowIso();
       changed += 1;
     }
@@ -125,7 +143,8 @@ export class AppStore {
     if (existing) {
       existing.name = input.name;
       existing.allowedOrigins = uniqueStrings(input.allowedOrigins);
-      existing.allowedModels = uniqueStrings(input.allowedModels);
+      existing.modelAccess = input.modelAccess === 'all' ? 'all' : 'custom';
+      existing.allowedModels = normalizedModelIds(input.allowedModels);
       existing.sessionNamespace = sanitizeSegment(input.sessionNamespace);
       existing.rateLimitPerMinute = Math.max(0, input.rateLimitPerMinute);
       existing.maxConcurrency = Math.max(0, input.maxConcurrency);
@@ -145,7 +164,8 @@ export class AppStore {
       apiKeyHash: hashApiKey(rawKey),
       keyPreview: maskKey(rawKey),
       allowedOrigins: uniqueStrings(input.allowedOrigins),
-      allowedModels: uniqueStrings(input.allowedModels),
+      modelAccess: input.modelAccess === 'all' ? 'all' : 'custom',
+      allowedModels: normalizedModelIds(input.allowedModels),
       sessionNamespace: sanitizeSegment(input.sessionNamespace),
       rateLimitPerMinute: Math.max(0, input.rateLimitPerMinute),
       maxConcurrency: Math.max(0, input.maxConcurrency),
@@ -201,7 +221,10 @@ export class AppStore {
   }
 
   isModelAllowed(app: ApiAppRecord, modelId: string): boolean {
-    return app.allowedModels.includes(modelId);
+    const normalized = modelId.trim().toLowerCase();
+    if (!normalized) return false;
+    if (app.modelAccess === 'all') return this.modelUniverse.has(normalized);
+    return app.allowedModels.includes(normalized);
   }
 
   consumeRateLimit(app: ApiAppRecord): boolean {
@@ -295,8 +318,11 @@ export class AppStore {
     if (Array.isArray(input.allowedOrigins)) {
       current.allowedOrigins = uniqueStrings(input.allowedOrigins);
     }
+    if (input.modelAccess === 'all' || input.modelAccess === 'custom') {
+      current.modelAccess = input.modelAccess;
+    }
     if (Array.isArray(input.allowedModels)) {
-      current.allowedModels = uniqueStrings(input.allowedModels);
+      current.allowedModels = normalizedModelIds(input.allowedModels);
     }
     if (typeof input.sessionNamespace === 'string' && input.sessionNamespace.trim()) {
       current.sessionNamespace = sanitizeSegment(input.sessionNamespace);
@@ -316,18 +342,34 @@ export class AppStore {
     try {
       const raw = readFileSync(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
-      this.state = { apps: Array.isArray(parsed.apps) ? parsed.apps : [] };
+      this.state = {
+        apps: Array.isArray(parsed.apps)
+          ? parsed.apps.map((app) => ({
+            ...app,
+            modelAccess: app.modelAccess === 'all' ? 'all' : 'custom',
+            allowedOrigins: uniqueStrings(Array.isArray(app.allowedOrigins) ? app.allowedOrigins : []),
+            allowedModels: normalizedModelIds(Array.isArray(app.allowedModels) ? app.allowedModels : []),
+          }))
+          : [],
+      };
     } catch {
       this.state = { apps: [] };
     }
   }
 
   private save(): void {
-    const payload = JSON.stringify(this.state, null, 2);
+    const payload = `${JSON.stringify(this.state, null, 2)}\n`;
+    const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
     try {
-      writeFileSync(this.filePath, payload, 'utf8');
+      writeFileSync(temporaryPath, payload, 'utf8');
+      renameSync(temporaryPath, this.filePath);
     } catch (error) {
-      console.error('[app-store] save failed:', error);
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // The temporary file may not have been created.
+      }
+      throw error;
     }
   }
 }

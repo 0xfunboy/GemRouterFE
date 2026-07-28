@@ -67,14 +67,14 @@ export const GEMINI_API_TIER1_LIMITS = {
     rpd: 500,
   },
   'gemma-4-31b-it': {
-    rpm: 15,
-    tpm: null,
-    rpd: 1_500,
+    rpm: 30,
+    tpm: 16_000,
+    rpd: 14_400,
   },
   'gemma-4-26b-a4b-it': {
-    rpm: 15,
-    tpm: null,
-    rpd: 1_500,
+    rpm: 30,
+    tpm: 16_000,
+    rpd: 14_400,
   },
   'gemini-embedding-001': {
     rpm: 3000,

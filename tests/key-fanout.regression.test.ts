@@ -14,11 +14,10 @@ describe('gemini key fan-out budget', () => {
     const stop = (cappedAttempts: number) => shouldStopKeyFanout({
       code: 'gemini_api_rate_limited',
       cappedAttempts,
-      hasRemainingModels: true,
     });
     assert.equal(stop(1), false, 'a single 429 may be that one account');
-    assert.equal(stop(2), false);
-    assert.equal(stop(3), true, '429s from three separate accounts mean model-wide pressure');
+    assert.equal(stop(2), false, 'allow two account rotations after the initial attempt');
+    assert.equal(stop(3), true, 'three separate quota groups are enough before moving down the model plan');
   });
 
   // gemini-2.5-flash is advertised by models.list on every account but 404s on projects
@@ -27,28 +26,26 @@ describe('gemini key fan-out budget', () => {
   it('caps the walk for models the account cannot actually serve', () => {
     assert.equal(isKeyFanoutCappedCode('gemini_api_model_not_found'), true);
     assert.equal(
-      shouldStopKeyFanout({ code: 'gemini_api_model_not_found', cappedAttempts: 3, hasRemainingModels: true }),
+      shouldStopKeyFanout({ code: 'gemini_api_model_not_found', cappedAttempts: 3 }),
       true,
     );
   });
 
-  it('never caps key-specific failures that another account can genuinely fix', () => {
-    for (const code of ['gemini_api_auth_failed', 'gemini_api_upstream_error', 'gemini_api_timeout']) {
-      assert.equal(isKeyFanoutCappedCode(code), false, `${code} is key-specific`);
+  it('never sweeps keys after model/provider timeout or 5xx failures', () => {
+    for (const code of ['gemini_api_upstream_error', 'gemini_api_timeout', 'gemini_api_high_demand']) {
+      assert.equal(isKeyFanoutCappedCode(code), false, `${code} moves directly to another model`);
       assert.equal(
-        shouldStopKeyFanout({ code, cappedAttempts: 9, hasRemainingModels: true }),
+        shouldStopKeyFanout({ code, cappedAttempts: 9 }),
         false,
-        `${code} must keep trying other accounts`,
+        `${code} is not an account-fanout error`,
       );
     }
   });
 
-  // The cap trades this model for the next one; with nothing left to fall back to, the
-  // pool is all the request has, so exhaust it rather than failing early.
-  it('ignores the cap when no fallback model is left', () => {
+  it('keeps the cap independent of fallback availability', () => {
     assert.equal(
-      shouldStopKeyFanout({ code: 'gemini_api_rate_limited', cappedAttempts: 99, hasRemainingModels: false }),
-      false,
+      shouldStopKeyFanout({ code: 'gemini_api_rate_limited', cappedAttempts: 3 }),
+      true,
     );
   });
 });

@@ -44,6 +44,14 @@ export interface LLMProviderErrorOptions {
   cause?: unknown;
 }
 
+/** Internal control-flow signal: an opportunistic backend lost a completed hedge. */
+export class LLMHedgeCancelled extends Error {
+  constructor() {
+    super('router hedge cancelled after another backend won');
+    this.name = 'LLMHedgeCancelled';
+  }
+}
+
 export class LLMProviderError extends Error {
   constructor(
     public readonly code: LLMProviderErrorCode,
