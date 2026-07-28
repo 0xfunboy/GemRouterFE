@@ -525,6 +525,12 @@ export function renderAppShell(input: {
         color: var(--muted);
         font-size: 12px;
       }
+      .form-field {
+        display: grid;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
       input, textarea, select {
         width: 100%;
         padding: 12px 14px;
@@ -1037,6 +1043,30 @@ export function renderAppShell(input: {
         max-height: 280px;
         overflow: auto;
         border-top: 1px solid var(--line);
+      }
+      .model-access-option {
+        display: flex;
+        grid-template-columns: none;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        background: rgba(24, 240, 208, 0.05);
+        color: var(--text);
+      }
+      .model-access-option input {
+        width: auto;
+        margin-top: 2px;
+      }
+      .model-picker-actions {
+        display: flex;
+        gap: 8px;
+        padding: 8px;
+        border-top: 1px solid var(--line);
+      }
+      .model-picker-actions button {
+        flex: 1;
+        padding: 7px 10px;
       }
       .model-picker-option {
         display: grid;
@@ -1864,14 +1894,22 @@ export function renderAppShell(input: {
                   Allowed origins
                   <textarea class="compact-textarea" rows="1" name="allowedOrigins" placeholder="https://app.example.com, http://localhost:*"></textarea>
                 </label>
-                <label>
-                  Allowed models
+                <div class="form-field">
+                  <span>Allowed models</span>
+                  <label class="model-access-option">
+                    <input type="checkbox" id="allowed-models-all" name="modelAccessAll" />
+                    <span><strong>All configured models</strong><span class="footer-note">Automatically includes models added later.</span></span>
+                  </label>
                   <details id="allowed-models-picker" class="model-picker">
                     <summary>Select allowed models</summary>
+                    <div class="model-picker-actions">
+                      <button type="button" class="secondary" id="allowed-models-select-all">Select all current</button>
+                      <button type="button" class="secondary" id="allowed-models-clear">Clear</button>
+                    </div>
                     <div id="allowed-models-options" class="model-picker-panel"></div>
                   </details>
-                  <div id="allowed-models-summary" class="footer-note">Empty selection uses the bootstrap defaults.</div>
-                </label>
+                  <div id="allowed-models-summary" class="footer-note">Choose all-model access or an explicit model list.</div>
+                </div>
                 <label>
                   Session namespace
                   <input type="text" name="sessionNamespace" placeholder="client-app" />
@@ -2058,6 +2096,8 @@ export function renderAppShell(input: {
       const state = {
         apps: [],
         appFormDirty: false,
+        appFormRevision: 0,
+        appSaveInFlight: false,
         modelsConfigDirty: false,
         proxyDirty: false,
         accountsDirty: false,
@@ -2138,6 +2178,7 @@ export function renderAppShell(input: {
       const appForm = document.getElementById('app-form');
       const appStatus = document.getElementById('app-status');
       const appReset = document.getElementById('app-reset');
+      const appSubmit = appForm.querySelector('button[type="submit"]');
       const appsTable = document.getElementById('apps-table');
       const interactionsTable = document.getElementById('interactions-table');
       const interactionsLimitSelect = document.getElementById('interactions-limit-select');
@@ -2145,6 +2186,9 @@ export function renderAppShell(input: {
       const allowedModelsPicker = document.getElementById('allowed-models-picker');
       const allowedModelsOptions = document.getElementById('allowed-models-options');
       const allowedModelsSummary = document.getElementById('allowed-models-summary');
+      const allowedModelsAll = document.getElementById('allowed-models-all');
+      const allowedModelsSelectAll = document.getElementById('allowed-models-select-all');
+      const allowedModelsClear = document.getElementById('allowed-models-clear');
 
       function fmtNumber(value) {
         return new Intl.NumberFormat().format(value || 0);
@@ -3140,7 +3184,8 @@ export function renderAppShell(input: {
       }
 
       function modelSupportsRouter(entry) {
-        return modelSupportsChat(entry) || modelSupportsImage(entry);
+        const capabilities = modelCapabilities(entry);
+        return modelSupportsChat(entry) || modelSupportsImage(entry) || capabilities.longRunning === true;
       }
 
       function modelCapabilityTags(entry) {
@@ -3178,33 +3223,59 @@ export function renderAppShell(input: {
           .filter(Boolean);
       }
 
-      function setAllowedModelSelection(models) {
+      function getModelAccess() {
+        return allowedModelsAll && allowedModelsAll.checked ? 'all' : 'custom';
+      }
+
+      function markAppFormDirty() {
+        state.appFormDirty = true;
+        state.appFormRevision += 1;
+      }
+
+      function syncAllowedModelControls() {
+        const allModels = getModelAccess() === 'all';
+        Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"]')).forEach(function(input) {
+          input.disabled = allModels || input.dataset.compatible !== 'true';
+        });
+        if (allowedModelsSelectAll) allowedModelsSelectAll.disabled = allModels;
+        if (allowedModelsClear) allowedModelsClear.disabled = allModels;
+        if (allowedModelsPicker) allowedModelsPicker.classList.toggle('is-disabled', allModels);
+      }
+
+      function setAllowedModelSelection(models, modelAccess) {
         const selected = new Set((Array.isArray(models) ? models : []).map(function(model) { return String(model || '').trim(); }).filter(Boolean));
         Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"]')).forEach(function(input) {
-          if (!input.disabled) {
+          if (input.dataset.compatible === 'true') {
             input.checked = selected.has(String(input.value || '').trim());
           }
         });
+        if (allowedModelsAll) allowedModelsAll.checked = modelAccess === 'all';
+        syncAllowedModelControls();
         updateAllowedModelsSummary();
       }
 
       function updateAllowedModelsSummary() {
         const selected = getAllowedModelSelection();
+        const allModels = getModelAccess() === 'all';
         const preview = selected.length > 3
           ? selected.slice(0, 3).join(', ') + ', +' + String(selected.length - 3) + ' more'
           : selected.join(', ');
         const summary = allowedModelsPicker ? allowedModelsPicker.querySelector('summary') : null;
         if (summary) {
-          summary.textContent = selected.length > 0
+          summary.textContent = allModels
+            ? ('All configured models (' + String(getModelCatalog().filter(modelSupportsRouter).length) + ')')
+            : selected.length > 0
             ? ('Select allowed models (' + selected.length + ' selected)')
             : 'Select allowed models';
         }
-        allowedModelsSummary.textContent = selected.length > 0
+        allowedModelsSummary.textContent = allModels
+          ? 'All configured models are allowed, including models added later.'
+          : selected.length > 0
           ? (selected.length + ' selected: ' + preview)
-          : 'Empty selection uses the bootstrap defaults.';
+          : 'No models selected for this custom policy.';
       }
 
-      function renderAllowedModelsPicker(modelCatalog, selectedModels) {
+      function renderAllowedModelsPicker(modelCatalog, selectedModels, modelAccess) {
         const selected = new Set((Array.isArray(selectedModels) ? selectedModels : []).map(function(model) { return String(model || '').trim(); }).filter(Boolean));
         const sourceEntries = Array.isArray(modelCatalog) && modelCatalog.length > 0 ? modelCatalog : getModelCatalog();
         const entries = sourceEntries
@@ -3225,12 +3296,14 @@ export function renderAppShell(input: {
           if (capabilityTags.length > 0) notes.push(capabilityTags.join(', '));
           if (!compatible) notes.push('not exposed by the current router');
           return '<label class="model-picker-option' + (compatible ? '' : ' is-disabled') + '">' +
-            '<div><input type="checkbox" name="allowedModels" value="' + escapeHtml(id) + '"' + (selected.has(id) ? ' checked' : '') + (compatible ? '' : ' disabled') + ' />' +
+            '<div><input type="checkbox" name="allowedModels" data-compatible="' + String(compatible) + '" value="' + escapeHtml(id) + '"' + (selected.has(id) ? ' checked' : '') + (compatible ? '' : ' disabled') + ' />' +
               '<span class="model-picker-title">' + escapeHtml(id) + '</span></div>' +
             '<div class="footer-note">' + escapeHtml(notes.join(' · ') || 'Gemini API model') + '</div>' +
           '</label>';
         }).join('') || '<div class="footer-note" style="padding:12px 14px">No Gemini model catalog available yet.</div>';
 
+        if (allowedModelsAll) allowedModelsAll.checked = modelAccess === 'all';
+        syncAllowedModelControls();
         updateAllowedModelsSummary();
       }
 
@@ -3642,32 +3715,36 @@ export function renderAppShell(input: {
         ].join('\\n');
       }
 
-      function resetAppForm() {
+      function resetAppForm(statusMessage) {
+        state.appFormRevision += 1;
         state.appFormDirty = false;
         appForm.reset();
         appForm.elements.id.value = '';
-        setAllowedModelSelection([]);
+        setAllowedModelSelection([], 'custom');
         if (allowedModelsPicker) {
           allowedModelsPicker.open = false;
         }
         Array.from(appForm.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
           autosizeTextarea(textarea);
         });
-        appStatus.textContent = '';
+        if (appSubmit) appSubmit.textContent = 'Save app';
+        appStatus.textContent = statusMessage || '';
       }
 
       function populateAppForm(app) {
+        state.appFormRevision += 1;
         appForm.elements.id.value = app.id;
         appForm.elements.name.value = app.name;
         appForm.elements.allowedOrigins.value = app.allowedOrigins.join(', ');
         appForm.elements.sessionNamespace.value = app.sessionNamespace;
         appForm.elements.rateLimitPerMinute.value = app.rateLimitPerMinute;
         appForm.elements.maxConcurrency.value = app.maxConcurrency;
-        setAllowedModelSelection(app.allowedModels);
+        setAllowedModelSelection(app.allowedModels, app.modelAccess);
         Array.from(appForm.querySelectorAll('.compact-textarea')).forEach(function(textarea) {
           autosizeTextarea(textarea);
         });
         appStatus.textContent = 'Editing ' + app.name + '.';
+        if (appSubmit) appSubmit.textContent = 'Update ' + app.name;
         // Fresh load from server state: not a user edit yet.
         state.appFormDirty = false;
       }
@@ -3675,12 +3752,14 @@ export function renderAppShell(input: {
       function renderApps(apps) {
         appsTable.innerHTML = apps.map(function(app) {
           const badge = app.revokedAt ? '<span class="chip bad">revoked</span>' : '<span class="chip good">active</span>';
-          const modelSummary = app.allowedModels.length > 0
+          const modelSummary = app.modelAccess === 'all'
+            ? 'all configured models'
+            : app.allowedModels.length > 0
             ? (app.allowedModels.length + ' models')
             : 'bootstrap defaults';
           return '<tr>' +
             '<td><strong>' + escapeHtml(app.name) + '</strong><div class="footer-note">' + badge + '</div></td>' +
-            '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">' + escapeHtml(modelSummary) + ': ' + escapeHtml(app.allowedModels.join(', ') || 'inherit bootstrap') + '</div></td>' +
+            '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">' + escapeHtml(modelSummary) + (app.modelAccess === 'all' ? '' : ': ' + escapeHtml(app.allowedModels.join(', ') || 'inherit bootstrap')) + '</div></td>' +
             '<td><div>rpm: ' + escapeHtml(String(app.rateLimitPerMinute)) + '</div><div>conc: ' + escapeHtml(String(app.maxConcurrency)) + '</div><div class="footer-note mono">' + escapeHtml(app.keyPreview) + '</div></td>' +
             '<td><div class="button-row">' +
               '<button type="button" class="secondary" data-action="edit" data-id="' + escapeHtml(app.id) + '">Edit</button>' +
@@ -3693,6 +3772,8 @@ export function renderAppShell(input: {
 
       function formatAttemptTarget(attempt) {
         if (attempt && attempt.keyId) return String(attempt.keyId);
+        if (attempt && String(attempt.reason || '').startsWith('local_')) return 'local';
+        if (attempt && attempt.provider) return String(attempt.provider);
         return 'no-key';
       }
 
@@ -3720,6 +3801,18 @@ export function renderAppShell(input: {
             return 'rpd full';
           case 'local_cooldown_unavailable':
             return 'cooldown';
+          case 'local_tpm_request_exceeds_model_limit':
+            return 'prompt exceeds model TPM';
+          case 'local_request_attempt_budget_exhausted':
+            return 'request attempt budget';
+          case 'local_request_deadline_reached':
+            return 'request deadline';
+          case 'local_nvidia_rpm_unavailable':
+            return 'NVIDIA rpm full';
+          case 'local_nvidia_concurrency_unavailable':
+            return 'NVIDIA concurrency full';
+          case 'local_nvidia_budget_unavailable':
+            return 'NVIDIA local budget';
           case 'gemini_api_auth_failed':
             return 'auth';
           case 'gemini_api_model_not_found':
@@ -3859,10 +3952,15 @@ export function renderAppShell(input: {
         if (state.adminRefreshInFlight) return;
         state.adminRefreshInFlight = true;
         const editingAppId = String(appForm.elements.id.value || '').trim();
+        const appFormRevision = state.appFormRevision;
         const selectedModels = getAllowedModelSelection();
+        const selectedModelAccess = getModelAccess();
         const selectedPromptModel = promptModel.value;
         try {
           const data = await request('/admin/summary');
+          const currentEditingAppId = String(appForm.elements.id.value || '').trim();
+          const appFormSnapshotCurrent =
+            state.appFormRevision === appFormRevision && currentEditingAppId === editingAppId;
           state.adminSummary = data;
           state.apps = data.apps;
           state.adminStats = data.stats || null;
@@ -3872,8 +3970,8 @@ export function renderAppShell(input: {
           syncProjectQuotaState((data.provider && data.provider.quota) || null);
           // Never clobber the app form while the operator is editing it: a background
           // refresh must not wipe in-progress model checkboxes or reset the form fields.
-          if (!state.appFormDirty) {
-            renderAllowedModelsPicker(state.modelCatalog, selectedModels);
+          if (appFormSnapshotCurrent && !state.appFormDirty && !state.appSaveInFlight) {
+            renderAllowedModelsPicker(state.modelCatalog, selectedModels, selectedModelAccess);
           }
           fillAppOptions(data.apps);
           fillModelOptions(selectedPromptModel);
@@ -3888,7 +3986,7 @@ export function renderAppShell(input: {
           renderApps(data.apps);
           fillInteractionAppFilter();
           renderInteractions(state.adminStats);
-          if (editingAppId && !state.appFormDirty) {
+          if (editingAppId && appFormSnapshotCurrent && !state.appFormDirty && !state.appSaveInFlight) {
             const editingApp = data.apps.find(function(app) { return app.id === editingAppId; });
             if (editingApp) {
               populateAppForm(editingApp);
@@ -4225,12 +4323,15 @@ export function renderAppShell(input: {
 
       appForm.addEventListener('submit', async function(event) {
         event.preventDefault();
+        if (state.appSaveInFlight) return;
         const form = new FormData(appForm);
         const id = String(form.get('id') || '').trim();
+        const intendedName = String(form.get('name') || '').trim() || 'app';
         appStatus.textContent = id ? 'Updating app…' : 'Creating app…';
         const payload = {
           name: form.get('name'),
           allowedOrigins: String(form.get('allowedOrigins') || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean),
+          modelAccess: getModelAccess(),
           allowedModels: getAllowedModelSelection(),
           sessionNamespace: form.get('sessionNamespace'),
           rateLimitPerMinute: Number(form.get('rateLimitPerMinute') || 0),
@@ -4238,25 +4339,56 @@ export function renderAppShell(input: {
         };
         const customKey = String(form.get('apiKey') || '').trim();
         if (!id && customKey) payload.apiKey = customKey;
+        state.appSaveInFlight = true;
+        if (appSubmit) appSubmit.disabled = true;
         try {
           const response = await request(id ? '/admin/apps/' + encodeURIComponent(id) : '/admin/apps', {
             method: id ? 'PUT' : 'POST',
             body: JSON.stringify(payload),
           });
           if (id) {
-            appStatus.textContent = 'App updated.';
+            if (!response.app || response.app.id !== id) {
+              throw new Error('Update confirmation targeted a different app. No local state was changed.');
+            }
+            if (response.app.modelAccess !== payload.modelAccess) {
+              throw new Error('The server did not persist the requested model access policy.');
+            }
+            if (payload.modelAccess === 'custom') {
+              const requestedModels = payload.allowedModels.slice().sort();
+              const persistedModels = (Array.isArray(response.app.allowedModels) ? response.app.allowedModels : []).slice().sort();
+              if (JSON.stringify(requestedModels) !== JSON.stringify(persistedModels)) {
+                throw new Error('The server did not persist the complete custom model selection.');
+              }
+            }
+            state.apps = state.apps.map(function(app) { return app.id === id ? response.app : app; });
+            renderApps(state.apps);
+            resetAppForm(
+              response.app.name + ' updated: ' +
+              (response.app.modelAccess === 'all'
+                ? 'all configured models enabled.'
+                : String(response.app.allowedModels.length) + ' models enabled.'),
+            );
           } else {
-            appStatus.textContent = 'App created. The new key is shown in the popup.';
+            if (!response.app || !response.app.id) {
+              throw new Error('The server did not confirm the created app.');
+            }
             openAppKeyModal('New API key for ' + String((response.app && response.app.name) || payload.name || 'app'), response.apiKey);
+            state.apps = state.apps.concat([response.app]);
+            renderApps(state.apps);
+            resetAppForm(intendedName + ' created. The new key is shown in the popup.');
           }
-          resetAppForm();
           await loadAdminSummary();
         } catch (error) {
           appStatus.textContent = error.message;
+        } finally {
+          state.appSaveInFlight = false;
+          if (appSubmit) appSubmit.disabled = false;
         }
       });
 
-      appReset.addEventListener('click', resetAppForm);
+      appReset.addEventListener('click', function() {
+        resetAppForm();
+      });
       promptApp.addEventListener('change', function() {
         fillModelOptions();
       });
@@ -4275,12 +4407,41 @@ export function renderAppShell(input: {
         });
       }
       allowedModelsOptions.addEventListener('change', function() {
-        state.appFormDirty = true;
+        markAppFormDirty();
         updateAllowedModelsSummary();
       });
+      if (allowedModelsAll) {
+        allowedModelsAll.addEventListener('change', function() {
+          if (allowedModelsAll.checked) {
+            Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"][data-compatible="true"]'))
+              .forEach(function(input) { input.checked = true; });
+          }
+          markAppFormDirty();
+          syncAllowedModelControls();
+          updateAllowedModelsSummary();
+        });
+      }
+      if (allowedModelsSelectAll) {
+        allowedModelsSelectAll.addEventListener('click', function() {
+          Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"][data-compatible="true"]'))
+            .forEach(function(input) { input.checked = true; });
+          markAppFormDirty();
+          updateAllowedModelsSummary();
+        });
+      }
+      if (allowedModelsClear) {
+        allowedModelsClear.addEventListener('click', function() {
+          Array.from(allowedModelsOptions.querySelectorAll('input[name="allowedModels"]'))
+            .forEach(function(input) { input.checked = false; });
+          markAppFormDirty();
+          updateAllowedModelsSummary();
+        });
+      }
       // Any manual edit to the app form marks it dirty so background refreshes leave it alone.
-      appForm.addEventListener('input', function() {
-        state.appFormDirty = true;
+      appForm.addEventListener('input', function(event) {
+        const target = event.target;
+        if (target && (target.name === 'allowedModels' || target.name === 'modelAccessAll')) return;
+        markAppFormDirty();
       });
 
       appsTable.addEventListener('click', async function(event) {

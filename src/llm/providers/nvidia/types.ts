@@ -58,9 +58,19 @@ export interface NvidiaHourBucket {
   avgTokensPerSec: number | null;
 }
 
+export interface NvidiaSourceScore {
+  hours: Record<string, NvidiaHourBucket>;
+  overall: NvidiaHourBucket;
+}
+
 export interface NvidiaModelScore {
   hours: Record<string, NvidiaHourBucket>;
   overall: NvidiaHourBucket;
+  /**
+   * Source-specific samples keep synthetic probes and opportunistic hedge traffic
+   * from overpowering reliability observed on normal requests.
+   */
+  sources?: Partial<Record<NvidiaSampleSource, NvidiaSourceScore>>;
   consecutiveFailures: number;
   cooldownUntil: string | null;
   last429At: string | null;

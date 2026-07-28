@@ -26,6 +26,11 @@ interface AttemptResult {
   usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
 }
 
+interface NvidiaRouterHedgeOptions extends LLMOptions {
+  /** Internal router marker: this opportunistic hedge may spend one candidate only. */
+  __nvidiaRouterHedge?: true;
+}
+
 class AttemptAborted extends Error {
   constructor() {
     super('nvidia attempt aborted by hedged race');
@@ -172,14 +177,22 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
     while (rpmEvents.length > 0 && rpmEvents[0] <= now - 60_000) rpmEvents.shift();
   }
 
-  function localBudgetError(message: string): NvidiaProviderError {
+  function localBudgetError(
+    message: string,
+    reason: 'local_nvidia_rpm_unavailable' | 'local_nvidia_concurrency_unavailable',
+  ): NvidiaProviderError {
     // Local budget exhaustion is a property of the whole key, not of one model:
     // callers must not score it against the model or retry other candidates.
     const error = new NvidiaProviderError('nvidia_rate_limited', message, {
       statusCode: 429,
       fallbackEligible: true,
     });
-    (error as NvidiaProviderError & { localBudget?: boolean }).localBudget = true;
+    const local = error as NvidiaProviderError & {
+      localBudget?: boolean;
+      localBudgetReason?: string;
+    };
+    local.localBudget = true;
+    local.localBudgetReason = reason;
     return error;
   }
 
@@ -187,10 +200,10 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
     const now = Date.now();
     pruneRpmWindow(now);
     if (rpmEvents.length >= config.rpmLimit) {
-      throw localBudgetError('Local NVIDIA RPM budget exhausted.');
+      throw localBudgetError('Local NVIDIA RPM budget exhausted.', 'local_nvidia_rpm_unavailable');
     }
     if (inflight >= config.maxConcurrency) {
-      throw localBudgetError('NVIDIA concurrency limit reached.');
+      throw localBudgetError('NVIDIA concurrency limit reached.', 'local_nvidia_concurrency_unavailable');
     }
     rpmEvents.push(now);
   }
@@ -213,6 +226,16 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
     onFirstToken: () => void,
   ): Promise<AttemptResult> {
     if (signal.aborted) throw new AttemptAborted();
+    const remainingDeadlineMs = typeof opts?.deadline === 'number'
+      ? opts.deadline - Date.now()
+      : config.timeoutMs;
+    if (remainingDeadlineMs <= 0) {
+      throw new NvidiaProviderError('nvidia_timeout', `NVIDIA request to ${model} missed the shared request deadline.`, {
+        statusCode: 504,
+        fallbackEligible: false,
+        upstreamModel: model,
+      });
+    }
     reserveRpmSlot();
     inflight += 1;
     const started = Date.now();
@@ -223,11 +246,8 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
 
     // Never let one attempt outlive the whole-request deadline: clamp its ceiling to
     // whatever time is left so a stalled model can't eat the entire budget.
-    const remainingDeadlineMs = typeof opts?.deadline === 'number'
-      ? Math.max(1_000, opts.deadline - Date.now())
-      : config.timeoutMs;
-    const attemptTimeoutMs = Math.min(config.timeoutMs, remainingDeadlineMs);
-    const firstTokenMs = Math.min(config.firstTokenTimeoutMs, remainingDeadlineMs);
+    const attemptTimeoutMs = Math.max(1, Math.min(config.timeoutMs, remainingDeadlineMs));
+    const firstTokenMs = Math.max(1, Math.min(config.firstTokenTimeoutMs, remainingDeadlineMs));
     const overallTimer = setTimeout(
       () => controller.abort(new NvidiaProviderError('nvidia_timeout', `NVIDIA request to ${model} exceeded ${attemptTimeoutMs}ms.`, {
         statusCode: 504,
@@ -292,7 +312,7 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
         let code: NvidiaErrorCode = 'nvidia_upstream_error';
         let fallbackEligible = true;
         if (status === 401 || status === 403) { code = 'nvidia_auth_failed'; fallbackEligible = false; }
-        else if (status === 404) code = 'nvidia_model_not_found';
+        else if (status === 404 || status === 410) code = 'nvidia_model_not_found';
         else if (status === 429) code = 'nvidia_rate_limited';
         else if (status === 400 || status === 422) { code = 'nvidia_invalid_request'; fallbackEligible = false; }
         const error = new NvidiaProviderError(code, `NVIDIA ${model} responded ${status}: ${message}`, {
@@ -319,6 +339,7 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       const decoder = new TextDecoder();
       let buffered = '';
       let content = '';
+      let visibleContent = '';
       let ttfbMs: number | null = null;
       let finishReason: AttemptResult['finishReason'] = 'stop';
       let usage: AttemptResult['usage'] = {};
@@ -339,15 +360,20 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
         if (choice) {
           const delta = (choice.delta ?? {}) as Record<string, unknown>;
           const piece = typeof delta.content === 'string' ? delta.content : '';
-          const reasoningPiece = includeThoughts && typeof delta.reasoning_content === 'string'
+          const rawReasoningPiece = typeof delta.reasoning_content === 'string'
             ? delta.reasoning_content
             : '';
-          if (piece || reasoningPiece) {
+          const reasoningPiece = includeThoughts ? rawReasoningPiece : '';
+          // Hidden reasoning is still proof that the model is alive. It cancels the
+          // first-token watchdog, but is never allowed to become a successful empty
+          // response when includeThoughts=false.
+          if (piece || rawReasoningPiece) {
             if (ttfbMs === null) {
               ttfbMs = Date.now() - started;
               clearFirstTokenTimer();
               onFirstToken();
             }
+            visibleContent += piece;
             content += reasoningPiece + piece;
           }
           const finish = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
@@ -388,8 +414,9 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
         });
       }
 
-      const cleaned = includeThoughts ? content.trim() : stripReasoning(content);
-      if (!cleaned) {
+      const visibleCleaned = stripReasoning(visibleContent);
+      const cleaned = includeThoughts ? content.trim() : visibleCleaned;
+      if (!cleaned || !visibleCleaned) {
         throw new NvidiaProviderError('nvidia_empty_response', `NVIDIA ${model} returned no usable content.`, {
           statusCode: 502,
           fallbackEligible: true,
@@ -438,7 +465,10 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       });
     }
     const useRace = resolved.raceEligible && config.raceEnabled;
-    const maxAttempts = useRace
+    const routerHedge = (opts as NvidiaRouterHedgeOptions | undefined)?.__nvidiaRouterHedge === true;
+    const maxAttempts = routerHedge
+      ? 1
+      : useRace
       ? Math.min(candidates.length, Math.max(1, config.raceMaxCandidates))
       : candidates.length;
     const attempts: LLMFallbackAttempt[] = [];
@@ -486,7 +516,7 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
         const controller = new AbortController();
         controllers.add(controller);
         active += 1;
-        const source = nextIndex > 1 ? 'hedge' : 'traffic';
+        const source = routerHedge || nextIndex > 1 ? 'hedge' : 'traffic';
 
         runAttempt(model, messages, opts, controller.signal, () => {
           anyFirstToken = true;
@@ -536,7 +566,11 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
                 upstreamModel: model,
                 cause: error,
               });
-            const isLocalBudget = (providerError as NvidiaProviderError & { localBudget?: boolean }).localBudget === true;
+            const localBudgetState = providerError as NvidiaProviderError & {
+              localBudget?: boolean;
+              localBudgetReason?: string;
+            };
+            const isLocalBudget = localBudgetState.localBudget === true;
             if (!isLocalBudget) {
               // Local budget exhaustion is key-wide, not this model's fault: keep it
               // out of the scoreboard so a busy minute can't cool down healthy models.
@@ -554,8 +588,10 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
               model,
               backend: 'nvidia',
               provider: 'nvidia',
-              reason: providerError.code,
-              statusCode: providerError.options.statusCode ?? null,
+              reason: isLocalBudget
+                ? (localBudgetState.localBudgetReason ?? 'local_nvidia_budget_unavailable')
+                : providerError.code,
+              statusCode: isLocalBudget ? null : providerError.options.statusCode ?? null,
             });
             lastAttemptError = providerError;
             lastError = providerError.message;
@@ -568,7 +604,7 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
                 finish(() => reject(new NvidiaProviderError(providerError.code as NvidiaErrorCode, providerError.message, {
                   ...providerError.options,
                   fallbackAttempts: attempts,
-                  lastUpstreamError,
+                  lastUpstreamError: isLocalBudget ? undefined : lastUpstreamError,
                 })));
               }
               return;

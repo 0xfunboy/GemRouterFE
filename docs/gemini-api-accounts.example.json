@@ -17,7 +17,7 @@
       "gemini-3.5-flash": { "rpm": 5, "tpm": 250000, "rpd": 20 },
       "gemini-3-flash-preview": { "rpm": 5, "tpm": 250000, "rpd": 20 },
       "gemini-2.5-flash": { "rpm": 5, "tpm": 250000, "rpd": 20 },
-      "gemma-4-31b-it": { "rpm": 15, "tpm": 10000000, "rpd": 1500 }
+      "gemma-4-31b-it": { "rpm": 30, "tpm": 16000, "rpd": 14400 }
     }
   }
 ]

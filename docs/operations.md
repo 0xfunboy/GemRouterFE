@@ -51,8 +51,9 @@ persist under `data/` and reload in-process:
 - **Routed Models** - choose which Gemini models the router offers and their order
   (first = default, rest = fallback chain).
 - **Outbound Proxy** - manage the proxy pool (off by default, not yet applied to upstreams).
-- **Apps and API Keys** - create/rotate/revoke client apps; Recent Interactions can be
-  filtered by app.
+- **Apps and API Keys** - create/rotate/revoke client apps and choose either a custom
+  model allowlist or **All configured models**. The all-model policy follows later
+  catalog changes automatically; Recent Interactions can be filtered by app.
 
 ## Troubleshooting
 
@@ -63,6 +64,17 @@ Check `GEMROUTER_GEMINI_API_ENABLED=true` and that at least one key is configure
 **All requests 429 / quota exhausted**
 
 Check `/v1/provider/quota`. Look for models with RPD at limit or keys in cooldown. RPD resets at **midnight America/Los_Angeles** (matches Google's actual reset boundary). Cooldowns can be cleared from the admin UI or via `POST /admin/provider/gemini-api/clear-cooldown`.
+
+Gemini quotas belong to a Google Cloud **project**, not to an API key. Keys from the
+same project must therefore use the same `quotaGroup` (preferably the canonical
+`projects/<project-number>`). Do not merge unrelated accounts into one global group.
+The router keeps one shared RPM/TPM/RPD ledger for every client app, so traffic from
+different dApps competes for the same project budget without racing past it.
+
+TPM is an input-token limit. Before dispatch, the router rejects a model candidate
+locally when the estimated input is larger than that model's hard TPM ceiling; this is
+a local routing skip, not an upstream 429. Dispatched requests remain charged to the
+local rolling ledger even when they time out or lose a hedge race.
 
 **Startup fails immediately**
 
