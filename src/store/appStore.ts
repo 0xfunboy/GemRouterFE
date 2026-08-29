@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export type AppModelAccess = 'all' | 'custom';
@@ -361,8 +361,10 @@ export class AppStore {
     const payload = `${JSON.stringify(this.state, null, 2)}\n`;
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
     try {
-      writeFileSync(temporaryPath, payload, 'utf8');
+      writeFileSync(temporaryPath, payload, { encoding: 'utf8', mode: 0o600 });
+      chmodSync(temporaryPath, 0o600);
       renameSync(temporaryPath, this.filePath);
+      chmodSync(this.filePath, 0o600);
     } catch (error) {
       try {
         unlinkSync(temporaryPath);
