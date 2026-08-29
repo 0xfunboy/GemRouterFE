@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -38,6 +38,13 @@ function createApp(
 }
 
 describe('app store model access', () => {
+  it('persists credential hashes in an owner-only file', () => {
+    const { filePath, store } = makeStore();
+    createApp(store, 'private-store', 'custom', ['model-alpha']);
+
+    assert.equal(statSync(filePath).mode & 0o777, 0o600);
+  });
+
   it('allows an all-model app to use every model in the current universe, but not unknown IDs', () => {
     const { store } = makeStore();
     store.restrictAllowedModels(['model-alpha', 'model-beta']);
