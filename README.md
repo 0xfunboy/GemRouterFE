@@ -76,7 +76,7 @@ OpenAI-compatible endpoint - without a paid plan and without external billing/mo
 
 ## Requirements
 
-- Node `23.3.0` (see [`.nvmrc`](./.nvmrc))
+- Node `24.18.0` (see [`.nvmrc`](./.nvmrc))
 - `pnpm` `10.26.1`
 
 ## Install
@@ -123,6 +123,7 @@ Use it from the OpenAI SDK by pointing `base_url` at `http://<host>:4024/v1`.
 | [Setup](docs/setup.md) | Installation, configuration, first run |
 | [Configuration reference](docs/configuration.md) | All environment variables |
 | [Routing and quota](docs/routing.md) | Multi-key routing, fallback, cooldowns, local Ollama, endpoints |
+| [Architecture and workflow](docs/architecture-workflow.md) | Startup, model discovery, app policy, routing, quota lifecycle, production checklist |
 | [Operations](docs/operations.md) | Deployment, systemd, security, live admin management, troubleshooting |
 
 Account metadata/keys live in `data/gemini-api-accounts.json` (gitignored; see

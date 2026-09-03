@@ -6,6 +6,8 @@ import { after, describe, it } from 'node:test';
 
 import {
   buildGeminiModelAttemptPlan,
+  buildGeminiGenerationBody,
+  buildGeminiThinkingConfig,
   computeGeminiAttemptTimeoutMs,
   createGeminiApiClient,
   estimateGeminiAdmissionTokens,
@@ -102,10 +104,51 @@ function okResponse(model: string, promptTokens = 100): Response {
 }
 
 describe('Gemini request scheduler', () => {
+  it('promotes unsupported minimal thinking to low for Gemini 3.7/3.8 Flash', () => {
+    assert.deepEqual(
+      buildGeminiThinkingConfig('gemini-3.8-flash', { thinking: { thinkingLevel: 'minimal' } }),
+      { includeThoughts: false, thinkingLevel: 'low' },
+    );
+    assert.deepEqual(
+      buildGeminiThinkingConfig('gemini-3.7-flash', { thinking: { thinkingLevel: 'minimal' } }),
+      { includeThoughts: false, thinkingLevel: 'low' },
+    );
+    assert.deepEqual(
+      buildGeminiThinkingConfig('gemini-3.7-flash', { thinking: { thinkingLevel: 'high' } }),
+      { includeThoughts: false, thinkingLevel: 'high' },
+    );
+    assert.deepEqual(
+      buildGeminiThinkingConfig('gemini-3.6-flash', { thinking: { thinkingLevel: 'minimal' } }),
+      { includeThoughts: false, thinkingLevel: 'minimal' },
+    );
+    assert.deepEqual(
+      buildGeminiThinkingConfig('gemini-3.5-flash', { thinking: { thinkingLevel: 'high', thinkingBudget: 0 } }),
+      { includeThoughts: false, thinkingLevel: 'high' },
+    );
+  });
+
+  it('omits the sampling temperature rejected by Gemini 3.8 Flash', () => {
+    const body = buildGeminiGenerationBody(
+      [{ role: 'user', content: 'hello' }],
+      {
+        model: 'gemini-3.8-flash',
+        temperature: 0.4,
+        maxTokens: 64,
+        thinking: { thinkingLevel: 'minimal' },
+      },
+    );
+    assert.deepEqual(body.generationConfig, {
+      maxOutputTokens: 64,
+      thinkingConfig: { includeThoughts: false, thinkingLevel: 'low' },
+    });
+  });
+
   it('plans exact -> closest downgrade and rejects candidates from other providers', () => {
     const allowed = [
       'nvidia-auto',
       'qwen/qwen3.5-397b-a17b',
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
       'gemini-3.6-flash',
       'gemini-3.5-flash',
       'gemini-2.5-flash',
@@ -113,6 +156,22 @@ describe('Gemini request scheduler', () => {
       'gemma-4-31b-it',
       'gemma-4-26b-a4b-it',
     ];
+    assert.deepEqual(
+      buildGeminiModelAttemptPlan({
+        requestedModelId: 'gemini-3.8-flash',
+        allowedModelIds: allowed,
+        preferredFallbackModelIds: allowed,
+      }).slice(0, 3),
+      ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash'],
+    );
+    assert.deepEqual(
+      buildGeminiModelAttemptPlan({
+        requestedModelId: 'gemini-3.7-flash',
+        allowedModelIds: allowed,
+        preferredFallbackModelIds: allowed,
+      }).slice(0, 3),
+      ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+    );
     assert.deepEqual(
       buildGeminiModelAttemptPlan({
         requestedModelId: 'gemma-4-31b-it',

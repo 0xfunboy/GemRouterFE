@@ -142,6 +142,7 @@ const interactions = new InteractionStore(config.interactionsStorePath);
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
   rawKey: config.bootstrapApp.apiKey,
+  modelAccess: config.bootstrapApp.modelAccess,
   allowedOrigins: config.bootstrapApp.allowedOrigins,
   allowedModels: config.bootstrapApp.allowedModels,
   sessionNamespace: config.bootstrapApp.sessionNamespace,
@@ -3091,6 +3092,7 @@ function persistGeminiAccounts(): void {
     id: key.id,
     owner: key.owner ?? null,
     projectId: key.projectId ?? null,
+    note: key.note ?? null,
     quotaGroup: key.quotaGroup,
     tier: key.tier,
     priority: key.priority,
@@ -3116,6 +3118,7 @@ function maskAccount(key: typeof config.geminiApi.keys[number]): Record<string, 
     id: key.id,
     owner: key.owner ?? null,
     projectId: key.projectId ?? null,
+    note: key.note ?? null,
     quotaGroup: key.quotaGroup,
     tier: key.tier,
     priority: key.priority,
@@ -3144,7 +3147,7 @@ app.post<{ Body: { accountId?: string } }>('/admin/provider/gemini-api/accounts/
 });
 
 app.post<{
-  Body: { key?: string; owner?: string; quotaGroup?: string; projectId?: string; priority?: number; models?: string[] };
+  Body: { id?: string; key?: string; owner?: string; quotaGroup?: string; projectId?: string; note?: string; priority?: number; models?: string[] };
 }>('/admin/provider/gemini-api/accounts/add', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const key = String(request.body?.key ?? '').trim();
@@ -3156,7 +3159,11 @@ app.post<{
   }
   const existingIds = new Set(config.geminiApi.keys.map((entry) => entry.id));
   let n = config.geminiApi.keys.length + 1;
-  let id = String(request.body?.owner ?? '').trim() || `account${n}`;
+  const requestedId = String(request.body?.id ?? '').trim();
+  if (requestedId && existingIds.has(requestedId)) {
+    return sendError(reply, 409, { message: `Account ${requestedId} already exists`, type: 'invalid_request_error', code: 'duplicate_account_id' });
+  }
+  let id = requestedId || String(request.body?.owner ?? '').trim() || `account${n}`;
   while (existingIds.has(id)) { n += 1; id = `account${n}`; }
   const quotaGroup = String(request.body?.quotaGroup ?? '').trim() || (config.geminiApi.defaultQuotaGroupMode === 'shared' ? 'default' : id);
   const models = Array.isArray(request.body?.models)
@@ -3167,6 +3174,7 @@ app.post<{
     key,
     owner: request.body?.owner?.trim() || undefined,
     projectId: request.body?.projectId?.trim() || undefined,
+    note: request.body?.note?.trim() || undefined,
     quotaGroup,
     tier: config.geminiApi.defaultTier,
     priority: typeof request.body?.priority === 'number' ? request.body.priority : 100,
@@ -3179,7 +3187,7 @@ app.post<{
 });
 
 app.post<{
-  Body: { id?: string; priority?: number; enabled?: boolean; models?: string[] | null; quotaGroup?: string };
+  Body: { id?: string; key?: string; owner?: string; projectId?: string | null; note?: string | null; priority?: number; enabled?: boolean; models?: string[] | null; quotaGroup?: string };
 }>('/admin/provider/gemini-api/accounts/update', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const id = String(request.body?.id ?? '').trim();
@@ -3187,6 +3195,21 @@ app.post<{
   if (!account) {
     return sendError(reply, 404, { message: `Account ${id} not found`, type: 'invalid_request_error', code: 'account_not_found' });
   }
+  if (typeof request.body?.key === 'string') {
+    const replacementKey = request.body.key.trim();
+    if (!replacementKey) {
+      return sendError(reply, 400, { message: 'key cannot be empty', type: 'invalid_request_error', code: 'missing_key' });
+    }
+    if (config.geminiApi.keys.some((entry) => entry.id !== id && entry.key === replacementKey)) {
+      return sendError(reply, 409, { message: 'This key is already configured', type: 'invalid_request_error', code: 'duplicate_key' });
+    }
+    account.key = replacementKey;
+  }
+  if (typeof request.body?.owner === 'string') account.owner = request.body.owner.trim() || undefined;
+  if (request.body?.projectId === null) account.projectId = undefined;
+  else if (typeof request.body?.projectId === 'string') account.projectId = request.body.projectId.trim() || undefined;
+  if (request.body?.note === null) account.note = undefined;
+  else if (typeof request.body?.note === 'string') account.note = request.body.note.trim() || undefined;
   if (typeof request.body?.priority === 'number') account.priority = request.body.priority;
   if (typeof request.body?.enabled === 'boolean') account.enabled = request.body.enabled;
   if (typeof request.body?.quotaGroup === 'string' && request.body.quotaGroup.trim()) account.quotaGroup = request.body.quotaGroup.trim();

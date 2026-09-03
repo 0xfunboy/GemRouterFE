@@ -11,7 +11,7 @@ export PATH="$HOME/.local/share/pnpm:$HOME/.local/bin:$PATH"
 if [[ -f "$HOME/.nvm/nvm.sh" ]]; then
   # shellcheck disable=SC1090
   source "$HOME/.nvm/nvm.sh"
-  nvm use 23.3.0 >/dev/null 2>&1 || nvm use --silent >/dev/null 2>&1 || true
+  nvm use 24.18.0 >/dev/null 2>&1 || nvm use --silent >/dev/null 2>&1 || true
 fi
 
 if ! command -v node >/dev/null 2>&1; then

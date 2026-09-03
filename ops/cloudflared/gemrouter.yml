@@ -1,5 +1,5 @@
 tunnel: 00000000-0000-0000-0000-ea15107c6537
-credentials-file: /home/OPERATOR/.cloudflared/00000000-0000-0000-0000-ea15107c6537.json
+credentials-file: /home/OPERATOR/.cloudflared/credential-gemrouter.json
 
 ingress:
   - hostname: gemrouter.example.com

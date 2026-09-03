@@ -11,6 +11,7 @@ export interface GeminiApiKeyConfig {
   key: string;
   owner?: string;
   projectId?: string;
+  note?: string;
   quotaGroup: string;
   tier: string;
   priority: number;

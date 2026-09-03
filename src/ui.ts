@@ -2522,7 +2522,7 @@ export function renderAppShell(input: {
               accountModelsOutput.textContent = 'Error: ' + (data.error || data.status || 'unknown');
               return;
             }
-            const lines = (data.models || []).map(function(model) {
+            const lines = (data.models || []).slice().sort(byModelPower).map(function(model) {
               const lim = model.limit ? ('  rpm=' + model.limit.rpm + ' tpm=' + model.limit.tpm + ' rpd=' + model.limit.rpd) : '  (no configured limit)';
               return model.id + lim;
             });
@@ -2611,7 +2611,7 @@ export function renderAppShell(input: {
         try {
           const data = await request('/admin/provider/models-config');
           modelsEnabledOrder = Array.isArray(data.enabled) ? data.enabled.slice() : [];
-          modelsAvailableList = Array.isArray(data.available) ? data.available.slice() : [];
+          modelsAvailableList = Array.isArray(data.available) ? data.available.slice().sort(byModelPower) : [];
           renderModelsConfig();
         } catch (error) {
           if (modelsConfigStatus) modelsConfigStatus.textContent = error.message || 'Failed to load model config.';
@@ -2637,6 +2637,7 @@ export function renderAppShell(input: {
             const id = rem.getAttribute('data-mc-remove');
             modelsEnabledOrder = modelsEnabledOrder.filter(function(m) { return m !== id; });
             if (modelsAvailableList.indexOf(id) < 0) modelsAvailableList.push(id);
+            modelsAvailableList.sort(byModelPower);
             state.modelsConfigDirty = true;
             renderModelsConfig();
           }
@@ -2688,14 +2689,11 @@ export function renderAppShell(input: {
         if (!button) return;
         const expanded = button.getAttribute('aria-expanded') === 'true';
         button.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-        const toggleRow = button.closest('tr');
         const tbody = button.closest('tbody');
         if (tbody && tbody.id) expandedRpdTables[tbody.id] = !expanded;
-        let sibling = toggleRow ? toggleRow.nextElementSibling : null;
-        while (sibling && sibling.classList.contains('rpd-idle')) {
-          sibling.classList.toggle('hidden', expanded);
-          sibling = sibling.nextElementSibling;
-        }
+        Array.from(tbody ? tbody.querySelectorAll('tr.rpd-idle') : []).forEach(function(row) {
+          row.classList.toggle('hidden', expanded);
+        });
         const count = button.textContent.replace(/[^0-9]/g, '');
         button.innerHTML = '<span class="rpd-toggle-arrow">&#9656;</span> ' +
           (expanded ? 'Show ' : 'Hide ') + count + ' idle model' + (count === '1' ? '' : 's');
@@ -2875,30 +2873,37 @@ export function renderAppShell(input: {
         }).join('');
       }
 
-      // Strongest -> weakest. Anything not listed sorts after, alphabetically.
+      // Strongest -> weakest. Keep every model-facing view on this same order;
+      // anything not listed sorts after it, alphabetically.
       const MODEL_POWER_ORDER = [
+        'gemini-3.8-flash',
+        'gemini-3.7-flash',
         'gemini-3.6-flash',
         'gemini-3.5-flash',
-        'gemini-3.5-flash-lite',
         'gemini-3-flash-preview',
         'gemini-3-flash',
         'gemini-2.5-pro',
+        'gemma-4-31b-it',
         'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
+        'gemma-4-26b-a4b-it',
+        'gemini-3.5-flash-lite',
         'gemini-3.1-flash-lite',
         'gemini-3.1-flash-lite-preview',
+        'gemini-2.5-flash-lite',
         'gemini-2.0-flash',
         'gemini-2.0-flash-lite',
-        'gemma-4-31b-it',
-        'gemma-4-26b-a4b-it',
       ];
-      function modelPowerRank(id) {
-        const index = MODEL_POWER_ORDER.indexOf(String(id || '').toLowerCase());
+      function modelPowerId(value) {
+        if (typeof value === 'string') return value.trim().toLowerCase();
+        return String(value && (value.model || value.id) || '').trim().toLowerCase();
+      }
+      function modelPowerRank(value) {
+        const index = MODEL_POWER_ORDER.indexOf(modelPowerId(value));
         return index === -1 ? MODEL_POWER_ORDER.length : index;
       }
       function byModelPower(left, right) {
-        const delta = modelPowerRank(left.model) - modelPowerRank(right.model);
-        return delta !== 0 ? delta : String(left.model).localeCompare(String(right.model));
+        const delta = modelPowerRank(left) - modelPowerRank(right);
+        return delta !== 0 ? delta : modelPowerId(left).localeCompare(modelPowerId(right));
       }
       function quotaMeterCell(used, limit) {
         const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
@@ -2908,20 +2913,21 @@ export function renderAppShell(input: {
       // Tables (by tbody id) whose idle rows the operator has expanded. Persisted across the
       // 5s refresh re-renders so the section does not snap shut on every tick.
       const expandedRpdTables = {};
-      // Render consumed rows first; collapse the idle (untouched) ones behind a toggle.
+      // Preserve performance order even when idle rows are collapsed.
       function renderRpdRows(tableEl, rows, idleColspan) {
-        const consumed = rows.filter(function(r) { return r.html.used > 0; }).map(function(r) { return r.row; });
-        const idle = rows.filter(function(r) { return r.html.used <= 0; }).map(function(r) { return r.row; });
         const expanded = expandedRpdTables[tableEl.id] === true;
-        let out = consumed.join('');
-        if (idle.length > 0) {
+        const idleCount = rows.filter(function(r) { return r.html.used <= 0; }).length;
+        let out = rows.map(function(entry) {
+          if (entry.html.used > 0) return entry.row;
+          return entry.row.replace('<tr>', '<tr class="rpd-idle' + (expanded ? '' : ' hidden') + '">');
+        }).join('');
+        if (idleCount > 0) {
           out += '<tr class="rpd-toggle-row"><td colspan="' + idleColspan + '">' +
             '<button type="button" class="secondary rpd-toggle" data-rpd-toggle aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
-            '<span class="rpd-toggle-arrow">&#9656;</span> ' + (expanded ? 'Hide ' : 'Show ') + idle.length + ' idle model' + (idle.length === 1 ? '' : 's') +
+            '<span class="rpd-toggle-arrow">&#9656;</span> ' + (expanded ? 'Hide ' : 'Show ') + idleCount + ' idle model' + (idleCount === 1 ? '' : 's') +
             '</button></td></tr>';
-          out += idle.map(function(row) { return row.replace('<tr>', '<tr class="rpd-idle' + (expanded ? '' : ' hidden') + '">'); }).join('');
         }
-        tableEl.innerHTML = consumed.length + idle.length > 0
+        tableEl.innerHTML = rows.length > 0
           ? out
           : '<tr><td colspan="' + idleColspan + '" class="muted">No Gemini RPD limits are configured.</td></tr>';
       }
@@ -3284,7 +3290,7 @@ export function renderAppShell(input: {
             const leftCompatible = modelSupportsRouter(left) ? 0 : 1;
             const rightCompatible = modelSupportsRouter(right) ? 0 : 1;
             if (leftCompatible !== rightCompatible) return leftCompatible - rightCompatible;
-            return modelId(left).localeCompare(modelId(right));
+            return byModelPower(left, right);
           });
 
         allowedModelsOptions.innerHTML = entries.map(function(entry) {
@@ -3319,7 +3325,7 @@ export function renderAppShell(input: {
         const options = getModelCatalog().filter(function(entry) {
           const id = modelId(entry);
           return modelSupportsRouter(entry) && id && (allowed.size === 0 || allowed.has(id));
-        });
+        }).sort(byModelPower);
         const nextSelected = typeof selectedModel === 'string' && selectedModel.trim() ? selectedModel.trim() : promptModel.value;
         promptModel.innerHTML = options
           .map(function(entry) {

@@ -7,7 +7,7 @@ After=network-online.target gemrouter.service
 Type=simple
 WorkingDirectory=/home/OPERATOR
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStart=/usr/local/bin/cloudflared tunnel --config /home/OPERATOR/.cloudflared/solclawn.yml run 00000000-0000-0000-0000-66cc3c64c659
+ExecStart=/usr/local/bin/cloudflared tunnel --config /home/OPERATOR/.cloudflared/config-solclawn.yml run 00000000-0000-0000-0000-66cc3c64c659
 Restart=always
 RestartSec=5
 

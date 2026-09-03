@@ -27,8 +27,8 @@ On every response the ledger records real token counts (from the API reply) and 
 The pool picks the key/group with the best multi-factor score, evaluated in this order:
 
 1. **Priority** - higher `priority` field wins
-2. **Rotation** - least recently used key wins (round-robin at equal priority)
-3. **Capacity score** - `rpmRatio×30 + tpmRatio×30 + rpdRatio×30` where each ratio is `remaining / limit`
+2. **Capacity score** - `rpmRatio×30 + tpmRatio×30 + rpdRatio×30`, minus penalties for recent 429s, where each ratio is `remaining / limit`
+3. **Rotation** - least recently successful/used key wins when scores are equal
 4. **Config order** - tie-break by position in the key list
 
 Keys at or beyond any limit (RPM, TPM, or RPD) are excluded from selection before scoring.
@@ -88,22 +88,23 @@ A failed attempt holds the model+account out for a window determined by the cool
 | Source | Trigger | Duration |
 |---|---|---|
 | `retry-after` | 429 with `Retry-After` header | Exact header value |
-| `pacific-reset` | 429 with `rateLimitScope=day` | Until next Pacific midnight (marks `dailyDepleted`) |
+| `pacific-reset` | Day-scope 429 confirmed by local RPD usage | Until next Pacific midnight (marks `dailyDepleted`) |
+| `daily-depleted` | Suspect day-scope 429 while local RPD is below 50% | 30 min |
 | `429-backoff` | generic 429 (no header/scope) | Escalating ladder (see below) |
-| `daily-depleted` | 3rd generic 429 strike | Until next Pacific midnight |
 | `high-demand` | 503 "overloaded/unavailable" | 30 s skip (model-wide; does not retry other accounts) |
 
 ### 429 escalation ladder
 
-Generic 429s with no `Retry-After` and no day scope escalate **per model+account**, with
-strikes accruing within a Pacific day and resetting at the midnight rollover:
+Generic 429s with no `Retry-After` and no day scope escalate **per model+account**. A quiet
+period of 10 minutes resets the ladder; the Pacific rollover also clears old strike state:
 
 1. **strike 1** → 1 min cooldown
 2. **strike 2** → 5 min cooldown
-3. **strike 3** → treated as daily quota depletion, parked until the next Pacific reset
+3. **strike 3** → 10 min cooldown
+4. **strike 4+** → 15 min cooldown
 
-A successful call clears the strike count and lifts any `429-backoff`/`daily-depleted`
-cooldown for that model+account.
+A generic 429 is never promoted to daily depletion without an explicit upstream day scope.
+A successful call clears the strike count and lifts any cooldown for that model+account.
 
 ### High demand (503)
 

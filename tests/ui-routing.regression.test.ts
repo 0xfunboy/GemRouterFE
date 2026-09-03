@@ -27,3 +27,30 @@ describe('routing telemetry labels', () => {
     );
   });
 });
+
+describe('frontend model performance ordering', () => {
+  it('ranks Gemini 3.8 ahead of every older Flash generation', () => {
+    const orderSource = shell.match(/const MODEL_POWER_ORDER = \[([\s\S]*?)\];/)?.[1] ?? '';
+    const order = [...orderSource.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+
+    assert.deepEqual(order.slice(0, 4), [
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash',
+    ]);
+  });
+
+  it('uses the performance comparator for quota, account and app model lists', () => {
+    assert.match(shell, /Array\.from\(byModel\.values\(\)\)\s*\.sort\(byModelPower\)/);
+    assert.match(shell, /\(data\.models \|\| \[\]\)\.slice\(\)\.sort\(byModelPower\)/);
+    assert.match(shell, /modelsAvailableList = Array\.isArray\(data\.available\) \? data\.available\.slice\(\)\.sort\(byModelPower\)/);
+    assert.match(shell, /if \(leftCompatible !== rightCompatible\) return leftCompatible - rightCompatible;\s*return byModelPower\(left, right\)/);
+    assert.match(shell, /const options = getModelCatalog\(\)\.filter\([\s\S]*?\}\)\.sort\(byModelPower\)/);
+  });
+
+  it('does not move idle RPD rows below stronger active models', () => {
+    assert.match(shell, /let out = rows\.map\(function\(entry\)/);
+    assert.doesNotMatch(shell, /const consumed = rows\.filter/);
+  });
+});

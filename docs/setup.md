@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- Node `23.3.0` (use [nvm](https://github.com/nvm-sh/nvm): `nvm use`)
+- Node `24.18.0` (use [nvm](https://github.com/nvm-sh/nvm): `nvm use`)
 - `pnpm` `10.26.1`
 
 ## Install

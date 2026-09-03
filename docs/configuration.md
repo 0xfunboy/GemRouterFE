@@ -29,6 +29,7 @@ The bootstrap app is the built-in API client identity (e.g. your local Claude Co
 |---|---|
 | `GEMROUTER_BOOTSTRAP_API_KEY` | Client bearer token (required) |
 | `GEMROUTER_BOOTSTRAP_APP_NAME` | App label shown in logs |
+| `GEMROUTER_BOOTSTRAP_MODEL_ACCESS` | `all` follows the complete active catalog across restarts; `custom` uses the allowlist |
 | `GEMROUTER_BOOTSTRAP_ALLOWED_ORIGINS` | CORS origins |
 | `GEMROUTER_BOOTSTRAP_ALLOWED_MODELS` | Model IDs this client may request |
 | `GEMROUTER_BOOTSTRAP_RATE_LIMIT_PER_MINUTE` | Max requests per minute |
@@ -64,7 +65,7 @@ Order determines which backend is tried first. When `backendPreference=auto`, th
 | `GEMROUTER_GEMINI_API_RPM_WINDOW_MS` | `60000` | RPM tracking window |
 | `GEMROUTER_GEMINI_API_TPM_WINDOW_MS` | `60000` | TPM tracking window |
 | `GEMROUTER_GEMINI_API_COUNT_TOKENS_PREFLIGHT` | `false` | Count tokens before sending |
-| `GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE` | `true` | Count quota for failed 429 requests |
+| `GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE` | `false` | Count quota for failed 429 requests |
 | `GEMROUTER_GEMINI_API_TIMEOUT_MS` | `120000` | Request timeout |
 | `GEMROUTER_GEMINI_API_STREAM_TIMEOUT_MS` | `180000` | Streaming timeout |
 
@@ -93,9 +94,9 @@ Order determines which backend is tried first. When `backendPreference=auto`, th
 | `GEMROUTER_INCLUDE_THOUGHTS` | `false` | Include thinking tokens in response |
 | `GEMROUTER_STRIP_REASONING` | `true` | Strip `<thinking>` blocks before returning |
 | `GEMROUTER_THINKING_LEVEL` | `minimal` | `none`, `minimal`, `low`, `medium`, `high`, `max` |
-| `GEMROUTER_THINKING_BUDGET` | `0` | Token budget for thinking (0 = model default) |
+| `GEMROUTER_THINKING_BUDGET` | `0` | Legacy numeric budget used by Gemini 2.5 Flash/Lite |
 
-Thinking config is applied per model: omitted entirely for `gemma-*` and `gemini-3.5-flash` (they reject it), `thinkingLevel` for `gemini-3.*` reasoning variants, `thinkingBudget` for `gemini-2.5-flash`/`-lite`.
+Thinking config is applied per model: omitted entirely for `gemma-*`; `thinkingBudget` is used only for `gemini-2.5-flash`/`-lite`; Gemini 3.x reasoning variants use `thinkingLevel`. Gemini 3.7 and 3.8 Flash do not accept `minimal`, so the router promotes only that combination to `low` while preserving explicit `low`, `medium`, or `high` values. Gemini 3.8 also receives no legacy sampling parameters such as `temperature`.
 
 ## Local Ollama (vision + embeddings)
 
