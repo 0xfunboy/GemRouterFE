@@ -1,8 +1,19 @@
 import type { GeminiApiRateLimit } from './types.js';
 
 export const GEMINI_API_TIER1_LIMITS = {
-  // Default text model: listed first so every limits-ordered view (per-group
-  // quota panels, provider model list) shows it at the top, above 3.5-flash.
+  // Confirmed in the account2 AI Studio free-tier limits view on 2026-08-17.
+  'gemini-3.7-flash': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
+  },
+  // Conservative Tier 1 admission budget matching the adjacent Flash models.
+  // The provider remains authoritative and the local ledger tightens on live 429s.
+  'gemini-3.8-flash': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
+  },
   'gemini-3.6-flash': {
     rpm: 5,
     tpm: 250_000,

@@ -25,6 +25,20 @@ describe('Gemini API configured project quotas', () => {
     });
   }
 
+  it('matches the Gemini 3.7 Flash quota shown for account2 in AI Studio', () => {
+    assert.deepEqual(
+      GEMINI_API_TIER1_LIMITS['gemini-3.7-flash'],
+      expected['gemini-3.6-flash'],
+    );
+  });
+
+  it('uses the conservative adjacent-Flash budget for Gemini 3.8 Flash', () => {
+    assert.deepEqual(
+      GEMINI_API_TIER1_LIMITS['gemini-3.8-flash'],
+      expected['gemini-3.6-flash'],
+    );
+  });
+
   it('keeps the deployed Gemini 3 Flash preview alias on the same budget', () => {
     assert.deepEqual(
       GEMINI_API_TIER1_LIMITS['gemini-3-flash-preview'],

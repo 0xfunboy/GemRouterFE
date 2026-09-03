@@ -2,19 +2,29 @@
 // quality; the high-RPD lite/gemma models sit at the tail so the fallback chain has
 // large daily headroom (3.1-flash-lite 500/project, Gemma 14.4K/project) before "busy".
 export const DEFAULT_DIRECT_MODEL_IDS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
   'gemini-3-flash-preview',
   'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
 ] as const;
 
 export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
   'gemini-3-flash-preview',
   'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
 ] as const;
@@ -31,10 +41,15 @@ export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
 ] as const;
 
 export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
   'gemini-3-flash-preview',
   'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
 ] as const;

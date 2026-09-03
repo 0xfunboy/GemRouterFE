@@ -22,6 +22,7 @@ import type { AgnesConfig } from './llm/providers/agnes/client.js';
 export interface BootstrapAppConfig {
   name: string;
   apiKey: string;
+  modelAccess: 'all' | 'custom';
   allowedOrigins: string[];
   allowedModels: string[];
   sessionNamespace: string;
@@ -169,13 +170,9 @@ function normalizeBackendId(value: string): LLMBackendId | null {
 }
 
 const DEFAULT_NVIDIA_MODELS: NvidiaModelConfig[] = [
-  { id: 'deepseek-ai/deepseek-v4-pro', tier: 'large', enabled: true, probe: true, aliases: ['deepseek4', 'deepseek-v4'] },
-  { id: 'moonshotai/kimi-k2.6', tier: 'large', enabled: true, probe: true },
-  { id: 'qwen/qwen3.5-397b-a17b', tier: 'large', enabled: true, probe: true },
-  { id: 'mistralai/mistral-large-3-675b-instruct-2512', tier: 'large', enabled: true, probe: true, aliases: ['mistral-large-3'] },
+  { id: 'deepseek-ai/deepseek-v4-pro-0813', tier: 'large', enabled: true, probe: true, aliases: ['deepseek4', 'deepseek-v4'] },
   { id: 'nvidia/nemotron-3-ultra-550b-a55b', tier: 'large', enabled: true, probe: true },
   { id: 'minimaxai/minimax-m3', tier: 'large', enabled: true, probe: true },
-  { id: 'deepseek-ai/deepseek-v4-flash', tier: 'medium', enabled: true, probe: true, aliases: ['deepseek4-flash'] },
   { id: 'google/gemma-4-31b-it', tier: 'medium', enabled: true, probe: true, aliases: ['gemma-4-31b-it'] },
   { id: 'nvidia/nemotron-3-super-120b-a12b', tier: 'medium', enabled: true, probe: true },
 ];
@@ -306,6 +303,7 @@ function readGeminiApiKeys(
         key,
         owner: entry.owner,
         projectId: entry.projectId,
+        note: entry.note,
         quotaGroup: String(entry.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
         tier: String(entry.tier ?? defaultTier).trim(),
         priority: typeof entry.priority === 'number' ? entry.priority : 100,
@@ -328,6 +326,7 @@ function readGeminiApiKeys(
         key: String(account.key).trim(),
         owner: account.owner,
         projectId: account.projectId,
+        note: account.note,
         quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
         tier: String(account.tier ?? defaultTier).trim(),
         priority: typeof account.priority === 'number' ? account.priority : 100,
@@ -346,6 +345,7 @@ function readGeminiApiKeys(
       key,
       owner: account.owner,
       projectId: account.projectId,
+      note: account.note,
       quotaGroup: String(account.quotaGroup ?? (defaultQuotaGroupMode === 'shared' ? 'default' : id)).trim(),
       tier: String(account.tier ?? defaultTier).trim(),
       priority: typeof account.priority === 'number' ? account.priority : 100,
@@ -522,6 +522,12 @@ export function loadConfig(
     bootstrapApp: {
       name: pick(env, 'GEMROUTER_BOOTSTRAP_APP_NAME', 'BAIRBI_BOOTSTRAP_APP_NAME', 'BARIBI_BOOTSTRAP_APP_NAME') ?? 'local-client',
       apiKey: requireEnv(env, 'GEMROUTER_BOOTSTRAP_API_KEY', 'BAIRBI_BOOTSTRAP_API_KEY', 'BARIBI_BOOTSTRAP_API_KEY'),
+      modelAccess: pick(
+        env,
+        'GEMROUTER_BOOTSTRAP_MODEL_ACCESS',
+        'BAIRBI_BOOTSTRAP_MODEL_ACCESS',
+        'BARIBI_BOOTSTRAP_MODEL_ACCESS',
+      )?.toLowerCase() === 'all' ? 'all' : 'custom',
       allowedOrigins: readList(
         env,
         ['http://localhost:*', 'http://127.0.0.1:*', 'http://[::1]:*'],

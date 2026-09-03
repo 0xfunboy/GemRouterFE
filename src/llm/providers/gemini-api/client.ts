@@ -152,7 +152,7 @@ class LocalWaitCancelled extends Error {
   }
 }
 
-function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
+export function buildGeminiThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Record<string, unknown> | null {
   const model = normalizeGeminiApiModel(modelId);
   // Gemma 4 rejects any thinkingConfig, including an otherwise harmless `includeThoughts: false`.
   // Omit the field entirely for those models.
@@ -160,20 +160,17 @@ function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Re
     return null;
   }
   const includeThoughts = opts?.thinking?.includeThoughts === true;
-  // gemini-3.5-flash is a thinking model: with no thinkingConfig it burns the whole output
-  // budget on default (dynamic) reasoning and truncates the visible answer (finishReason=length,
-  // ~all tokens counted as thoughtsTokenCount). It rejects `thinkingLevel` but DOES accept
-  // `thinkingBudget: 0`, which disables thinking so the full answer fits. The negative
-  // lookahead excludes gemini-3.5-flash-lite, which instead REJECTS thinkingBudget (400
-  // INVALID_ARGUMENT) and only accepts thinkingLevel — it falls through to the branch below.
-  if (/^gemini-3\.5-flash(?!-lite)/i.test(model)) {
+  // Gemini 3.7/3.8 Flash support low/medium/high but reject minimal. Preserve an
+  // explicit supported level and safely promote the router's default minimal to low.
+  if (/^gemini-3\.(?:7|8)-flash/i.test(model)) {
+    const requestedLevel = opts?.thinking?.thinkingLevel ?? 'minimal';
     return {
       includeThoughts,
-      thinkingBudget: typeof opts?.thinking?.thinkingBudget === 'number' ? opts.thinking.thinkingBudget : 0,
+      thinkingLevel: requestedLevel === 'minimal' ? 'low' : requestedLevel,
     };
   }
-  // Other gemini-3.x reasoning variants (3.6-flash, 3.5-flash-lite, pro, flash-preview, 3.1)
-  // take a thinkingLevel; 3.6-flash and 3.5-flash-lite both reject thinkingBudget:0.
+  // Other Gemini 3.x reasoning variants take minimal/low/medium/high. Live probes
+  // on 2026-08-17 confirmed this for 3.6, 3.5, 3.5 Lite, 3 Flash Preview and 3.1 Lite.
   if (/^gemini-3/i.test(model)) {
     return {
       includeThoughts,
@@ -192,7 +189,7 @@ function buildThinkingConfig(modelId: string | undefined, opts?: LLMOptions): Re
   return { includeThoughts };
 }
 
-function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<string, unknown> {
+export function buildGeminiGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<string, unknown> {
   const semanticMessages = opts?.semanticProfile ? applySemanticPrompt(messages, opts.semanticProfile) : messages;
   const systemTexts = semanticMessages.filter((message) => message.role === 'system').map((message) => message.content.trim()).filter(Boolean);
   const contents = semanticMessages
@@ -210,9 +207,16 @@ function toGenerationBody(messages: LLMMessage[], opts?: LLMOptions): Record<str
     };
   }
   const generationConfig: Record<string, unknown> = {};
-  if (typeof opts?.temperature === 'number') generationConfig.temperature = opts.temperature;
+  // Gemini 3.8 rejects legacy sampling parameters. Keep accepting the OpenAI-style
+  // client field, but omit it upstream for this model.
+  if (
+    typeof opts?.temperature === 'number' &&
+    !/^gemini-3\.8-flash/i.test(normalizeGeminiApiModel(opts.model))
+  ) {
+    generationConfig.temperature = opts.temperature;
+  }
   if (typeof opts?.maxTokens === 'number') generationConfig.maxOutputTokens = opts.maxTokens;
-  const thinkingConfig = buildThinkingConfig(opts?.model, opts);
+  const thinkingConfig = buildGeminiThinkingConfig(opts?.model, opts);
   if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
   if (Array.isArray(opts?.imageConfig?.responseModalities) && opts.imageConfig.responseModalities.length > 0) {
     generationConfig.responseModalities = opts.imageConfig.responseModalities;
@@ -600,6 +604,8 @@ function classifyTextModel(modelId: string): {
 }
 
 const TEXT_MODEL_CAPABILITY_RANK: Record<string, number> = {
+  'gemini-3.8-flash': 420,
+  'gemini-3.7-flash': 400,
   'gemini-3.6-flash': 380,
   'gemini-3.5-flash': 360,
   'gemini-3-flash': 340,
@@ -1116,7 +1122,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           const response = await fetch(withKey(endpoint, reservation.key.key), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(toGenerationBody(messages, effectiveOptions)),
+            body: JSON.stringify(buildGeminiGenerationBody(messages, effectiveOptions)),
             signal: attemptFetchSignal(computeGeminiAttemptTimeoutMs({
               providerTimeoutMs: config.timeoutMs,
               deadline: budget.deadline,

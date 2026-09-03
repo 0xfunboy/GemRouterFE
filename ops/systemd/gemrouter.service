@@ -12,7 +12,7 @@ Environment=HOME=/home/funboy
 Environment=NODE_ENV=production
 Environment=PNPM_HOME=/home/funboy/.local/share/pnpm
 Environment=NVM_DIR=/home/funboy/.nvm
-Environment=PATH=/home/funboy/.nvm/versions/node/v23.3.0/bin:/home/funboy/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/home/funboy/.nvm/versions/node/v24.18.0/bin:/home/funboy/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStartPre=/bin/bash -lc "pnpm build"
 ExecStart=/bin/bash -lc "exec node dist/index.js"
 Restart=always

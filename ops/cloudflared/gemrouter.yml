@@ -1,5 +1,5 @@
 tunnel: 883e52e8-b6ab-4e77-99fe-d435e02751e6
-credentials-file: /home/funboy/.cloudflared/883e52e8-b6ab-4e77-99fe-d435e02751e6.json
+credentials-file: /home/funboy/.cloudflared/credential-gemrouter.json
 
 ingress:
   - hostname: gemr.airewardrop.xyz
