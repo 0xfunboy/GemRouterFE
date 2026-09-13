@@ -128,3 +128,7 @@ Use it from the OpenAI SDK by pointing `base_url` at `http://<host>:4024/v1`.
 
 Account metadata/keys live in `data/gemini-api-accounts.json` (gitignored; see
 [`docs/gemini-api-accounts.example.json`](docs/gemini-api-accounts.example.json) for the format).
+
+## Licensing
+
+Licensing scope and preserved third-party permissions are documented in [LICENSING.md](LICENSING.md). The [0xfunboy Non-Commercial License](LICENSE.md) covers eligible original material only.
