@@ -87,7 +87,12 @@ discovery OAuth pubblica risponde HTTP 200 con issuer e endpoint coerenti con
 contiene il wizard **Prepara → Autorizza → Avvia la chat**. Il riepilogo
 amministrativo locale autenticato conferma gateway abilitato, profilo
 `compatibility`, streaming `buffered` e `workerCount: 0`. Il database del
-gateway è stato creato con permessi `0600`.
+gateway è stato creato con permessi `0600`. Uno smoke browser autenticato e
+in sola lettura contro il dominio di produzione ha inoltre confermato wizard e
+form visibili, avviso di feature disabilitata assente, sezione avanzata chiusa
+inizialmente, tre passaggi corretti e nessun overflow mobile o errore
+JavaScript/console. Il boundary MCP pubblico risponde `401` senza Bearer e
+pubblica nel `WWW-Authenticate` l'URL dei metadati della risorsa attesa.
 
 Queste verifiche provano che frontend, discovery e gateway sono live, ma non
 che ChatGPT sia già collegato: non è stata autenticata una sessione ChatGPT
