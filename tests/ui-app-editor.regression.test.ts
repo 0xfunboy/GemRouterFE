@@ -101,4 +101,15 @@ describe('admin app editor regressions', () => {
       'the response app id must be checked before showing update success',
     );
   });
+
+  it('offers activation and confirmed removal only for revoked apps', () => {
+    const render = scriptSection('function renderApps(apps)', 'function formatAttemptTarget(');
+    assertContains(render, /app\.revokedAt[\s\S]*data-action="activate"[\s\S]*data-action="remove"/u, 'revoked rows need activate and remove actions');
+    assertContains(render, /data-action="edit"[\s\S]*data-action="rotate"[\s\S]*data-action="revoke"/u, 'active rows retain their normal actions');
+
+    const handler = scriptSection("appsTable.addEventListener('click'", "interactionsTable.addEventListener('click'");
+    assertContains(handler, /action === 'activate'[\s\S]*window\.confirm[\s\S]*\/activate/u, 'activation requires confirmation and its dedicated endpoint');
+    assertContains(handler, /action === 'remove'[\s\S]*window\.confirm[\s\S]*method: 'DELETE'/u, 'permanent removal requires confirmation and DELETE');
+    assertContains(handler, /openAppKeyModal\('New API key for reactivated/u, 'reactivation must expose the new one-time key');
+  });
 });

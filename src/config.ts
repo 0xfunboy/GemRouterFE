@@ -10,6 +10,8 @@ import {
   DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS,
   DEFAULT_FREE_TIER_TEXT_MODEL_IDS,
   DEFAULT_TEXT_FALLBACK_MODEL_IDS,
+  filterRetiredGeminiModelIds,
+  isRetiredGeminiModelId,
 } from './lib/models.js';
 import type { LLMBackendId, ModelTier } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
@@ -252,11 +254,11 @@ function readGeminiApiLimits(
     }
   }
   const envLimits = readJsonValue<Record<string, GeminiApiRateLimit>>(env, {}, 'GEMROUTER_GEMINI_API_LIMITS_JSON');
-  return {
+  return Object.fromEntries(Object.entries({
     ...GEMINI_API_TIER1_LIMITS,
     ...fileLimits,
     ...envLimits,
-  };
+  }).filter(([modelId]) => !isRetiredGeminiModelId(modelId)));
 }
 
 function readGeminiApiGroupLimits(
@@ -268,13 +270,16 @@ function readGeminiApiGroupLimits(
   for (const account of accounts) {
     const group = account.quotaGroup ?? account.id;
     if (group && account.limits && typeof account.limits === 'object') {
-      result[String(group)] = account.limits as Record<string, GeminiApiRateLimit>;
+      result[String(group)] = Object.fromEntries(
+        Object.entries(account.limits).filter(([modelId]) => !isRetiredGeminiModelId(modelId)),
+      );
     }
   }
   // Env override: GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON = { "quotaGroup": { "model": { rpm, tpm, rpd } } }
   const envGroupLimits = readJsonValue<Record<string, Record<string, GeminiApiRateLimit>>>(env, {}, 'GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON');
   for (const [group, limits] of Object.entries(envGroupLimits)) {
-    result[group] = { ...(result[group] ?? {}), ...limits };
+    result[group] = Object.fromEntries(Object.entries({ ...(result[group] ?? {}), ...limits })
+      .filter(([modelId]) => !isRetiredGeminiModelId(modelId)));
   }
   return result;
 }
@@ -317,7 +322,7 @@ function readGeminiApiKeys(
         tier: String(entry.tier ?? defaultTier).trim(),
         priority: typeof entry.priority === 'number' ? entry.priority : 100,
         enabled: entry.enabled !== false,
-        models: Array.isArray(entry.models) ? entry.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean) : undefined,
+        models: Array.isArray(entry.models) ? filterRetiredGeminiModelIds(entry.models.map(String)) : undefined,
       }];
     });
   }
@@ -340,7 +345,7 @@ function readGeminiApiKeys(
         tier: String(account.tier ?? defaultTier).trim(),
         priority: typeof account.priority === 'number' ? account.priority : 100,
         enabled: account.enabled !== false,
-        models: Array.isArray(account.models) ? account.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean) : undefined,
+        models: Array.isArray(account.models) ? filterRetiredGeminiModelIds(account.models.map(String)) : undefined,
       };
     });
   }
@@ -359,7 +364,7 @@ function readGeminiApiKeys(
       tier: String(account.tier ?? defaultTier).trim(),
       priority: typeof account.priority === 'number' ? account.priority : 100,
       enabled: account.enabled !== false,
-      models: Array.isArray(account.models) ? account.models.map((model) => String(model).trim().toLowerCase()).filter(Boolean) : undefined,
+      models: Array.isArray(account.models) ? filterRetiredGeminiModelIds(account.models.map(String)) : undefined,
     };
   });
 }
@@ -397,26 +402,26 @@ export function loadConfig(
   const ollamaExcludeCloudModels = readBoolean(env, true, 'GEMROUTER_OLLAMA_EXCLUDE_CLOUD_MODELS');
   const ollamaModelIds = readOllamaInventoryModelIds(ollamaInventoryPath, ollamaExcludeCloudModels);
 
-  const freeTierTextModelIds = readList(
+  const freeTierTextModelIds = filterRetiredGeminiModelIds(readList(
     env,
     [...DEFAULT_FREE_TIER_TEXT_MODEL_IDS],
     'GEMROUTER_FREE_TIER_TEXT_MODELS',
-  ).map((model) => model.toLowerCase());
-  const freeTierAudioModelIds = readList(
+  ));
+  const freeTierAudioModelIds = filterRetiredGeminiModelIds(readList(
     env,
     [...DEFAULT_FREE_TIER_AUDIO_MODEL_IDS],
     'GEMROUTER_FREE_TIER_AUDIO_MODELS',
-  ).map((model) => model.toLowerCase());
-  const freeTierEmbeddingModelIds = readList(
+  ));
+  const freeTierEmbeddingModelIds = filterRetiredGeminiModelIds(readList(
     env,
     [...DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS],
     'GEMROUTER_FREE_TIER_EMBEDDING_MODELS',
-  ).map((model) => model.toLowerCase());
-  const freeTierFallbackModelIds = readList(
+  ));
+  const freeTierFallbackModelIds = filterRetiredGeminiModelIds(readList(
     env,
     [...DEFAULT_TEXT_FALLBACK_MODEL_IDS],
     'GEMROUTER_TEXT_FALLBACK_MODELS',
-  ).map((model) => model.toLowerCase());
+  ));
   const freeTierModelIds = buildFreeTierModelIds({
     textModelIds: freeTierTextModelIds,
     audioModelIds: freeTierAudioModelIds,
@@ -625,7 +630,8 @@ export function loadConfig(
       streamTimeoutMs: readNumber(env, 180_000, 'GEMROUTER_GEMINI_API_STREAM_TIMEOUT_MS'),
       fallbackModelIds: freeTierFallbackModelIds.filter((model) => freeTierTextModelIds.includes(model)),
       strictModelIds: readList(env, [], 'GEMROUTER_GEMINI_API_STRICT_MODELS')
-        .map((model) => model.replace(/^models\//, '').toLowerCase()),
+        .map((model) => model.replace(/^models\//, '').toLowerCase())
+        .filter((model) => !isRetiredGeminiModelId(model)),
     },
     nvidia: {
       enabled: nvidiaEnabled,
@@ -721,7 +727,9 @@ export function loadConfig(
       enabled: readBoolean(env, true, 'GEMROUTER_FREE_TIER_POLICY_ENABLED'),
       pricingUrl: pick(env, 'GEMROUTER_FREE_TIER_PRICING_URL') ?? 'https://ai.google.dev/gemini-api/docs/pricing',
       refreshMs: readNumber(env, 86_400_000, 'GEMROUTER_FREE_TIER_REFRESH_MS'),
-      parseModel: pick(env, 'GEMROUTER_FREE_TIER_PARSE_MODEL') ?? freeTierFallbackModelIds[0] ?? modelIds[0],
+      parseModel: filterRetiredGeminiModelIds([pick(env, 'GEMROUTER_FREE_TIER_PARSE_MODEL') ?? ''])[0]
+        ?? freeTierFallbackModelIds[0]
+        ?? modelIds[0],
       storePath: path.resolve(
         rootDir,
         pick(env, 'GEMROUTER_FREE_TIER_POLICY_PATH') ?? 'data/free-tier-policy.json',

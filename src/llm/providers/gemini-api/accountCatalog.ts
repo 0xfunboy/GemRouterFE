@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { filterRetiredGeminiModelIds, isRetiredGeminiModelId } from '../../../lib/models.js';
 import type { GeminiApiProviderConfig } from './types.js';
 
 /**
@@ -39,7 +40,15 @@ export class GeminiAccountModelCatalog {
     if (existsSync(this.config.accountModelsCachePath)) {
       try {
         const parsed = JSON.parse(readFileSync(this.config.accountModelsCachePath, 'utf8')) as AccountCatalogFile;
-        if (parsed?.version === 1 && parsed.accounts) return parsed;
+        if (parsed?.version === 1 && parsed.accounts) {
+          return {
+            ...parsed,
+            accounts: Object.fromEntries(Object.entries(parsed.accounts).map(([accountId, entry]) => [
+              accountId,
+              { ...entry, models: filterRetiredGeminiModelIds(Array.isArray(entry.models) ? entry.models : []) },
+            ])),
+          };
+        }
       } catch {
         // Cache is derived data; refetch rather than fail.
       }
@@ -55,6 +64,7 @@ export class GeminiAccountModelCatalog {
 
   /** True when the account's live catalog serves the model; fails open on no/stale data. */
   allows(accountId: string, model: string): boolean {
+    if (isRetiredGeminiModelId(model)) return false;
     const entry = this.data.accounts[accountId];
     if (!entry || entry.error || entry.models.length === 0) return true;
     if (Date.now() - Date.parse(entry.fetchedAt) > STALE_AFTER_MS) return true;
@@ -82,12 +92,11 @@ export class GeminiAccountModelCatalog {
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${payload.error?.message ?? 'unknown error'}`);
           }
-          const models = (Array.isArray(payload.models) ? payload.models : [])
+          const models = filterRetiredGeminiModelIds((Array.isArray(payload.models) ? payload.models : [])
             .filter((model) => Array.isArray(model.supportedGenerationMethods)
               && model.supportedGenerationMethods.map(String).includes('generateContent'))
             .map((model) => String(model.name ?? '').replace(/^models\//, '').trim().toLowerCase())
-            .filter(Boolean)
-            .sort();
+            .filter(Boolean)).sort();
           return { accountId: key.id, models, fetchedAt: new Date().toISOString(), error: null };
         } catch (error) {
           return {

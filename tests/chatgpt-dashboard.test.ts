@@ -22,9 +22,11 @@ describe('ChatGPT gateway dashboard integration', () => {
 
   it('provides a gated accessible three-step wizard with honest connection status and safe recovery', () => {
     const html = renderAppShell({ projectName: 'GemRouter', modelIds: [], publicBaseUrl: 'https://gemr.airewardrop.xyz' });
-    for (const id of ['chatgpt-wizard', 'chatgpt-wizard-form', 'chatgpt-wizard-panel-1', 'chatgpt-wizard-panel-2', 'chatgpt-wizard-panel-3', 'chatgpt-wizard-resume', 'chatgpt-wizard-url', 'chatgpt-wizard-prompt', 'chatgpt-wizard-disabled']) {
+    for (const id of ['chatgpt-wizard', 'chatgpt-wizard-form', 'chatgpt-wizard-panel-1', 'chatgpt-wizard-panel-2', 'chatgpt-wizard-panel-3', 'chatgpt-wizard-resume', 'chatgpt-wizard-plugin-name', 'chatgpt-wizard-plugin-description', 'chatgpt-wizard-url', 'chatgpt-wizard-prompt', 'chatgpt-wizard-disabled']) {
       assert.match(html, new RegExp(`id="${id}"`, 'u'));
     }
+    assert.match(html, /data-section-toggle="chatgpt-gateway-body"[^>]*aria-expanded="false"/u);
+    assert.match(html, /id="chatgpt-gateway-body" class="section-body hidden"/u);
     assert.match(html, /<details id="chatgpt-advanced"/u);
     assert.match(html, /name="consent" type="checkbox" required/u);
     assert.match(html, /aria-label="Avanzamento collegamento"/u);
@@ -35,6 +37,9 @@ describe('ChatGPT gateway dashboard integration', () => {
     assert.match(html, /non cambia l'ambiente né riavvia la produzione/u);
     assert.match(html, /\/admin\/chatgpt\/onboarding/u);
     assert.match(html, /Riapri finestra scaduta/u);
+    for (const instruction of ['Icon (optional)', 'Name:', 'Description (optional)', 'Server URL', 'Authentication:', 'Dynamic Client Registration (DCR)', 'mcp:tools', 'offline_access', 'Base scopes', 'I understand and want to continue', 'Create']) {
+      assert.ok(html.includes(instruction), instruction);
+    }
     assert.match(html, /window\.confirm\('Drain worker/u);
     assert.match(html, /window\.confirm\('Release worker/u);
     const aliasPattern = html.match(/name="alias"[^>]*pattern="([^"]+)"/u)?.[1];

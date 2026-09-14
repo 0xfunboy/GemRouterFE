@@ -10,10 +10,18 @@ Nessun Pi Agent, runtime PiLink o provider HTTP intermedio.
 L'area riservata comprende il wizard **Prepara → Autorizza → Avvia la chat**,
 con creazione del worker, consenso all'uso della conversazione persistente,
 permessi esatti per l'app selezionata, URL/istruzioni copiabili, ripresa,
-scadenza pairing e stato osservato dal gateway. La gestione avanzata rimane
-disponibile separatamente. Il dominio di riferimento è
+scadenza pairing e stato osservato dal gateway. La sezione parte collassata; il
+passaggio di autorizzazione segue dall'alto verso il basso tutti i campi della
+finestra **New Plugin** e offre valori suggeriti copiabili. La gestione avanzata
+rimane disponibile separatamente. Il dominio di riferimento è
 `https://gemr.airewardrop.xyz`; la produzione è stata abilitata soltanto dopo
 l'autorizzazione esplicita dell'operatore.
+
+I modelli upstream confermati come ritirati vengono filtrati centralmente da
+configurazione, cache, discovery, cataloghi account, policy persistita e routing.
+La gestione app mostra **Activate** e **Remove app** soltanto sui record revocati:
+l'attivazione emette una chiave nuova mostrata una sola volta, mentre la rimozione
+richiede conferma. La revoca invalida inoltre gli eventuali binding ChatGPT.
 
 La revisione ha corretto isolamento dei grant concorrenti, replay di claim
 scaduti/rilasciati, revoca del binding precedente, token refresh e scope,
@@ -41,10 +49,10 @@ pnpm audit --audit-level=low
 git diff --check
 ```
 
-Esito finale: **127 test superati, 22 suite, zero fallimenti o test saltati**;
+Esito finale: **132 test superati, 23 suite, zero fallimenti o test saltati**;
 typecheck, build e installazione frozen superati. La suite comprende i test precedenti dei provider e del router e nuovi test
 per protocollo, registry, OAuth/trasporto, claim/race/replay, privacy,
-backup e dashboard.
+backup, dashboard, esclusione dei modelli ritirati e ciclo di vita delle app.
 L'audit delle dipendenze aggiornate ha restituito zero vulnerabilità note;
 questo non equivale a una garanzia di assenza di difetti.
 
@@ -69,9 +77,12 @@ Esito: **superato** su Chromium, desktop e mobile.
 `pnpm smoke:chatgpt-ui` usa Chromium e un GemRouter locale isolato. Verifica
 login, creazione/abilitazione reale del worker, permessi dell'app, OAuth con
 callback su un'origine locale distinta, consenso, progressione vincolata al
-grant, ripresa dopo reload, istruzioni, schermata disabilitata e layout desktop
-e mobile a 390 px. Non sono ammessi errori JavaScript o console. Il polling e
-la schermata feature-off sono simulati esplicitamente nel browser.
+grant, sezione collassata di default, ripresa dopo reload, istruzioni complete e
+nello stesso ordine della GUI ChatGPT, schermata disabilitata e layout desktop
+e mobile a 390 px. Verifica inoltre via UI il ciclo creazione → revoca → Activate
+con chiave nuova → revoca → Remove app. Non sono ammessi errori JavaScript o
+console. Il polling e la schermata feature-off sono simulati esplicitamente nel
+browser.
 
 Le schermate del wizard sono state ispezionate visivamente. Per rigenerarle,
 impostare `GEMROUTER_UI_SCREENSHOT_DIR` su una directory esistente. Non occorre

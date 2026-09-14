@@ -1831,13 +1831,13 @@ export function renderAppShell(input: {
               <p class="section-copy">Collega una chat dedicata con una procedura guidata. GemRouter prepara il necessario; l'autorizzazione e l'avvio della chat restano sotto il tuo controllo.</p>
             </div>
             <div class="section-head-actions">
-              <button type="button" class="secondary section-toggle" data-section-toggle="chatgpt-gateway-body" aria-controls="chatgpt-gateway-body" aria-expanded="true">
-                <span class="section-toggle-label">Collapse</span>
-                <span class="section-toggle-arrow" aria-hidden="true">▾</span>
+              <button type="button" class="secondary section-toggle" data-section-toggle="chatgpt-gateway-body" aria-controls="chatgpt-gateway-body" aria-expanded="false">
+                <span class="section-toggle-label">Expand</span>
+                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
               </button>
             </div>
           </div>
-          <div id="chatgpt-gateway-body" class="section-body">
+          <div id="chatgpt-gateway-body" class="section-body hidden">
             <div id="chatgpt-gateway-meta" class="chip-row"></div>
             <div id="chatgpt-gateway-status" class="status" role="status" aria-live="polite">Loading gateway state…</div>
             <div id="chatgpt-wizard" class="chatgpt-wizard" lang="it" aria-labelledby="chatgpt-wizard-title">
@@ -1871,16 +1871,28 @@ export function renderAppShell(input: {
                   <h4 tabindex="-1" id="chatgpt-wizard-heading-2">Autorizza il collegamento in ChatGPT</h4>
                   <div class="chatgpt-wizard-grid">
                     <div>
+                      <p class="section-copy"><strong>Compila la finestra “New Plugin” dall’alto verso il basso in questo ordine:</strong></p>
                       <ol class="chatgpt-instructions">
-                        <li>Apri ChatGPT. In <strong>Settings → Security and login</strong> attiva <strong>Developer mode</strong>, se disponibile per il tuo account.</li>
-                        <li>Apri <strong>Plugins</strong>, premi <strong>+</strong> e assegna un nome alla connessione. Incolla l'indirizzo qui sotto come URL del server MCP e scegli OAuth quando richiesto.</li>
-                        <li>Conferma la connessione. Nella pagina GemRouter che si apre, accedi se richiesto e approva soltanto il collegamento che stai creando.</li>
+                        <li>Prima, in <strong>Settings → Security and login</strong>, attiva <strong>Developer mode</strong>. Poi apri <strong>Plugins</strong> e premi <strong>+</strong>.</li>
+                        <li><strong>Icon (optional):</strong> puoi lasciarla vuota o scegliere un’icona; non modifica il collegamento.</li>
+                        <li><strong>Name:</strong> incolla il nome suggerito mostrato a destra.</li>
+                        <li><strong>Description (optional):</strong> incolla la descrizione suggerita mostrata a destra.</li>
+                        <li><strong>Connection:</strong> seleziona <strong>Server URL</strong>, non Tunnel, e incolla l’indirizzo MCP mostrato a destra.</li>
+                        <li><strong>Authentication:</strong> seleziona <strong>OAuth</strong>.</li>
+                        <li>Apri <strong>Advanced OAuth settings → Client registration</strong>. In <strong>Registration method</strong> seleziona <strong>Dynamic Client Registration (DCR)</strong>. L’avviso arancione che CIMD non è disponibile è previsto per questa configurazione DCR.</li>
+                        <li>In <strong>Scopes → Default scopes</strong> lascia selezionati <strong>mcp:tools</strong> e <strong>offline_access</strong>. Lascia vuoto <strong>Base scopes</strong>.</li>
+                        <li>Seleziona <strong>I understand and want to continue</strong>, quindi premi <strong>Create</strong>.</li>
+                        <li>Quando si apre GemRouter, accedi se richiesto, verifica nome e worker e approva soltanto questo collegamento.</li>
                       </ol>
-                      <p class="footer-note">I nomi dei menu possono variare. Se la modalità sviluppatore non è disponibile, chiedi al gestore del workspace o verifica l'accesso del tuo account.</p>
+                      <p class="footer-note">Non inserire Client ID, Client secret, callback URL o scope aggiuntivi: ChatGPT li ricava automaticamente dalla discovery OAuth di GemRouter. Se la modalità sviluppatore non è disponibile, chiedi al gestore del workspace di abilitarla.</p>
                       <div class="button-row"><a class="wizard-link" href="https://chatgpt.com/plugins" target="_blank" rel="noopener noreferrer">Apri ChatGPT ↗</a><a href="https://developers.openai.com/plugins/deploy/connect-chatgpt" target="_blank" rel="noopener noreferrer">Guida ufficiale</a></div>
                     </div>
                     <div class="chatgpt-note">
-                      <label>Indirizzo del collegamento MCP<input id="chatgpt-wizard-url" readonly aria-describedby="chatgpt-wizard-expiry" /></label>
+                      <label>Name<input id="chatgpt-wizard-plugin-name" readonly /></label>
+                      <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-copy-name">Copia nome</button></div>
+                      <label style="margin-top:14px">Description<textarea id="chatgpt-wizard-plugin-description" readonly rows="2" class="compact-textarea"></textarea></label>
+                      <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-copy-description">Copia descrizione</button></div>
+                      <label style="margin-top:14px">Indirizzo del collegamento MCP<input id="chatgpt-wizard-url" readonly aria-describedby="chatgpt-wizard-expiry" /></label>
                       <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-copy-url">Copia indirizzo</button></div>
                       <p id="chatgpt-wizard-expiry" class="footer-note" style="margin-top:14px"></p>
                       <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-pair">Apri finestra di collegamento</button><button type="button" class="secondary hidden" id="chatgpt-wizard-activate">Autorizza l'app e abilita il worker</button></div>
@@ -2365,6 +2377,8 @@ export function renderAppShell(input: {
       const chatGptWizardForm = document.getElementById('chatgpt-wizard-form');
       const chatGptWizardStatus = document.getElementById('chatgpt-wizard-status');
       const chatGptWizardResume = document.getElementById('chatgpt-wizard-resume');
+      const chatGptWizardPluginName = document.getElementById('chatgpt-wizard-plugin-name');
+      const chatGptWizardPluginDescription = document.getElementById('chatgpt-wizard-plugin-description');
       const chatGptWizardUrl = document.getElementById('chatgpt-wizard-url');
       const chatGptWizardPrompt = document.getElementById('chatgpt-wizard-prompt');
       const chatGptWizardState = { workerId: '', step: 1, pairingExpiresAt: '', busy: false, loadedSelection: false };
@@ -2623,6 +2637,9 @@ export function renderAppShell(input: {
       function selectChatGptWizardWorker(workerId) {
         chatGptWizardState.workerId = workerId;
         chatGptWizardState.pairingExpiresAt = '';
+        chatGptWizardPluginName.value = '';
+        chatGptWizardPluginDescription.value = '';
+        chatGptWizardUrl.value = '';
         chatGptWizardPrompt.value = '';
         try {
           if (workerId) sessionStorage.setItem('gemrouter-chatgpt-worker', workerId);
@@ -2672,6 +2689,9 @@ export function renderAppShell(input: {
           return;
         }
         chatGptWizardUrl.value = worker.mcpUrl || String(data.publicBaseUrl || '').replace(/\\/$/, '') + '/mcp/chatgpt/' + encodeURIComponent(worker.id);
+        chatGptWizardPluginName.value = worker.label || worker.id;
+        chatGptWizardPluginDescription.value = 'Collegamento MCP GemRouter dedicato a ' + (worker.label || worker.id) + ' per il modello ' + (worker.publicModelIds || []).join(', ') + '.';
+        autosizeTextarea(chatGptWizardPluginDescription);
         const granted = (data.grants || []).some(function(grant) { return grant.workerId === worker.id && !grant.revokedAt; });
         const pending = (data.authorizationRequests || []).some(function(item) { return item.workerId === worker.id && Date.parse(item.expiresAt) > Date.now(); });
         const authorization = document.getElementById('chatgpt-wizard-authorization');
@@ -2768,6 +2788,8 @@ export function renderAppShell(input: {
       document.getElementById('chatgpt-wizard-next').addEventListener('click', function() { chatGptWizardAction(async function() { if (!chatGptWizardPrompt.value) await loadChatGptWizardPrompt(); setChatGptWizardStep(3, true); }); });
       document.getElementById('chatgpt-wizard-back').addEventListener('click', function() { setChatGptWizardStep(2, true); });
       document.getElementById('chatgpt-wizard-prompt-refresh').addEventListener('click', function() { chatGptWizardAction(loadChatGptWizardPrompt); });
+      document.getElementById('chatgpt-wizard-copy-name').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardPluginName, 'Nome copiato. Incollalo nel campo Name di ChatGPT.'); });
+      document.getElementById('chatgpt-wizard-copy-description').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardPluginDescription, 'Descrizione copiata. Incollala nel campo Description di ChatGPT.'); });
       document.getElementById('chatgpt-wizard-copy-url').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardUrl, 'Indirizzo copiato. Incollalo nella connessione MCP in ChatGPT.'); });
       document.getElementById('chatgpt-wizard-copy-prompt').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardPrompt, 'Istruzioni copiate. Incollale nella conversazione ChatGPT dedicata.'); });
 
@@ -4337,6 +4359,12 @@ export function renderAppShell(input: {
       function renderApps(apps) {
         appsTable.innerHTML = apps.map(function(app) {
           const badge = app.revokedAt ? '<span class="chip bad">revoked</span>' : '<span class="chip good">active</span>';
+          const actions = app.revokedAt
+            ? '<button type="button" class="primary" data-action="activate" data-id="' + escapeHtml(app.id) + '">Activate</button>' +
+              '<button type="button" class="bad" data-action="remove" data-id="' + escapeHtml(app.id) + '">Remove app</button>'
+            : '<button type="button" class="secondary" data-action="edit" data-id="' + escapeHtml(app.id) + '">Edit</button>' +
+              '<button type="button" class="warn" data-action="rotate" data-id="' + escapeHtml(app.id) + '">Rotate</button>' +
+              '<button type="button" class="bad" data-action="revoke" data-id="' + escapeHtml(app.id) + '">Revoke</button>';
           const modelSummary = app.modelAccess === 'all'
             ? 'all configured models'
             : app.allowedModels.length > 0
@@ -4346,11 +4374,7 @@ export function renderAppShell(input: {
             '<td><strong>' + escapeHtml(app.name) + '</strong><div class="footer-note">' + badge + '</div></td>' +
             '<td>' + escapeHtml(app.allowedOrigins.join(', ') || 'none') + '<div class="footer-note">' + escapeHtml(modelSummary) + (app.modelAccess === 'all' ? '' : ': ' + escapeHtml(app.allowedModels.join(', ') || 'inherit bootstrap')) + '</div></td>' +
             '<td><div>rpm: ' + escapeHtml(String(app.rateLimitPerMinute)) + '</div><div>conc: ' + escapeHtml(String(app.maxConcurrency)) + '</div><div class="footer-note mono">' + escapeHtml(app.keyPreview) + '</div></td>' +
-            '<td><div class="button-row">' +
-              '<button type="button" class="secondary" data-action="edit" data-id="' + escapeHtml(app.id) + '">Edit</button>' +
-              '<button type="button" class="warn" data-action="rotate" data-id="' + escapeHtml(app.id) + '"' + (app.revokedAt ? ' disabled' : '') + '>Rotate</button>' +
-              '<button type="button" class="bad" data-action="revoke" data-id="' + escapeHtml(app.id) + '"' + (app.revokedAt ? ' disabled' : '') + '>Revoke</button>' +
-            '</div></td>' +
+            '<td><div class="button-row">' + actions + '</div></td>' +
           '</tr>';
         }).join('');
       }
@@ -5067,12 +5091,27 @@ export function renderAppShell(input: {
             appStatus.textContent = 'Key rotated. The new key is shown in the popup.';
             openAppKeyModal('Rotated API key for ' + String((response.app && response.app.name) || app.name || 'app'), response.apiKey);
           }
+          if (action === 'activate') {
+            if (!window.confirm('Activate ' + app.name + '? A new API key will be generated and the revoked key will remain invalid.')) return;
+            const response = await request('/admin/apps/' + encodeURIComponent(id) + '/activate', {
+              method: 'POST',
+              body: JSON.stringify({}),
+            });
+            appStatus.textContent = 'App activated with a new key. Save it now: it will not be shown again.';
+            openAppKeyModal('New API key for reactivated ' + String((response.app && response.app.name) || app.name || 'app'), response.apiKey);
+          }
           if (action === 'revoke') {
             await request('/admin/apps/' + encodeURIComponent(id) + '/revoke', {
               method: 'POST',
               body: JSON.stringify({}),
             });
             appStatus.textContent = 'App revoked.';
+          }
+          if (action === 'remove') {
+            if (!window.confirm('Remove revoked app ' + app.name + ' permanently? This cannot be undone.')) return;
+            await request('/admin/apps/' + encodeURIComponent(id), { method: 'DELETE' });
+            if (String(appForm.elements.id.value || '') === id) resetAppForm('App removed.');
+            else appStatus.textContent = 'App removed.';
           }
           await loadAdminSummary();
         } catch (error) {

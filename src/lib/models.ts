@@ -30,11 +30,31 @@ export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
 ] as const;
 
 export const DEFAULT_FREE_TIER_AUDIO_MODEL_IDS = [
-  'gemini-3.1-flash-live-preview',
   'gemini-3.1-flash-tts-preview',
   'gemini-2.5-flash-native-audio-preview-12-2025',
   'gemini-2.5-flash-preview-tts',
 ] as const;
+
+// Confirmed retired upstream models stay blocked even if an old environment,
+// cache, account catalog, pricing-page parse, or persisted policy still names
+// them. Removing an entry from a default alone is insufficient because all of
+// those sources can independently repopulate operator-facing model lists.
+export const RETIRED_GEMINI_MODEL_IDS = [
+  'gemini-3.1-flash-live-preview',
+] as const;
+
+const RETIRED_GEMINI_MODELS = new Set<string>(RETIRED_GEMINI_MODEL_IDS);
+
+export function isRetiredGeminiModelId(value: string): boolean {
+  return RETIRED_GEMINI_MODELS.has(String(value).trim().toLowerCase().replace(/^models\//u, ''));
+}
+
+export function filterRetiredGeminiModelIds(values: readonly string[]): string[] {
+  return values
+    .map((value) => String(value).trim().toLowerCase())
+    .filter(Boolean)
+    .filter((value) => !isRetiredGeminiModelId(value));
+}
 
 export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
   'gemini-embedding-2',
@@ -85,7 +105,7 @@ export function isGemRouterCompatibleModelCapabilities(capabilities: ModelCapabi
 }
 
 function unique(ids: string[]): string[] {
-  return [...new Set(ids.map((id) => id.trim().toLowerCase()).filter(Boolean))];
+  return [...new Set(filterRetiredGeminiModelIds(ids))];
 }
 
 export function normalizePublicModelId(input: string | undefined): string {

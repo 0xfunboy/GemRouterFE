@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { isRetiredGeminiModelId } from '../../../lib/models.js';
 import type { GeminiApiModelInfo, GeminiApiProviderConfig } from './types.js';
 
 interface GeminiModelApiShape {
@@ -40,7 +41,9 @@ export class GeminiApiModelDiscovery {
     }
     try {
       const parsed = JSON.parse(readFileSync(this.config.discoveryCachePath, 'utf8')) as GeminiModelCacheFile;
-      if (parsed.version === 1 && Array.isArray(parsed.models)) return parsed;
+      if (parsed.version === 1 && Array.isArray(parsed.models)) {
+        return { ...parsed, models: parsed.models.filter((model) => !isRetiredGeminiModelId(model.id || model.name)) };
+      }
     } catch {
       // fall through
     }
@@ -86,10 +89,10 @@ export class GeminiApiModelDiscovery {
             inputTokenLimit: typeof model.inputTokenLimit === 'number' ? model.inputTokenLimit : null,
             outputTokenLimit: typeof model.outputTokenLimit === 'number' ? model.outputTokenLimit : null,
             supportedGenerationMethods: Array.isArray(model.supportedGenerationMethods) ? model.supportedGenerationMethods : [],
-            source: 'local-ledger',
+            source: 'local-ledger' as const,
             discoveredAt,
           };
-        }),
+        }).filter((model) => !isRetiredGeminiModelId(model.id || model.name)),
       };
       this.persist();
       return this.cache.models;
@@ -106,4 +109,3 @@ export class GeminiApiModelDiscovery {
     await this.refresh();
   }
 }
-

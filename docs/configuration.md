@@ -75,6 +75,11 @@ Avvia la chat**. Environment activation is deliberately not a dashboard restart 
 
 ## Gemini API backend
 
+Confirmed retired model IDs are denied centrally before configuration, caches,
+account catalogs, discovery responses, app allowlists, or the free-tier monitor can
+publish them again. `gemini-3.1-flash-live-preview` is currently retired and must not
+be added back to environment or persisted model lists.
+
 | Variable | Default | Description |
 |---|---|---|
 | `GEMROUTER_GEMINI_API_ENABLED` | `false` | Enable the backend |

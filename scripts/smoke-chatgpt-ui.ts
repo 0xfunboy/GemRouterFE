@@ -84,6 +84,10 @@ try {
   assert.equal(await page.locator('#chatgpt-wizard').isVisible(), false, 'Guest must not see the reserved wizard');
   await page.locator('#menu-toggle').click();
   await login(page);
+  const chatGptSectionToggle = page.locator('[data-section-toggle="chatgpt-gateway-body"]');
+  await chatGptSectionToggle.waitFor({ state: 'visible' });
+  assert.equal(await chatGptSectionToggle.getAttribute('aria-expanded'), 'false', 'ChatGPT gateway starts collapsed');
+  await chatGptSectionToggle.click();
   await page.locator('#chatgpt-wizard-form').waitFor({ state: 'visible' });
   await page.locator('#menu-toggle').click();
   await page.locator('#chatgpt-wizard').scrollIntoViewIfNeeded();
@@ -106,7 +110,20 @@ try {
   assert.ok(after.apps.find((app: any) => app.id === selectedApp.id).allowedModels.includes('chatgpt-browser-smoke'));
   for (const model of selectedApp.allowedModels) assert.ok(after.apps[0].allowedModels.includes(model), 'Existing app permissions preserved');
   assert.equal(await page.locator('#chatgpt-wizard-next').isDisabled(), true, 'Cannot advance without an actual grant');
+  assert.equal(await page.locator('#chatgpt-wizard-plugin-name').inputValue(), 'Browser smoke chat');
+  assert.match(await page.locator('#chatgpt-wizard-plugin-description').inputValue(), /chatgpt-browser-smoke/u);
+  const setupInstructions = await page.locator('#chatgpt-wizard-panel-2 .chatgpt-instructions').innerText();
+  for (const label of ['Icon (optional)', 'Name:', 'Description (optional)', 'Server URL', 'Authentication:', 'Dynamic Client Registration (DCR)', 'mcp:tools', 'offline_access', 'Base scopes', 'I understand and want to continue', 'Create']) {
+    assert.ok(setupInstructions.includes(label), `Missing ordered ChatGPT field instruction: ${label}`);
+  }
   assert.equal(await page.locator('#chatgpt-wizard-url').inputValue(), `${baseUrl}/mcp/chatgpt/${worker.id}`);
+  const authorizeScreenshots = process.env.GEMROUTER_UI_SCREENSHOT_DIR;
+  if (authorizeScreenshots) await page.locator('#chatgpt-wizard').screenshot({ path: path.join(authorizeScreenshots, 'chatgpt-wizard-authorize-desktop.png'), style: '.site-header { visibility: hidden }' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('#chatgpt-wizard').scrollIntoViewIfNeeded();
+  assert.ok(await page.locator('#chatgpt-wizard').evaluate((element) => element.scrollWidth <= element.clientWidth + 1), 'Authorization instructions must not overflow on mobile');
+  if (authorizeScreenshots) await page.locator('#chatgpt-wizard').screenshot({ path: path.join(authorizeScreenshots, 'chatgpt-wizard-authorize-mobile.png'), style: '.site-header { visibility: hidden }' });
+  await page.setViewportSize({ width: 1440, height: 1080 });
 
   // Real local OAuth registration, login continuation and consent. The callback
   // is simulated locally; no ChatGPT identity is implied by this grant.
@@ -163,6 +180,7 @@ try {
   assert.ok(await page.locator('#chatgpt-wizard').evaluate((element) => element.scrollWidth <= element.clientWidth + 1), 'Wizard must not overflow on mobile');
   if (screenshots) await page.locator('#chatgpt-wizard').screenshot({ path: path.join(screenshots, 'chatgpt-wizard-mobile.png'), style: '.site-header { visibility: hidden }' });
   await page.reload();
+  await chatGptSectionToggle.click();
   await page.locator('#chatgpt-wizard-panel-2').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#chatgpt-wizard-resume').inputValue(), worker.id, 'Selection resumes after reload');
   await page.locator('#chatgpt-wizard-next').click();
@@ -173,10 +191,47 @@ try {
   await page.locator('#chatgpt-wizard-panel-1').waitFor({ state: 'visible' });
   assert.ok(await page.locator('#chatgpt-wizard').evaluate((element) => element.scrollWidth <= element.clientWidth + 1), 'Preparation form fits mobile width');
   if (screenshots) await page.locator('#chatgpt-wizard').screenshot({ path: path.join(screenshots, 'chatgpt-wizard-prepare-mobile.png'), style: '.site-header { visibility: hidden }' });
+
+  // Revoked apps expose only Activate/Remove. Activation creates a fresh key;
+  // removal is confirmed and deletes the disposable record durably.
+  const lifecycleName = 'Browser smoke revoked lifecycle';
+  const createdResponse = await fetch(baseUrl + '/admin/apps', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ name: lifecycleName, allowedOrigins: [baseUrl], modelAccess: 'custom', allowedModels: [], sessionNamespace: 'browser-smoke-revoked', rateLimitPerMinute: 0, maxConcurrency: 0 }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const createdApp = await createdResponse.json() as { app: { id: string }; apiKey: string };
+  await page.locator('#refresh-button').click();
+  const appsToggle = page.locator('[data-section-toggle="apps-section-body"]');
+  if (await appsToggle.getAttribute('aria-expanded') !== 'true') await appsToggle.click();
+  const lifecycleRow = page.locator('#apps-table tr', { hasText: lifecycleName });
+  await lifecycleRow.waitFor({ state: 'visible' });
+  await lifecycleRow.locator('[data-action="revoke"]').click();
+  await lifecycleRow.locator('[data-action="activate"]').waitFor({ state: 'visible' });
+  assert.equal(await lifecycleRow.locator('[data-action="remove"]').isVisible(), true);
+  assert.equal(await lifecycleRow.locator('[data-action="edit"]').count(), 0);
+  page.once('dialog', (dialog) => dialog.accept());
+  await lifecycleRow.locator('[data-action="activate"]').click();
+  await page.locator('#app-key-modal').waitFor({ state: 'visible' });
+  const activatedKey = await page.locator('#app-key-modal-input').inputValue();
+  assert.ok(activatedKey && activatedKey !== createdApp.apiKey, 'Activation generates a different API key');
+  assert.equal((await fetch(baseUrl + '/v1/models', { headers: { authorization: `Bearer ${createdApp.apiKey}` } })).status, 401, 'Old revoked key stays invalid');
+  assert.equal((await fetch(baseUrl + '/v1/models', { headers: { authorization: `Bearer ${activatedKey}` } })).status, 200, 'Fresh activation key works');
+  await page.locator('#app-key-modal-close').click();
+  await lifecycleRow.locator('[data-action="revoke"]').waitFor({ state: 'visible' });
+  await lifecycleRow.locator('[data-action="revoke"]').click();
+  await lifecycleRow.locator('[data-action="remove"]').waitFor({ state: 'visible' });
+  page.once('dialog', (dialog) => dialog.accept());
+  await lifecycleRow.locator('[data-action="remove"]').click();
+  await lifecycleRow.waitFor({ state: 'detached' });
+  assert.equal((await adminJson('/admin/summary')).apps.some((app: any) => app.id === createdApp.app.id), false, 'Removed app no longer appears');
+
   // Read-only disabled-state simulation; no feature flags or processes changed.
   await page.unroute(baseUrl + '/admin/chatgpt');
   await page.route(baseUrl + '/admin/chatgpt', (route) => route.fulfill({ contentType: 'application/json', json: { enabled: false } }));
   await page.reload();
+  await chatGptSectionToggle.click();
   await page.locator('#chatgpt-wizard-disabled').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#chatgpt-wizard-form').isVisible(), false);
   assert.match(await page.locator('#chatgpt-wizard-disabled').innerText(), /non cambia l'ambiente né riavvia/u);
