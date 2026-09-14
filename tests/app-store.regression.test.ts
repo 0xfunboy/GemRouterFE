@@ -100,4 +100,36 @@ describe('app store model access', () => {
     assert.equal(reloaded.isModelAllowed(legacy, 'model-beta'), true);
     assert.equal(reloaded.isModelAllowed(legacy, 'model-gamma'), false);
   });
+
+  it('reactivates only revoked apps with a fresh key and current model permissions', () => {
+    const { store } = makeStore();
+    store.restrictAllowedModels(['model-alpha', 'model-retired']);
+    const app = createApp(store, 'reactivate', 'custom', ['model-alpha', 'model-retired']);
+
+    assert.equal(store.reactivate(app.id), null, 'an active app cannot be reactivated');
+    assert.ok(store.revoke(app.id));
+    assert.equal(store.verify('key-reactivate'), null, 'revocation invalidates the old key');
+    store.restrictAllowedModels(['model-alpha', 'model-new']);
+
+    const activated = store.reactivate(app.id);
+    assert.ok(activated);
+    assert.notEqual(activated.rawKey, 'key-reactivate');
+    assert.equal(activated.record.revokedAt, undefined);
+    assert.deepEqual(activated.record.allowedModels, ['model-alpha']);
+    assert.equal(store.verify('key-reactivate'), null, 'the revoked key never becomes valid again');
+    assert.equal(store.verify(activated.rawKey)?.id, app.id);
+  });
+
+  it('removes only revoked apps and keeps the deletion after reload', () => {
+    const { filePath, store } = makeStore();
+    const app = createApp(store, 'remove-revoked', 'all', []);
+
+    assert.equal(store.removeRevoked(app.id), null, 'an active app cannot be removed');
+    assert.ok(store.revoke(app.id));
+    assert.equal(store.removeRevoked(app.id)?.id, app.id);
+    assert.equal(store.findById(app.id), undefined);
+
+    const reloaded = new AppStore(filePath);
+    assert.equal(reloaded.findById(app.id), undefined);
+  });
 });

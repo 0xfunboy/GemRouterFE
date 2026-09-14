@@ -194,6 +194,33 @@ export class AppStore {
     current.revokedAt = nowIso();
     current.updatedAt = current.revokedAt;
     this.save();
+    this.clearRuntimeState(current.id);
+    return current;
+  }
+
+  reactivate(id: string): { record: ApiAppRecord; rawKey: string } | null {
+    const current = this.findById(id);
+    if (!current?.revokedAt) return null;
+    const rawKey = `barb_${randomBytes(24).toString('base64url')}`;
+    current.apiKeyHash = hashApiKey(rawKey);
+    current.keyPreview = maskKey(rawKey);
+    current.allowedModels = current.modelAccess === 'all'
+      ? [...this.modelUniverse]
+      : normalizedModelIds(current.allowedModels).filter((model) => this.modelUniverse.has(model));
+    delete current.revokedAt;
+    current.updatedAt = nowIso();
+    this.save();
+    this.clearRuntimeState(current.id);
+    return { record: current, rawKey };
+  }
+
+  removeRevoked(id: string): ApiAppRecord | null {
+    const index = this.state.apps.findIndex((app) => app.id === id);
+    const current = index >= 0 ? this.state.apps[index] : undefined;
+    if (!current?.revokedAt) return null;
+    this.state.apps.splice(index, 1);
+    this.save();
+    this.clearRuntimeState(current.id);
     return current;
   }
 
@@ -336,6 +363,17 @@ export class AppStore {
     current.updatedAt = nowIso();
     this.save();
     return current;
+  }
+
+  private clearRuntimeState(appId: string): void {
+    this.rateWindows.delete(appId);
+    const concurrency = this.concurrency.get(appId);
+    if (!concurrency) return;
+    this.concurrency.delete(appId);
+    for (const waiting of concurrency.waiting.splice(0)) {
+      if (waiting.timer) clearTimeout(waiting.timer);
+      waiting.resolve(null);
+    }
   }
 
   private load(): void {

@@ -52,8 +52,11 @@ persist under `data/` and reload in-process:
   (first = default, rest = fallback chain).
 - **Outbound Proxy** - manage the proxy pool (off by default, not yet applied to upstreams).
 - **Apps and API Keys** - create/rotate/revoke client apps and choose either a custom
-  model allowlist or **All configured models**. The all-model policy follows later
-  catalog changes automatically; Recent Interactions can be filtered by app.
+  model allowlist or **All configured models**. A revoked app exposes only
+  **Activate** (which creates a new one-time API key) and **Remove app** (which asks
+  for confirmation and permanently removes that revoked record). Revocation also
+  detaches the app from ChatGPT workers. The all-model policy follows later catalog
+  changes automatically; Recent Interactions can be filtered by app.
 
 ## Troubleshooting
 

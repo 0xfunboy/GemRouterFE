@@ -12,6 +12,7 @@ import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.j
 import {
   buildDiscoveredModelCatalog,
   describePublicModel,
+  filterRetiredGeminiModelIds,
   inferModelCapabilities,
   isGeminiImageGenerationModelId,
   isGemRouterCompatibleModelCapabilities,
@@ -467,6 +468,19 @@ function sanitizeAdminApp(appRecord: ApiAppRecord): Omit<ApiAppRecord, 'apiKeyHa
   return rest;
 }
 
+function detachAppFromChatGptWorkers(appId: string): string[] {
+  if (!chatGptRegistry) return [];
+  const detachedWorkerIds: string[] = [];
+  for (const worker of chatGptRegistry.list()) {
+    if (!worker.allowedAppIds.includes(appId)) continue;
+    chatGptRegistry.update(worker.id, {
+      allowedAppIds: worker.allowedAppIds.filter((allowedAppId) => allowedAppId !== appId),
+    });
+    detachedWorkerIds.push(worker.id);
+  }
+  return detachedWorkerIds;
+}
+
 function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
   const origin = getRequestOrigin(request) ?? null;
   const administrative = /^\/(?:admin(?:\/|$)|auth(?:\/|$)|v1\/admin(?:\/|$)|oauth\/)/u.test(request.url.split('?')[0]);
@@ -800,7 +814,22 @@ function loadFreeTierPolicyState(): FreeTierPolicyState {
   if (!existsSync(config.freeTierPolicy.storePath)) return emptyFreeTierPolicyState();
   try {
     const parsed = JSON.parse(readFileSync(config.freeTierPolicy.storePath, 'utf8')) as Partial<FreeTierPolicyState>;
-    return { ...emptyFreeTierPolicyState(), ...parsed };
+    const loaded = { ...emptyFreeTierPolicyState(), ...parsed };
+    const sanitized: FreeTierPolicyState = {
+      ...loaded,
+      textModelIds: readStringList(loaded.textModelIds),
+      audioModelIds: readStringList(loaded.audioModelIds),
+      embeddingModelIds: readStringList(loaded.embeddingModelIds),
+      addedModelIds: readStringList(loaded.addedModelIds),
+      removedConfiguredModelIds: readStringList(loaded.removedConfiguredModelIds),
+      unavailableConfiguredModelIds: readStringList(loaded.unavailableConfiguredModelIds),
+      alerts: (Array.isArray(loaded.alerts) ? loaded.alerts : []).map((alert) => ({
+        ...alert,
+        modelIds: readStringList(alert.modelIds),
+      })).filter((alert) => alert.modelIds.length > 0),
+    };
+    if (JSON.stringify(sanitized) !== JSON.stringify(loaded)) saveFreeTierPolicyState(sanitized);
+    return sanitized;
   } catch {
     return emptyFreeTierPolicyState();
   }
@@ -824,7 +853,7 @@ function extractJsonObject(value: string): Record<string, unknown> | null {
 
 function readStringList(value: unknown): string[] {
   return Array.isArray(value)
-    ? [...new Set(value.map((item) => normalizeModelId(String(item))).filter(Boolean))]
+    ? [...new Set(filterRetiredGeminiModelIds(value.map((item) => normalizeModelId(String(item)))))]
     : [];
 }
 
@@ -4459,7 +4488,7 @@ app.post<{
     apiKey?: string;
   };
 }>('/admin/apps', async (request, reply) => {
-  if (!ensureAdmin(request, reply)) return reply;
+  if (!ensureAdminMutation(request, reply)) return reply;
   const body = request.body ?? {};
   // Custom API key field, two modes:
   //  - a full key (e.g. "myapp_ab12…")  → stored verbatim
@@ -4535,7 +4564,7 @@ app.put<{
     maxConcurrency?: number;
   };
 }>('/admin/apps/:id', async (request, reply) => {
-  if (!ensureAdmin(request, reply)) return reply;
+  if (!ensureAdminMutation(request, reply)) return reply;
   const body = request.body ?? {};
   if (body.modelAccess !== undefined && body.modelAccess !== 'all' && body.modelAccess !== 'custom') {
     return sendError(reply, 400, {
@@ -4600,7 +4629,7 @@ app.put<{
 });
 
 app.post<{ Params: { id: string } }>('/admin/apps/:id/rotate', async (request, reply) => {
-  if (!ensureAdmin(request, reply)) return reply;
+  if (!ensureAdminMutation(request, reply)) return reply;
   const rotated = appStore.rotate(request.params.id);
   if (!rotated) {
     return sendError(reply, 404, {
@@ -4625,7 +4654,16 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/rotate', async (request, r
 });
 
 app.post<{ Params: { id: string } }>('/admin/apps/:id/revoke', async (request, reply) => {
-  if (!ensureAdmin(request, reply)) return reply;
+  if (!ensureAdminMutation(request, reply)) return reply;
+  const current = appStore.findById(request.params.id);
+  if (!current || current.revokedAt) {
+    return sendError(reply, 404, {
+      message: 'Active app not found',
+      type: 'invalid_request_error',
+      code: 'app_not_found',
+    });
+  }
+  const detachedWorkerIds = detachAppFromChatGptWorkers(current.id);
   const revoked = appStore.revoke(request.params.id);
   if (!revoked) {
     return sendError(reply, 404, {
@@ -4641,11 +4679,67 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/revoke', async (request, r
     route: request.url,
     statusCode: 200,
     latencyMs: Date.now() - getStartedAt(request),
+    details: { detachedWorkerIds },
   });
   return {
     ok: true,
     app: sanitizeAdminApp(revoked),
   };
+});
+
+app.post<{ Params: { id: string } }>('/admin/apps/:id/activate', async (request, reply) => {
+  if (!ensureAdminMutation(request, reply)) return reply;
+  const current = appStore.findById(request.params.id);
+  if (!current) {
+    return sendError(reply, 404, { message: 'App not found', type: 'invalid_request_error', code: 'app_not_found' });
+  }
+  if (!current.revokedAt) {
+    return sendError(reply, 409, { message: 'Only a revoked app can be activated', type: 'invalid_request_error', code: 'app_not_revoked' });
+  }
+  const activated = appStore.reactivate(current.id);
+  if (!activated) {
+    return sendError(reply, 409, { message: 'App activation conflicted with another change', type: 'invalid_request_error', code: 'app_activation_conflict' });
+  }
+  audit.write({
+    type: 'admin.app.activated',
+    requestId: request.id,
+    appId: activated.record.id,
+    route: request.url,
+    statusCode: 200,
+    latencyMs: Date.now() - getStartedAt(request),
+    details: { generatedNewKey: true },
+  });
+  return {
+    ok: true,
+    app: sanitizeAdminApp(activated.record),
+    apiKey: activated.rawKey,
+  };
+});
+
+app.delete<{ Params: { id: string } }>('/admin/apps/:id', async (request, reply) => {
+  if (!ensureAdminMutation(request, reply)) return reply;
+  const current = appStore.findById(request.params.id);
+  if (!current) {
+    return sendError(reply, 404, { message: 'App not found', type: 'invalid_request_error', code: 'app_not_found' });
+  }
+  if (!current.revokedAt) {
+    return sendError(reply, 409, { message: 'Revoke the app before removing it', type: 'invalid_request_error', code: 'app_must_be_revoked' });
+  }
+  const detachedWorkerIds = detachAppFromChatGptWorkers(current.id);
+  const removed = appStore.removeRevoked(current.id);
+  if (!removed) {
+    return sendError(reply, 409, { message: 'App removal conflicted with another change', type: 'invalid_request_error', code: 'app_removal_conflict' });
+  }
+  audit.write({
+    type: 'admin.app.removed',
+    requestId: request.id,
+    appId: removed.id,
+    route: request.url,
+    statusCode: 200,
+    latencyMs: Date.now() - getStartedAt(request),
+    details: { detachedWorkerIds },
+  });
+  return { ok: true, app: sanitizeAdminApp(removed) };
 });
 
 app.get('/admin/runtime', async (request, reply) => {

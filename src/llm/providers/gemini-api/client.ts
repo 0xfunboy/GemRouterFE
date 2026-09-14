@@ -4,6 +4,7 @@ import {
   isGeminiLiveModelId,
   isGeminiLongRunningModelId,
   isGeminiNativeAudioModelId,
+  isRetiredGeminiModelId,
   isGeminiTtsModelId,
 } from '../../../lib/models.js';
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
@@ -673,6 +674,7 @@ export function buildGeminiModelAttemptPlan(input: {
   pureImageRequest?: boolean;
 }): string[] {
   const requested = normalizeGeminiApiModel(input.requestedModelId);
+  if (isRetiredGeminiModelId(requested)) return [];
   const explicitAllowlist = Array.isArray(input.allowedModelIds);
   const requestedIsGeminiProviderModel = /^(?:gemini|gemma)-/i.test(requested);
   const requestedAllowedByPolicy = !explicitAllowlist || (input.allowedModelIds ?? [])
@@ -1524,7 +1526,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               limit,
             };
           })
-          .filter((model) => model.chat)
+          .filter((model) => model.chat && !isRetiredGeminiModelId(model.id))
           .sort((left, right) => left.id.localeCompare(right.id));
         return { ok: true, accountId, quotaGroup: account.quotaGroup, models };
       } catch (error) {
