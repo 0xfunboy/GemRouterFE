@@ -53,7 +53,7 @@ function normalizeBackendError(backend: LLMBackendId, error: unknown): LLMProvid
   const message = error instanceof Error ? error.message : String(error);
   return new LLMProviderError('backend_unavailable', backend, message, {
     statusCode: 502,
-    fallbackEligible: true,
+    fallbackEligible: backend !== 'chatgpt',
     cause: error,
   });
 }
@@ -204,7 +204,9 @@ function isNvidiaOnlyModel(config: LLMRouterConfig, rawModel: unknown): boolean 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
   if (preference !== 'auto') return [preference];
-  const rawOrder = [...new Set(config.backendOrder)];
+  // A persistent human-linked worker is an explicit opt-in, never an automatic
+  // fallback even if a programmatic caller accidentally includes it in order.
+  const rawOrder = [...new Set(config.backendOrder)].filter((backend) => backend !== 'chatgpt');
   const model = String(opts?.model ?? '').trim().toLowerCase().replace(/^models\//, '');
   const nvidiaCanServe = config.nvidiaServableModelIds?.includes(model) === true;
   const isGeminiModel = /^(gemini|gemma)-/.test(model);
@@ -252,6 +254,7 @@ export function createLlmRouter(
     geminiApi: BackendClient;
     ollama?: BackendClient;
     nvidia?: BackendClient;
+    chatgpt?: BackendClient;
   },
 ): LLMClient {
   const state: RouterState = {
@@ -265,6 +268,7 @@ export function createLlmRouter(
   function getBackendClient(backend: LLMBackendId): BackendClient | undefined {
     if (backend === 'ollama') return backends.ollama;
     if (backend === 'nvidia') return backends.nvidia;
+    if (backend === 'chatgpt') return backends.chatgpt;
     return backends.geminiApi;
   }
 
@@ -278,27 +282,31 @@ export function createLlmRouter(
     remainingMs: () => number;
     dispose: () => void;
   } {
-    const deadlineMs = config.requestDeadlineMs ?? 75_000;
+    const deadlineMs = opts?.requestDeadlineMs ?? config.requestDeadlineMs ?? 75_000;
     const deadline = opts?.deadline ?? Date.now() + deadlineMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('gemrouter_request_deadline')), Math.max(0, deadline - Date.now()));
     timer.unref?.();
+    const onUpstreamAbort = () => controller.abort(opts?.signal?.reason);
     if (opts?.signal) {
       if (opts.signal.aborted) controller.abort(opts.signal.reason);
-      else opts.signal.addEventListener('abort', () => controller.abort(opts.signal?.reason), { once: true });
+      else opts.signal.addEventListener('abort', onUpstreamAbort, { once: true });
     }
     return {
       opts: { ...opts, deadline, signal: controller.signal },
       isExpired: () => Date.now() >= deadline,
       remainingMs: () => Math.max(0, deadline - Date.now()),
-      dispose: () => clearTimeout(timer),
+      dispose: () => {
+        clearTimeout(timer);
+        opts?.signal?.removeEventListener('abort', onUpstreamAbort);
+      },
     };
   }
 
   // Non-nvidia backends can't serve a NVIDIA-only id: substitute the configured
   // Gemini fallback model for their attempt (the response keeps the real model used).
   function optsForBackend(backend: LLMBackendId, opts: LLMOptions): LLMOptions {
-    if (backend === 'nvidia' || !config.nvidiaFallbackModel) return opts;
+    if (backend === 'nvidia' || backend === 'chatgpt' || !config.nvidiaFallbackModel) return opts;
     if (!isNvidiaOnlyModel(config, opts.model)) return opts;
     return { ...opts, model: config.nvidiaFallbackModel };
   }
@@ -823,6 +831,9 @@ export function createLlmRouter(
       const nvidia = backends.nvidia?.health
         ? (backends.nvidia.health() as Record<string, unknown>)
         : backends.nvidia?.getDiagnostics?.() ?? null;
+      const chatgpt = backends.chatgpt?.health
+        ? (backends.chatgpt.health() as Record<string, unknown>)
+        : backends.chatgpt?.getDiagnostics?.() ?? null;
       return {
         provider: 'router',
         model: 'gemini-router',
@@ -842,6 +853,7 @@ export function createLlmRouter(
         geminiApi,
         ollama,
         nvidia,
+        chatgpt,
       };
     },
   };

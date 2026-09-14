@@ -55,6 +55,19 @@ import { buildNvidiaServableModelIds } from './llm/providers/nvidia/naming.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
 import { createOllamaLocalClient } from './llm/providers/ollama-local/client.js';
 import { createAgnesClient } from './llm/providers/agnes/client.js';
+import { canonicalChatGptOrigin, ChatGptOAuthService } from './llm/providers/chatgpt/auth.js';
+import { createChatGptClient } from './llm/providers/chatgpt/client.js';
+import { readDormantChatGptAliases } from './llm/providers/chatgpt/dormant.js';
+import { chatGptError } from './llm/providers/chatgpt/errors.js';
+import { ChatGptGateway } from './llm/providers/chatgpt/gateway.js';
+import {
+  parseChatGptCompletionRequest,
+  type ParsedChatGptRequest,
+} from './llm/providers/chatgpt/protocol.js';
+import { ChatGptWorkerRegistry } from './llm/providers/chatgpt/registry.js';
+import { registerChatGptGatewayRoutes } from './llm/providers/chatgpt/routes.js';
+import { ChatGptGatewayStore } from './llm/providers/chatgpt/store.js';
+import { toLlmMessages } from './llm/providers/chatgpt/types.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -77,6 +90,10 @@ const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
 const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
+const CHATGPT_BACKUP_EXCLUDED_PATHS = [
+  config.chatgpt.dataDir,
+  path.join(config.dataDir, 'chatgpt-gateway'),
+];
 
 /** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
 function knownGeminiTextModels(): string[] {
@@ -120,6 +137,67 @@ const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
 const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
 const agnesLlm = createAgnesClient(config.agnes);
+const audit = new AuditLogger(config.auditLogPath);
+const providerModelIds = new Set(config.modelIds.map((model) => normalizeModelId(model)));
+let appStoreForChatGptAliases: AppStore | undefined;
+// Keep persisted bare aliases reserved while the feature is disabled, without
+// initializing SQLite state, advertising models, or widening any app allowlist.
+const dormantChatGptAliases = config.chatgpt.enabled
+  ? new Set<string>()
+  : readDormantChatGptAliases(config.chatgpt.dataDir);
+// Validate the remotely published origin before the enabled gateway can create
+// any SQLite/OAuth runtime state.
+const chatGptPublicBaseUrl = config.chatgpt.enabled
+  ? canonicalChatGptOrigin(config.chatgpt.publicBaseUrl ?? (() => {
+      throw new Error('GEMROUTER_CHATGPT_PUBLIC_BASE_URL is required when the ChatGPT gateway is enabled.');
+    })())
+  : undefined;
+function appPolicyModelUniverse(): string[] {
+  return [...new Set([...config.modelIds, ...dormantChatGptAliases])];
+}
+const chatGptStore = config.chatgpt.enabled
+  ? new ChatGptGatewayStore(config.chatgpt, (event) => audit.write({
+      type: event.type,
+      requestId: event.requestId,
+      appId: event.appId,
+      details: {
+        ...(event.workerId ? { workerId: event.workerId } : {}),
+        ...(event.reasonCode ? { reasonCode: event.reasonCode } : {}),
+      },
+    }))
+  : undefined;
+const chatGptRegistry = chatGptStore
+  ? new ChatGptWorkerRegistry(
+    chatGptStore,
+    config.chatgpt,
+    () => providerModelIds,
+    (aliases) => {
+      config.modelIds = [...new Set([...providerModelIds, ...aliases])];
+      appStoreForChatGptAliases?.restrictAllowedModels(appPolicyModelUniverse());
+    },
+  )
+  : undefined;
+const chatGptGateway = chatGptStore && chatGptRegistry
+  ? new ChatGptGateway(chatGptStore, chatGptRegistry)
+  : undefined;
+const chatGptOAuth = chatGptGateway
+  ? new ChatGptOAuthService(
+    chatGptGateway.store,
+    chatGptPublicBaseUrl!,
+  )
+  : undefined;
+const chatGptLlm = chatGptGateway ? createChatGptClient(chatGptGateway) : undefined;
+if (chatGptRegistry) {
+  config.modelIds = [...new Set([...providerModelIds, ...chatGptRegistry.aliases()])];
+}
+function refreshProviderModelUniverse(): void {
+  const aliases = new Set(chatGptRegistry?.aliases() ?? []);
+  providerModelIds.clear();
+  for (const model of config.modelIds.map((value) => normalizeModelId(value))) {
+    if (!aliases.has(model)) providerModelIds.add(model);
+  }
+  config.modelIds = [...new Set([...providerModelIds, ...aliases])];
+}
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
@@ -129,9 +207,10 @@ const llm = createLlmRouter({
   geminiApi: geminiApiLlm,
   ollama: ollamaLlm,
   nvidia: nvidiaLlm,
+  chatgpt: chatGptLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
-const audit = new AuditLogger(config.auditLogPath);
+appStoreForChatGptAliases = appStore;
 const adminSessions = new AdminSessionStore(config.adminSessionTtlMs);
 const compatibility = new CompatibilityStore(config.compatibility.settingsStorePath, {
   defaultSurface: config.compatibility.defaultSurface,
@@ -139,17 +218,21 @@ const compatibility = new CompatibilityStore(config.compatibility.settingsStoreP
 });
 const interactions = new InteractionStore(config.interactionsStorePath);
 
+// Environment still governs ordinary bootstrap policy. Preserve only explicitly
+// granted worker aliases across restarts, including a temporarily disabled gateway.
+const bootstrapWorkerAliases = appStore.verify(config.bootstrapApp.apiKey)?.allowedModels.filter((alias) =>
+  chatGptRegistry?.resolveAlias(alias) || dormantChatGptAliases.has(alias)) ?? [];
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
   rawKey: config.bootstrapApp.apiKey,
   modelAccess: config.bootstrapApp.modelAccess,
   allowedOrigins: config.bootstrapApp.allowedOrigins,
-  allowedModels: config.bootstrapApp.allowedModels,
+  allowedModels: [...new Set([...config.bootstrapApp.allowedModels, ...bootstrapWorkerAliases])],
   sessionNamespace: config.bootstrapApp.sessionNamespace,
   rateLimitPerMinute: config.bootstrapApp.rateLimitPerMinute,
   maxConcurrency: config.bootstrapApp.maxConcurrency,
 });
-appStore.restrictAllowedModels(config.modelIds);
+appStore.restrictAllowedModels(appPolicyModelUniverse());
 
 const app = Fastify({
   logger: false,
@@ -221,7 +304,8 @@ function parseCookies(request: FastifyRequest): Record<string, string> {
     .map((chunk) => {
       const separator = chunk.indexOf('=');
       if (separator < 0) return [chunk, ''];
-      return [chunk.slice(0, separator), decodeURIComponent(chunk.slice(separator + 1))];
+      try { return [chunk.slice(0, separator), decodeURIComponent(chunk.slice(separator + 1))]; }
+      catch { return [chunk.slice(0, separator), '']; }
     });
   return Object.fromEntries(entries);
 }
@@ -234,19 +318,19 @@ function getAdminSession(request: FastifyRequest) {
   return adminSessions.read(getAdminSessionId(request));
 }
 
-function setAdminCookie(reply: FastifyReply, sessionId: string): void {
+function setAdminCookie(reply: FastifyReply, sessionId: string, request: FastifyRequest): void {
   reply.header(
     'set-cookie',
     `${ADMIN_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(
       config.adminSessionTtlMs / 1000,
-    )}`,
+    )}${adminBrowserOrigin(request).startsWith('https://') ? '; Secure' : ''}`,
   );
 }
 
-function clearAdminCookie(reply: FastifyReply): void {
+function clearAdminCookie(reply: FastifyReply, request: FastifyRequest): void {
   reply.header(
     'set-cookie',
-    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${adminBrowserOrigin(request).startsWith('https://') ? '; Secure' : ''}`,
   );
 }
 
@@ -385,7 +469,10 @@ function sanitizeAdminApp(appRecord: ApiAppRecord): Omit<ApiAppRecord, 'apiKeyHa
 
 function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
   const origin = getRequestOrigin(request) ?? null;
-  if (origin && appStore.isOriginAllowedGlobally(origin)) {
+  const administrative = /^\/(?:admin(?:\/|$)|auth(?:\/|$)|v1\/admin(?:\/|$)|oauth\/)/u.test(request.url.split('?')[0]);
+  if (administrative) reply.header('cache-control', 'no-store');
+  const allowed = administrative ? origin === adminBrowserOrigin(request) : Boolean(origin && appStore.isOriginAllowedGlobally(origin));
+  if (origin && allowed) {
     reply.header('access-control-allow-origin', origin);
     reply.header('vary', 'Origin');
     reply.header('access-control-allow-credentials', 'true');
@@ -399,10 +486,15 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
       'x-gemrouter-session',
       'x-gemrouter-user',
       'x-gemrouter-stateful',
+      'x-gemrouter-reset-session',
       'x-gemrouter-backend',
+      'x-gemrouter-gateway-profile',
+      'x-gemrouter-csrf',
+      'Idempotency-Key',
       'x-baribi-session',
       'x-baribi-user',
       'x-baribi-stateful',
+      'x-baribi-reset-session',
       'x-baribi-backend',
       'OpenAI-Organization',
       'OpenAI-Project',
@@ -411,9 +503,17 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
   reply.header('access-control-allow-methods', 'GET,POST,PUT,DELETE,OPTIONS');
 }
 
+function adminBrowserOrigin(request: FastifyRequest): string {
+  // Do not let an app's wildcard origins or untrusted forwarded host grant
+  // credentialed browser access to the administration plane.
+  if (chatGptPublicBaseUrl) return chatGptPublicBaseUrl;
+  const scheme = request.protocol === 'https' || request.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+  return `${scheme}://${request.headers.host ?? ''}`;
+}
+
 function hasAdminAccess(request: FastifyRequest): boolean {
   const token = getBearerToken(request);
-  if (token === config.adminToken) return true;
+  if (token && stableCompare(token, config.adminToken)) return true;
   return getAdminSession(request) !== null;
 }
 
@@ -423,6 +523,28 @@ function ensureAdmin(request: FastifyRequest, reply: FastifyReply): boolean {
       message: 'Invalid admin token or session',
       type: 'authentication_error',
       code: 'invalid_admin_token',
+    });
+    return false;
+  }
+  const origin = getRequestOrigin(request);
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && origin !== undefined && origin !== null
+    && origin !== adminBrowserOrigin(request) && !stableCompare(getBearerToken(request) ?? '', config.adminToken)) {
+    sendError(reply, 403, { message: 'Cross-origin dashboard mutations are not allowed', type: 'permission_error', code: 'origin_not_allowed' });
+    return false;
+  }
+  return true;
+}
+
+function ensureAdminMutation(request: FastifyRequest, reply: FastifyReply, formCsrf?: string): boolean {
+  if (!ensureAdmin(request, reply)) return false;
+  if (stableCompare(getBearerToken(request) ?? '', config.adminToken)) return true;
+  const session = getAdminSession(request);
+  const supplied = formCsrf ?? readHeaderValue(request, 'x-gemrouter-csrf');
+  if (!session || !supplied || !stableCompare(session.csrfToken, supplied)) {
+    sendError(reply, 403, {
+      message: 'A valid dashboard CSRF token is required',
+      type: 'permission_error',
+      code: 'invalid_csrf_token',
     });
     return false;
   }
@@ -509,6 +631,7 @@ function ensureModelAllowed(
 
 function isConfiguredTextModel(modelId: string): boolean {
   const normalized = normalizeModelId(modelId);
+  if (normalized.startsWith('chatgpt/') || chatGptRegistry?.resolveAlias(normalized) || dormantChatGptAliases.has(normalized)) return false;
   if (config.freeTierPolicy.textModelIds.includes(normalized)) return true;
   return config.modelIds.map((model) => model.toLowerCase()).includes(normalized) &&
     !config.freeTierPolicy.audioModelIds.includes(normalized) &&
@@ -581,6 +704,7 @@ function parseBackendPreference(request: FastifyRequest): LLMBackendPreference {
   if (value === 'auto') return 'auto';
   if (value === 'gemini-api' || value === 'gemini' || value === 'ai-studio') return 'gemini-api';
   if (value === 'nvidia' || value === 'nvidia-api' || value === 'nim') return 'nvidia';
+  if (value === 'chatgpt') return 'chatgpt';
   throw new Error(`Unsupported backend override: ${raw}`);
 }
 
@@ -829,6 +953,9 @@ function recordInteraction(input: {
   response?: Partial<LLMResponse>;
   llmError?: unknown;
   error?: string;
+  /** ChatGPT conversations are personal state; never persist their prompt or reply. */
+  privateContent?: boolean;
+  usageSource?: 'unavailable';
 }): void {
   const response = input.response ?? buildInteractionResponseFromError(input.llmError);
   interactions.record({
@@ -841,9 +968,10 @@ function recordInteraction(input: {
     backendModel: response?.backendModel,
     apiKeyId: response?.apiKeyId,
     quotaGroup: response?.quotaGroup,
-    prompt: flattenPrompt(input.messages),
-    response: input.responseText,
+    prompt: input.privateContent ? '' : flattenPrompt(input.messages),
+    response: input.privateContent ? undefined : input.responseText,
     usage: input.usage,
+    usageSource: input.usageSource ?? response?.usageSource,
     status: input.status,
     statusCode: input.statusCode,
     latencyMs: Date.now() - getStartedAt(input.request),
@@ -976,6 +1104,16 @@ function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
   if (response.apiKeyId) reply.header('x-gemrouter-api-key-id', response.apiKeyId);
   if (response.quotaGroup) reply.header('x-gemrouter-quota-group', response.quotaGroup);
   if (response.quotaSource) reply.header('x-gemrouter-quota-source', response.quotaSource);
+  if (response.modelVerification) reply.header('x-gemrouter-model-verification', response.modelVerification.replace('_', '-'));
+  if (response.streamingMode) reply.header('x-gemrouter-stream', response.streamingMode);
+  if (response.usageSource) reply.header('x-gemrouter-usage', response.usageSource);
+  if (response.contextMode) reply.header('x-gemrouter-context', response.contextMode.replace('_', '-'));
+  if (response.gatewayProfile) reply.header('x-gemrouter-gateway-profile', response.gatewayProfile);
+  if (response.gatewayWarnings?.length) reply.header('x-gemrouter-gateway-warnings', response.gatewayWarnings.join(','));
+  if (response.contextEpoch !== undefined) reply.header('x-gemrouter-context-epoch', response.contextEpoch);
+  if (response.instructionVersion !== undefined) reply.header('x-gemrouter-instruction-version', response.instructionVersion);
+  if (response.queueWaitMs !== undefined) reply.header('x-gemrouter-queue-wait-ms', response.queueWaitMs);
+  if (response.processingWaitMs !== undefined) reply.header('x-gemrouter-processing-wait-ms', response.processingWaitMs);
 }
 
 function withFallbackReason(response: LLMResponse, fallbackReason?: string): LLMResponse {
@@ -1017,6 +1155,16 @@ function buildStreamResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.apiKeyId) headers['x-gemrouter-api-key-id'] = response.apiKeyId;
   if (response?.quotaGroup) headers['x-gemrouter-quota-group'] = response.quotaGroup;
   if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
+  if (response?.modelVerification) headers['x-gemrouter-model-verification'] = response.modelVerification.replace('_', '-');
+  if (response?.streamingMode) headers['x-gemrouter-stream'] = response.streamingMode;
+  if (response?.usageSource) headers['x-gemrouter-usage'] = response.usageSource;
+  if (response?.contextMode) headers['x-gemrouter-context'] = response.contextMode.replace('_', '-');
+  if (response?.contextEpoch !== undefined) headers['x-gemrouter-context-epoch'] = String(response.contextEpoch);
+  if (response?.instructionVersion !== undefined) headers['x-gemrouter-instruction-version'] = String(response.instructionVersion);
+  if (response?.queueWaitMs !== undefined) headers['x-gemrouter-queue-wait-ms'] = String(response.queueWaitMs);
+  if (response?.processingWaitMs !== undefined) headers['x-gemrouter-processing-wait-ms'] = String(response.processingWaitMs);
+  if (response?.gatewayProfile) headers['x-gemrouter-gateway-profile'] = response.gatewayProfile;
+  if (response?.gatewayWarnings?.length) headers['x-gemrouter-gateway-warnings'] = response.gatewayWarnings.join(',');
   return headers;
 }
 
@@ -1049,10 +1197,10 @@ function mapLlmErrorToHttp(error: unknown): {
     const statusCode = error.options.statusCode ?? 502;
     const type =
       error.code === 'gemini_api_rate_limited' ||
-      error.code === 'gemini_api_quota_unavailable'
+      error.code === 'gemini_api_quota_unavailable' || statusCode === 429
         ? 'rate_limit_error'
         : error.code === 'gemini_api_invalid_request' ||
-            error.code === 'gemini_api_model_not_found'
+            error.code === 'gemini_api_model_not_found' || statusCode < 500
           ? 'invalid_request_error'
           : 'server_error';
     return {
@@ -1191,6 +1339,18 @@ function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<R
     const normalized = modelId.trim().toLowerCase();
     const providerEntry = byId.get(normalized);
     if (providerEntry) return providerEntry;
+
+    const chatGptWorker = chatGptRegistry?.resolveAlias(normalized);
+    if (chatGptWorker) {
+      return {
+        id: normalized,
+        displayName: normalized,
+        label: `${normalized} [ChatGPT worker: ${chatGptWorker.label}]`,
+        provider: 'chatgpt-mcp',
+        supportedGenerationMethods: ['generateContent'],
+        capabilities: { chat: true, imageGeneration: false, live: false, nativeAudio: false, tts: false, embeddings: false },
+      };
+    }
 
     const isAgnesImage = agnesImageModels.has(normalized);
     const isAgnesVideo = agnesVideoModels.has(normalized);
@@ -1522,7 +1682,7 @@ function normalizeAllowedModels(
   values: unknown,
   emptyFallback: string[] = config.bootstrapApp.allowedModels,
 ): string[] {
-  const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
+  const knownModels = new Set(appPolicyModelUniverse().map((modelId) => modelId.toLowerCase()));
   const fallback = emptyFallback
     .map((modelId) => String(modelId).trim().toLowerCase().replace(/^models\//, ''))
     .filter((modelId) => knownModels.has(modelId));
@@ -1535,7 +1695,7 @@ function normalizeAllowedModels(
 
 function unknownAllowedModels(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
-  const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
+  const knownModels = new Set(appPolicyModelUniverse().map((modelId) => modelId.toLowerCase()));
   return [...new Set(
     values
       .map((value) => String(value ?? '').trim().toLowerCase().replace(/^models\//, ''))
@@ -1547,6 +1707,7 @@ function listPublicEndpoints(): string[] {
   const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
   if (isSurfaceEnabled('openai')) {
     endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses', '/v1/images/generations');
+    if (config.chatgpt.enabled) endpoints.push('/v1/chatgpt/capabilities');
   }
   if (isAnySurfaceEnabled(['gemrouter', 'deepseek'])) {
     endpoints.push('/models', '/chat/completions', '/images/generations');
@@ -1571,13 +1732,18 @@ async function handleModelsRequest(
   if (!access) return reply;
   try {
     const runtime = getRuntimeSnapshot();
-    const models = Array.isArray(runtime.models)
+    const runtimeModels = Array.isArray(runtime.models)
       ? runtime.models.map((model) => String(model).trim()).filter(Boolean)
       : config.modelIds;
+    const models = [...new Set([...runtimeModels, ...(chatGptRegistry?.aliases() ?? [])])];
     return {
       object: 'list',
       data: models
-        .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
+        .filter((modelId) => {
+          if (!appStore.isModelAllowed(access.app, modelId)) return false;
+          const worker = chatGptRegistry?.resolveAlias(modelId);
+          return !worker || worker.enabled && worker.allowedAppIds.includes(access.app.id);
+        })
         .map((modelId) => ({
           id: modelId,
           object: 'model',
@@ -1635,6 +1801,8 @@ async function handleVisionRequest(
   if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
     return sendError(reply, 403, { message: `Origin not allowed for app ${clientApp.name}`, type: 'permission_error', code: 'origin_not_allowed' });
   }
+  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+  if (unsupported) return unsupported;
   if (!config.ollamaLocal.enabled || !config.ollamaLocal.visionModel) {
     return sendError(reply, 404, { message: 'Vision model is not configured', type: 'invalid_request_error', code: 'vision_model_not_available' });
   }
@@ -1681,6 +1849,214 @@ async function handleVisionRequest(
   }
 }
 
+function rawRequestedModel(request: FastifyRequest): string {
+  const body = request.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return '';
+  const record = body as Record<string, unknown>;
+  const value = record.model ?? record.name;
+  return typeof value === 'string' ? value.trim().toLowerCase().replace(/^models\//u, '') : '';
+}
+
+function rawBackendOverride(request: FastifyRequest): string {
+  return String(readHeaderValue(request, 'x-gemrouter-backend', 'x-baribi-backend') ?? 'auto')
+    .trim()
+    .toLowerCase();
+}
+
+/** Detect the reserved backend before any permissive model-policy fallback runs. */
+function hasChatGptIntent(request: FastifyRequest): boolean {
+  const model = rawRequestedModel(request);
+  return rawBackendOverride(request) === 'chatgpt'
+    || model.startsWith('chatgpt/')
+    || Boolean(chatGptRegistry?.resolveAlias(model))
+    || dormantChatGptAliases.has(model);
+}
+
+function rejectUnsupportedChatGptSurface(request: FastifyRequest, reply: FastifyReply): FastifyReply | null {
+  if (!hasChatGptIntent(request)) return null;
+  const error = chatGptError('chatgpt_unsupported_surface');
+  applyErrorHeaders(reply, error);
+  return sendError(reply, error.options.statusCode ?? 400, {
+    message: error.message,
+    type: 'invalid_request_error',
+    code: error.code,
+  });
+}
+
+function ensureNoExplicitChatGptContextReset(request: FastifyRequest): void {
+  const stateful = readHeaderValue(request, 'x-gemrouter-stateful', 'x-baribi-stateful');
+  if (stateful !== undefined && !['1', 'true', 'yes', 'on'].includes(stateful.toLowerCase())) {
+    throw chatGptError('chatgpt_context_reset_unsupported');
+  }
+  const reset = readHeaderValue(request, 'x-gemrouter-reset-session', 'x-baribi-reset-session');
+  if (reset !== undefined && ['1', 'true', 'yes', 'on'].includes(reset.toLowerCase())) {
+    throw chatGptError('chatgpt_context_reset_unsupported');
+  }
+}
+
+async function handleChatGptCompletion(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  access: AuthenticatedClientAccess,
+  surface: 'openai' | 'gemrouter',
+): Promise<FastifyReply | Record<string, unknown>> {
+  let parsed: ParsedChatGptRequest | undefined;
+  try {
+    if (!chatGptGateway || !chatGptRegistry) throw chatGptError('chatgpt_feature_disabled');
+    const rawModel = rawRequestedModel(request);
+    if (!rawModel) throw chatGptError('chatgpt_model_not_found', 'An explicit ChatGPT model alias is required.');
+    const backend = rawBackendOverride(request);
+    if (backend !== 'auto' && backend !== 'chatgpt') throw chatGptError('chatgpt_backend_mismatch');
+    ensureNoExplicitChatGptContextReset(request);
+    parsed = parseChatGptCompletionRequest({
+      body: request.body,
+      profile: config.chatgpt.profile,
+      profileHeader: readHeaderValue(request, 'x-gemrouter-gateway-profile'),
+      idempotencyKey: readHeaderValue(request, 'idempotency-key'),
+      maxRequestBytes: config.chatgpt.maxRequestBytes,
+    });
+    const worker = chatGptRegistry.resolveAlias(parsed.model);
+    if (!worker) throw chatGptError('chatgpt_model_not_found');
+    if (!appStore.isModelAllowed(access.app, parsed.model) || !worker.allowedAppIds.includes(access.app.id)) {
+      throw chatGptError('chatgpt_model_not_allowed');
+    }
+
+    const requestController = new AbortController();
+    const abortOnDisconnect = (): void => {
+      if (!reply.raw.writableEnded) requestController.abort(new Error('client_disconnected'));
+    };
+    request.raw.once('aborted', abortOnDisconnect);
+    reply.raw.once('close', abortOnDisconnect);
+    const deadline = getStartedAt(request) + worker.timeoutMs;
+    const messages = toLlmMessages(parsed.messages);
+    let response: LLMResponse;
+    try {
+      response = await llm.chat(messages, {
+        model: parsed.model,
+        allowedModelIds: [parsed.model],
+        backendPreference: 'chatgpt',
+        requestDeadlineMs: worker.timeoutMs,
+        deadline,
+        signal: requestController.signal,
+        chatgpt: {
+          appId: access.app.id,
+          surface,
+          fingerprint: parsed.fingerprint,
+          idempotencyKey: parsed.idempotencyKey,
+          messages: parsed.messages,
+          controls: parsed.controls,
+          requestTimeoutMs: worker.timeoutMs,
+        },
+      });
+    } finally {
+      request.raw.removeListener('aborted', abortOnDisconnect);
+      reply.raw.removeListener('close', abortOnDisconnect);
+    }
+
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed.model,
+      messages,
+      status: 'succeeded',
+      statusCode: 200,
+      provider: response.provider,
+      response,
+      privateContent: true,
+      usageSource: 'unavailable',
+    });
+    audit.write({
+      type: parsed.controls.stream ? 'chatgpt.stream' : 'chatgpt.completion',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      model: parsed.model,
+      statusCode: 200,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: buildAuditDetailsFromResponse(response),
+    });
+
+    if (!parsed.controls.stream) {
+      applyBackendHeaders(reply, response);
+      return buildChatCompletionResponse({
+        model: parsed.model,
+        text: response.content,
+        finishReason: response.finishReason,
+      });
+    }
+
+    // The gateway stream is intentionally buffered: no success status or SSE data is
+    // committed until the reverse-RPC completion has passed all gateway validation.
+    reply.hijack();
+    for (const [name, value] of Object.entries(reply.getHeaders())) {
+      if (value !== undefined) reply.raw.setHeader(name, value);
+    }
+    reply.raw.writeHead(200, buildStreamResponseHeaders(request, response));
+    const completionId = `chatcmpl_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
+    const created = Math.floor(Date.now() / 1000);
+    const send = (payload: unknown): void => {
+      if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+    send({
+      id: completionId,
+      object: 'chat.completion.chunk',
+      created,
+      model: parsed.model,
+      choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+    });
+    if (response.content) {
+      send({
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created,
+        model: parsed.model,
+        choices: [{ index: 0, delta: { content: response.content }, finish_reason: null }],
+      });
+    }
+    send({
+      id: completionId,
+      object: 'chat.completion.chunk',
+      created,
+      model: parsed.model,
+      choices: [{ index: 0, delta: {}, finish_reason: response.finishReason ?? 'stop' }],
+    });
+    reply.raw.end('data: [DONE]\n\n');
+    return reply;
+  } catch (error) {
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
+    recordInteraction({
+      request,
+      route: request.url,
+      appRecord: access.app,
+      model: parsed?.model ?? rawRequestedModel(request),
+      messages: parsed ? toLlmMessages(parsed.messages) : [],
+      status: 'failed',
+      statusCode: http.statusCode,
+      llmError: error,
+      error: http.message,
+      privateContent: true,
+      usageSource: 'unavailable',
+    });
+    audit.write({
+      type: 'chatgpt.completion.error',
+      requestId: request.id,
+      appId: access.app.id,
+      route: request.url,
+      model: parsed?.model ?? rawRequestedModel(request),
+      statusCode: http.statusCode,
+      latencyMs: Date.now() - getStartedAt(request),
+      details: { code: http.code, error: http.message },
+    });
+    return sendError(reply, http.statusCode, {
+      message: http.message,
+      type: http.type,
+      code: http.code,
+    });
+  }
+}
+
 async function handleChatCompletionsRequest(
   request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
   reply: FastifyReply,
@@ -1693,6 +2069,14 @@ async function handleChatCompletionsRequest(
   }
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
+
+  if (hasChatGptIntent(request)) {
+    try {
+      return await handleChatGptCompletion(request, reply, access, surface);
+    } finally {
+      access.release();
+    }
+  }
 
   let parsed: ReturnType<typeof parseChatCompletionsRequest>;
   try {
@@ -1708,6 +2092,7 @@ async function handleChatCompletionsRequest(
       latencyMs: Date.now() - getStartedAt(request),
       details: { error: message },
     });
+    access.release();
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -1959,6 +2344,11 @@ async function handleResponsesRequest(
   if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
+  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+  if (unsupported) {
+    access.release();
+    return unsupported;
+  }
 
   let parsed: ReturnType<typeof parseResponsesRequest>;
   try {
@@ -1974,6 +2364,7 @@ async function handleResponsesRequest(
       latencyMs: Date.now() - getStartedAt(request),
       details: { error: message },
     });
+    access.release();
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -2275,6 +2666,11 @@ async function handleImageGenerationsRequest(
   }
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
+  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+  if (unsupported) {
+    access.release();
+    return unsupported;
+  }
 
   let parsed: ReturnType<typeof parseImageGenerationsRequest>;
   try {
@@ -2290,6 +2686,7 @@ async function handleImageGenerationsRequest(
       latencyMs: Date.now() - getStartedAt(request),
       details: { error: message },
     });
+    access.release();
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -2431,6 +2828,11 @@ async function handleOllamaChatRequest(
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
+  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+  if (unsupported) {
+    access.release();
+    return unsupported;
+  }
 
   let parsed: ReturnType<typeof parseOllamaChatRequest>;
   try {
@@ -2644,6 +3046,11 @@ async function handleOllamaGenerateRequest(
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
+  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+  if (unsupported) {
+    access.release();
+    return unsupported;
+  }
 
   let parsed: ReturnType<typeof parseOllamaGenerateRequest>;
   try {
@@ -2866,6 +3273,67 @@ app.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
+if (chatGptGateway && chatGptOAuth) {
+  // Guided setup uses the same authenticated registry and exact app policy as
+  // advanced management. No credentials, model names or grants are inferred.
+  app.post<{ Body: { label?: unknown; alias?: unknown; appId?: unknown } }>('/admin/chatgpt/onboarding', async (request, reply) => {
+    if (!ensureAdminMutation(request, reply)) return reply;
+    const body = request.body;
+    if (!body || typeof body.appId !== 'string') return reply.code(400).send({ error: 'Select an application.' });
+    const selectedApp = appStore.findById(body.appId);
+    if (!selectedApp || selectedApp.revokedAt) return reply.code(400).send({ error: 'Select an active application.' });
+    try {
+      const worker = chatGptGateway.registry.create({
+        id: `worker-${randomBytes(10).toString('hex')}`,
+        label: body.label,
+        publicModelIds: [body.alias],
+        allowedAppIds: [selectedApp.id],
+        declaredModel: 'Selected in dedicated ChatGPT chat (unverified)',
+      });
+      audit.write({ type: 'chatgpt.onboarding.created', requestId: request.id, details: { workerId: worker.id, appId: selectedApp.id } });
+      return reply.code(201).send({ ok: true, worker });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid setup.' });
+    }
+  });
+  app.post<{ Params: { workerId: string }; Body: { appId?: unknown } }>('/admin/chatgpt/workers/:workerId/activate', async (request, reply) => {
+    if (!ensureAdminMutation(request, reply)) return reply;
+    const worker = chatGptGateway.registry.get(request.params.workerId);
+    if (!worker) return reply.code(404).send({ error: 'worker_not_found' });
+    const appId = request.body?.appId;
+    const selectedApp = typeof appId === 'string' ? appStore.findById(appId) : undefined;
+    if (!selectedApp || selectedApp.revokedAt || !worker.allowedAppIds.includes(selectedApp.id)) {
+      return reply.code(400).send({ error: 'Select an active application already assigned to this worker.' });
+    }
+    // Preserve every existing app permission; activation only adds this worker's
+    // exact aliases to the explicitly selected application's custom allowlist.
+    if (selectedApp.modelAccess === 'custom') {
+      appStore.update(selectedApp.id, { allowedModels: [...new Set([...selectedApp.allowedModels, ...worker.publicModelIds])] });
+    }
+    const enabledWorker = chatGptGateway.registry.update(worker.id, { enabled: true });
+    audit.write({ type: 'chatgpt.onboarding.activated', requestId: request.id, details: { workerId: worker.id, appId: selectedApp.id } });
+    return { ok: true, worker: enabledWorker };
+  });
+  registerChatGptGatewayRoutes(app, chatGptGateway, chatGptOAuth, {
+    isAdmin: hasAdminAccess,
+    ensureAdmin,
+    ensureAdminMutation,
+    adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
+    appIds: () => appStore.list().filter((record) => !record.revokedAt).map((record) => record.id),
+    audit: (event) => audit.write({
+      type: event.type,
+      requestId: event.requestId,
+      details: {
+        ...(event.details ?? {}),
+        ...(event.workerId ? { workerId: event.workerId } : {}),
+      },
+    }),
+  });
+  app.addHook('onClose', async () => {
+    chatGptGateway.close();
+  });
+}
+
 app.get('/', async (request, reply) => {
   if (config.dashboardEnabled && wantsHtmlShell(request)) {
     return reply
@@ -2873,7 +3341,7 @@ app.get('/', async (request, reply) => {
       .send(
         renderAppShell({
           projectName: PROJECT_NAME,
-          modelIds: config.modelIds,
+          modelIds: [...providerModelIds],
           publicBaseUrl: inferPublicBaseUrl(request),
         }),
       );
@@ -2893,7 +3361,7 @@ app.get('/admin', async (request, reply) =>
     .send(
       renderAppShell({
         projectName: PROJECT_NAME,
-        modelIds: config.modelIds,
+        modelIds: [...providerModelIds],
         publicBaseUrl: inferPublicBaseUrl(request),
       }),
     ),
@@ -2902,11 +3370,13 @@ app.get('/admin', async (request, reply) =>
 app.get('/health', async (request) => getRuntimeSnapshot(request));
 
 async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: string; username?: string; password?: string } }>, reply: FastifyReply) {
+  const origin = getRequestOrigin(request);
+  if (origin && origin !== adminBrowserOrigin(request)) return reply.code(403).send({ error: 'origin_not_allowed' });
   const token = String(request.body?.token ?? '').trim();
   const username = String(request.body?.username ?? '').trim();
   const password = String(request.body?.password ?? '').trim();
 
-  const adminUser = token === config.adminToken
+  const adminUser = stableCompare(token, config.adminToken)
     ? { username: 'token-admin' }
     : findDashboardAdminUser(username, password);
 
@@ -2919,7 +3389,7 @@ async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: st
   }
 
   const sessionId = adminSessions.create({ username: adminUser.username });
-  setAdminCookie(reply, sessionId);
+  setAdminCookie(reply, sessionId, request);
   audit.write({
     type: 'admin.login',
     requestId: request.id,
@@ -2936,8 +3406,10 @@ async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: st
 }
 
 async function handleDashboardLogout(request: FastifyRequest, reply: FastifyReply) {
+  const origin = getRequestOrigin(request);
+  if (origin && origin !== adminBrowserOrigin(request)) return reply.code(403).send({ error: 'origin_not_allowed' });
   adminSessions.revoke(getAdminSessionId(request));
-  clearAdminCookie(reply);
+  clearAdminCookie(reply, request);
   return {
     ok: true,
   };
@@ -2963,6 +3435,7 @@ app.get('/auth/me', async (request) => {
     authenticated: true,
     role: 'admin',
     username: session.username ?? 'admin',
+    csrfToken: session.csrfToken,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
   };
@@ -2986,6 +3459,7 @@ app.get('/admin/me', async (request, reply) => {
     ok: true,
     role: 'admin',
     username: session?.username ?? 'admin',
+    csrfToken: session?.csrfToken ?? null,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
   };
@@ -3035,6 +3509,14 @@ app.get('/admin/summary', async (request, reply) => {
       configured: config.freeTierPolicy,
     },
     apps: appStore.list().map(sanitizeAdminApp),
+    chatgpt: {
+      enabled: config.chatgpt.enabled,
+      profile: config.chatgpt.profile,
+      publicBaseUrl: chatGptOAuth?.issuer ?? null,
+      workerCount: chatGptRegistry?.list().length ?? 0,
+      usage: 'unavailable',
+      streaming: 'buffered',
+    },
     stats: interactions.summary(60),
   };
 });
@@ -3352,9 +3834,10 @@ app.post<{ Body: { textModels?: string[] } }>('/admin/provider/models-config', a
     return sendError(reply, 400, { message: 'textModels must be a non-empty ordered list', type: 'invalid_request_error', code: 'empty_model_list' });
   }
   applyModelConfig(list);
+  refreshProviderModelUniverse();
   mkdirSync(path.dirname(MODEL_CONFIG_PATH), { recursive: true });
   writeFileSync(MODEL_CONFIG_PATH, `${JSON.stringify({ textModels: config.freeTierPolicy.textModelIds }, null, 2)}\n`, 'utf8');
-  appStore.restrictAllowedModels(config.modelIds);
+  appStore.restrictAllowedModels(appPolicyModelUniverse());
   audit.write({ type: 'admin.models.config', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
   return { ok: true, enabled: config.freeTierPolicy.textModelIds };
 });
@@ -3491,6 +3974,11 @@ app.post<{
   }
 
   const model = normalizeModelId(body.model);
+  if (model.startsWith('chatgpt/') || chatGptRegistry?.recognizes(model) || dormantChatGptAliases.has(model)) {
+    const error = chatGptError('chatgpt_unsupported_surface', 'Use an authenticated /v1/chat/completions request to test a ChatGPT worker alias.');
+    applyErrorHeaders(reply, error);
+    return sendError(reply, error.options.statusCode ?? 400, { message: error.message, type: 'invalid_request_error', code: error.code });
+  }
   const resolvedModel = resolveTextModelForApp(selectedApp, model);
   if (!resolvedModel) {
     return sendError(reply, 403, {
@@ -3588,6 +4076,48 @@ app.post<{
 
 app.get('/v1/models', async (request, reply) => handleModelsRequest(request, reply, 'openai'));
 app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'gemrouter'));
+app.get<{ Querystring: { model?: string } }>('/v1/chatgpt/capabilities', async (request, reply) => {
+  if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  try {
+    if (!chatGptRegistry || !chatGptGateway) throw chatGptError('chatgpt_feature_disabled');
+    const model = String(request.query?.model ?? '').trim().toLowerCase().replace(/^models\//u, '');
+    if (!model) throw chatGptError('chatgpt_model_not_found', 'The model query parameter is required.');
+    const worker = chatGptRegistry.resolveAlias(model);
+    if (!worker) throw chatGptError('chatgpt_model_not_found');
+    const alias = model.startsWith('chatgpt/') ? model.slice('chatgpt/'.length) : model;
+    if (!appStore.isModelAllowed(access.app, alias) || !worker.allowedAppIds.includes(access.app.id)) {
+      throw chatGptError('chatgpt_model_not_allowed');
+    }
+    return {
+      object: 'chatgpt.gateway.capabilities',
+      model: alias,
+      backend: 'chatgpt',
+      provider: 'chatgpt-mcp',
+      worker: { id: worker.id, label: worker.label, domainLabel: worker.domainLabel ?? null },
+      declaration: {
+        model: worker.declaredModel,
+        reasoning: worker.declaredReasoning ?? null,
+        verification: 'operator_declared',
+      },
+      context: { mode: 'persistent_chat', epoch: worker.contextEpoch, isolatedPerRequest: false, resetSupported: false },
+      streaming: 'buffered',
+      usage: 'unavailable',
+      profile: config.chatgpt.profile,
+      responseFormats: { text: true, json_object: 'gateway_validated', native_structured_output: false },
+      tools: false,
+      media: false,
+      status: chatGptGateway.store.workerStatus(worker.id),
+    };
+  } catch (error) {
+    const http = mapLlmErrorToHttp(error);
+    applyErrorHeaders(reply, error);
+    return sendError(reply, http.statusCode, { message: http.message, type: http.type, code: http.code });
+  } finally {
+    access.release();
+  }
+});
 app.get('/v1/provider/runtime', async (request, reply) => {
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
@@ -3614,7 +4144,11 @@ app.get('/v1/provider/models', async (request, reply) => {
 // dashboard, no secrets or file contents.
 app.get('/v1/admin/backup/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const contents = summarizeBackupContents({ rootDir: config.rootDir, dataDir: config.dataDir });
+  const contents = summarizeBackupContents({
+    rootDir: config.rootDir,
+    dataDir: config.dataDir,
+    excludedPaths: CHATGPT_BACKUP_EXCLUDED_PATHS,
+  });
   const accounts = config.geminiApi.keys;
   return {
     ok: true,
@@ -3632,12 +4166,15 @@ app.get('/v1/admin/backup/summary', async (request, reply) => {
   };
 });
 
-// Full-state snapshot: complete .env plus every file under data/. The response
-// contains every secret the router owns — admin session required, treat the
-// downloaded gemrouter.cfg like a private key.
+// Snapshot of legacy router state. OAuth tokens, MCP grants, live runs, claims and
+// ChatGPT payloads are deliberately excluded and must be paired again after restore.
 app.get('/v1/admin/backup/export', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const backup = buildBackup({ rootDir: config.rootDir, dataDir: config.dataDir });
+  const backup = buildBackup({
+    rootDir: config.rootDir,
+    dataDir: config.dataDir,
+    excludedPaths: CHATGPT_BACKUP_EXCLUDED_PATHS,
+  });
   audit.write({ type: 'backup_export', route: '/v1/admin/backup/export', details: { files: Object.keys(backup.files).length } });
   return reply
     .type('application/json; charset=utf-8')
@@ -3650,7 +4187,12 @@ app.get('/v1/admin/backup/export', async (request, reply) => {
 // imported configuration fully applied.
 app.post('/v1/admin/backup/import', { bodyLimit: 64 * 1024 * 1024 }, async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const result = applyBackup({ rootDir: config.rootDir, dataDir: config.dataDir, payload: request.body });
+  const result = applyBackup({
+    rootDir: config.rootDir,
+    dataDir: config.dataDir,
+    payload: request.body,
+    excludedPaths: CHATGPT_BACKUP_EXCLUDED_PATHS,
+  });
   if (!result.ok) {
     return reply.code(400).send({ ok: false, error: result.error });
   }
@@ -3722,10 +4264,14 @@ app.get('/v1/provider/quota', async (request, reply) => {
   }
 });
 
-app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) =>
+app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', {
+  bodyLimit: Math.max(1_048_576, config.chatgpt.maxRequestBytes + 65_536),
+}, async (request, reply) =>
   handleChatCompletionsRequest(request, reply, 'openai'),
 );
-app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', async (request, reply) =>
+app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', {
+  bodyLimit: Math.max(1_048_576, config.chatgpt.maxRequestBytes + 65_536),
+}, async (request, reply) =>
   handleChatCompletionsRequest(request, reply, 'gemrouter'),
 );
 
@@ -3737,6 +4283,8 @@ async function handleEmbeddingsRequest(
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
+    const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+    if (unsupported) return unsupported;
     const model = normalizeModelId(String(request.body?.model ?? ''));
     if (!config.ollamaLocal.enabled || !ollamaLocalLlm.isEmbeddingModel(model)) {
       return sendError(reply, 404, {
@@ -3787,6 +4335,8 @@ async function handleVideoRequest(
   if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
     return sendError(reply, 403, { message: `Origin not allowed for app ${clientApp.name}`, type: 'permission_error', code: 'origin_not_allowed' });
   }
+  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+  if (unsupported) return unsupported;
   const model = normalizeModelId(String(request.body?.model ?? ''));
   const prompt = String(request.body?.prompt ?? '').trim();
   if (!config.agnes.enabled || !agnesLlm.isVideoModel(model)) {
@@ -3867,6 +4417,8 @@ app.post<{ Body: { name?: string; model?: string } }>('/api/show', async (reques
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
+    const unsupported = rejectUnsupportedChatGptSurface(request, reply);
+    if (unsupported) return unsupported;
     const requestedModel = normalizeModelId(String(request.body?.name ?? request.body?.model ?? '').trim() || undefined);
     if (!ensureModelAllowed(reply, access.app, requestedModel)) return reply;
     return buildOllamaShowResponse(requestedModel);

@@ -29,7 +29,8 @@ export type LLMProviderErrorCode =
   | 'nvidia_upstream_error'
   | 'nvidia_empty_response'
   | 'nvidia_timeout'
-  | 'nvidia_stream_error';
+  | 'nvidia_stream_error'
+  | import('./providers/chatgpt/errors.js').ChatGptGatewayErrorCode;
 
 export interface LLMProviderErrorOptions {
   statusCode?: number;

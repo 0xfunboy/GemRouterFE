@@ -27,6 +27,7 @@ export interface InteractionRecord {
   promptChars: number;
   responseChars: number;
   usage?: UsageSummary;
+  usageSource?: 'unavailable';
   status: 'succeeded' | 'failed';
   statusCode: number;
   latencyMs?: number;
@@ -66,6 +67,7 @@ interface HourlyMetricBucket {
   totalTokens: number;
   latencyTotalMs: number;
   latencySamples: number;
+  usageUnavailableRequests: number;
 }
 
 interface RecordInteractionInput {
@@ -81,6 +83,7 @@ interface RecordInteractionInput {
   prompt: string;
   response?: string;
   usage?: UsageSummary;
+  usageSource?: 'unavailable';
   status: 'succeeded' | 'failed';
   statusCode: number;
   latencyMs?: number;
@@ -146,6 +149,7 @@ export class InteractionStore {
       promptChars: input.prompt.length,
       responseChars: (input.response ?? '').length,
       usage: input.usage,
+      usageSource: input.usageSource,
       status: input.status,
       statusCode: input.statusCode,
       latencyMs: input.latencyMs,
@@ -205,9 +209,10 @@ export class InteractionStore {
       requests: number;
       succeeded: number;
       failed: number;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
+      promptTokens: number | null;
+      completionTokens: number | null;
+      totalTokens: number | null;
+      usageUnavailableRequests: number;
       avgLatencyMs: number;
     };
     buckets: Array<{ hourStartMs: number; requests: number; failed: number }>;
@@ -233,6 +238,7 @@ export class InteractionStore {
         totals.promptTokens += bucket.promptTokens;
         totals.completionTokens += bucket.completionTokens;
         totals.totalTokens += bucket.totalTokens;
+        totals.usageUnavailableRequests += bucket.usageUnavailableRequests ?? 0;
         latencyTotalMs += bucket.latencyTotalMs;
         latencySamples += bucket.latencySamples;
       }
@@ -245,7 +251,12 @@ export class InteractionStore {
     totals.avgLatencyMs = latencySamples > 0 ? Math.round(latencyTotalMs / latencySamples) : 0;
     const startedAtMs = this.state.hourlyMetricsStartedAtMs ?? Date.now();
     return {
-      totals,
+      totals: {
+        ...totals,
+        promptTokens: totals.usageUnavailableRequests > 0 ? null : totals.promptTokens,
+        completionTokens: totals.usageUnavailableRequests > 0 ? null : totals.completionTokens,
+        totalTokens: totals.usageUnavailableRequests > 0 ? null : totals.totalTokens,
+      },
       buckets,
       startedAtMs,
       complete: Date.now() - startedAtMs >= count * HOUR_MS,
@@ -257,9 +268,10 @@ export class InteractionStore {
       requests: number;
       succeeded: number;
       failed: number;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
+      promptTokens: number | null;
+      completionTokens: number | null;
+      totalTokens: number | null;
+      usageUnavailableRequests: number;
       avgLatencyMs: number;
     };
     feedback: {
@@ -273,7 +285,8 @@ export class InteractionStore {
       requests: number;
       succeeded: number;
       failed: number;
-      totalTokens: number;
+      totalTokens: number | null;
+      usageUnavailableRequests: number;
     }>;
     recent: InteractionRecord[];
   } {
@@ -285,13 +298,14 @@ export class InteractionStore {
       completionTokens: 0,
       totalTokens: 0,
       avgLatencyMs: 0,
+      usageUnavailableRequests: 0,
     };
     const feedback = {
       good: 0,
       bad: 0,
       unrated: 0,
     };
-    const byApp = new Map<string, { appId: string; appName: string; requests: number; succeeded: number; failed: number; totalTokens: number }>();
+    const byApp = new Map<string, { appId: string; appName: string; requests: number; succeeded: number; failed: number; totalTokens: number; usageUnavailableRequests: number }>();
     let latencySamples = 0;
     let latencyTotal = 0;
 
@@ -302,6 +316,7 @@ export class InteractionStore {
       totals.promptTokens += record.usage?.prompt_tokens ?? 0;
       totals.completionTokens += record.usage?.completion_tokens ?? 0;
       totals.totalTokens += record.usage?.total_tokens ?? 0;
+      if (record.usageSource === 'unavailable') totals.usageUnavailableRequests += 1;
       if (typeof record.latencyMs === 'number' && Number.isFinite(record.latencyMs)) {
         latencySamples += 1;
         latencyTotal += record.latencyMs;
@@ -319,20 +334,29 @@ export class InteractionStore {
           succeeded: 0,
           failed: 0,
           totalTokens: 0,
+          usageUnavailableRequests: 0,
         };
       current.requests += 1;
       if (record.status === 'succeeded') current.succeeded += 1;
       if (record.status === 'failed') current.failed += 1;
       current.totalTokens += record.usage?.total_tokens ?? 0;
+      if (record.usageSource === 'unavailable') current.usageUnavailableRequests += 1;
       byApp.set(record.appId, current);
     }
 
     totals.avgLatencyMs = latencySamples > 0 ? Math.round(latencyTotal / latencySamples) : 0;
 
     return {
-      totals,
+      totals: {
+        ...totals,
+        promptTokens: totals.usageUnavailableRequests > 0 ? null : totals.promptTokens,
+        completionTokens: totals.usageUnavailableRequests > 0 ? null : totals.completionTokens,
+        totalTokens: totals.usageUnavailableRequests > 0 ? null : totals.totalTokens,
+      },
       feedback,
-      byApp: [...byApp.values()].sort((left, right) => right.requests - left.requests),
+      byApp: [...byApp.values()]
+        .map((entry) => ({ ...entry, totalTokens: entry.usageUnavailableRequests > 0 ? null : entry.totalTokens }))
+        .sort((left, right) => right.requests - left.requests),
       recent: this.list(limit),
     };
   }
@@ -345,7 +369,10 @@ export class InteractionStore {
       const hasHourlyLedger = Array.isArray(parsed.hourlyMetrics);
       this.state = {
         interactions: Array.isArray(parsed.interactions) ? parsed.interactions : [],
-        hourlyMetrics: persistedMetrics.filter(isHourlyMetricBucket),
+        hourlyMetrics: persistedMetrics.filter(isHourlyMetricBucket).map((bucket) => ({
+          ...bucket,
+          usageUnavailableRequests: Number.isFinite(bucket.usageUnavailableRequests) ? bucket.usageUnavailableRequests : 0,
+        })),
         hourlyMetricsStartedAtMs:
           typeof parsed.hourlyMetricsStartedAtMs === 'number'
             ? parsed.hourlyMetricsStartedAtMs
@@ -379,6 +406,7 @@ export class InteractionStore {
     bucket.promptTokens += record.usage?.prompt_tokens ?? 0;
     bucket.completionTokens += record.usage?.completion_tokens ?? 0;
     bucket.totalTokens += record.usage?.total_tokens ?? 0;
+    if (record.usageSource === 'unavailable') bucket.usageUnavailableRequests += 1;
     if (typeof record.latencyMs === 'number' && Number.isFinite(record.latencyMs)) {
       bucket.latencyTotalMs += record.latencyMs;
       bucket.latencySamples += 1;
@@ -408,6 +436,7 @@ function emptyTotals() {
     completionTokens: 0,
     totalTokens: 0,
     avgLatencyMs: 0,
+    usageUnavailableRequests: 0,
   };
 }
 
@@ -422,6 +451,7 @@ function emptyHourlyMetricBucket(hourStartMs: number): HourlyMetricBucket {
     totalTokens: 0,
     latencyTotalMs: 0,
     latencySamples: 0,
+    usageUnavailableRequests: 0,
   };
 }
 

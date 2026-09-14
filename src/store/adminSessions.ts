@@ -5,6 +5,7 @@ interface SessionRecord {
   expiresAt: number;
   lastSeenAt: number;
   username?: string;
+  csrfToken: string;
 }
 
 export class AdminSessionStore {
@@ -21,6 +22,7 @@ export class AdminSessionStore {
       expiresAt: now + this.ttlMs,
       lastSeenAt: now,
       username: input?.username?.trim() || undefined,
+      csrfToken: randomBytes(32).toString('base64url'),
     });
     return id;
   }

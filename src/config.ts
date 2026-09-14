@@ -18,6 +18,7 @@ import type { NvidiaModelConfig, NvidiaProviderConfig } from './llm/providers/nv
 import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
 import type { OllamaLocalConfig } from './llm/providers/ollama-local/client.js';
 import type { AgnesConfig } from './llm/providers/agnes/client.js';
+import type { ChatGptGatewayConfig } from './llm/providers/chatgpt/types.js';
 
 export interface BootstrapAppConfig {
   name: string;
@@ -56,6 +57,7 @@ export interface RuntimeConfig {
   ollama: OllamaRouterConfig;
   ollamaLocal: OllamaLocalConfig;
   agnes: AgnesConfig;
+  chatgpt: ChatGptGatewayConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
     /** Hard ceiling for the whole request across all backends/fallbacks. */
@@ -137,6 +139,13 @@ function readJsonValue<T>(env: Record<string, string | undefined>, fallback: T, 
   } catch {
     return fallback;
   }
+}
+
+function readChatGptProfile(env: Record<string, string | undefined>): 'compatibility' | 'strict' {
+  const value = pick(env, 'GEMROUTER_CHATGPT_PROFILE')?.toLowerCase();
+  if (value === undefined || value === 'compatibility') return 'compatibility';
+  if (value === 'strict') return 'strict';
+  throw new Error('GEMROUTER_CHATGPT_PROFILE must be compatibility or strict.');
 }
 
 function readDashboardUsers(
@@ -681,6 +690,25 @@ export function loadConfig(
       videoTimeoutMs: readNumber(env, 300_000, 'GEMROUTER_AGNES_VIDEO_TIMEOUT_MS'),
       videoPollMs: readNumber(env, 12_000, 'GEMROUTER_AGNES_VIDEO_POLL_MS'),
       usageStorePath: path.resolve(rootDir, pick(env, 'GEMROUTER_AGNES_USAGE_PATH') ?? 'data/agnes-usage.json'),
+    },
+    chatgpt: {
+      enabled: readBoolean(env, false, 'GEMROUTER_CHATGPT_ENABLED'),
+      publicBaseUrl: pick(env, 'GEMROUTER_CHATGPT_PUBLIC_BASE_URL'),
+      dataDir: path.resolve(
+        rootDir,
+        pick(env, 'GEMROUTER_CHATGPT_DATA_DIR') ?? 'data/chatgpt-gateway',
+      ),
+      profile: readChatGptProfile(env),
+      timeoutMs: readNumber(env, 300_000, 'GEMROUTER_CHATGPT_TIMEOUT_MS'),
+      queueTimeoutMs: readNumber(env, 60_000, 'GEMROUTER_CHATGPT_QUEUE_TIMEOUT_MS'),
+      longPollMs: readNumber(env, 20_000, 'GEMROUTER_CHATGPT_LONG_POLL_MS'),
+      staleAfterMs: readNumber(env, 120_000, 'GEMROUTER_CHATGPT_STALE_AFTER_MS'),
+      maxQueuePerWorker: readNumber(env, 4, 'GEMROUTER_CHATGPT_MAX_QUEUE_PER_WORKER'),
+      maxActiveJobs: readNumber(env, 32, 'GEMROUTER_CHATGPT_MAX_ACTIVE_JOBS'),
+      maxRequestBytes: readNumber(env, 262_144, 'GEMROUTER_CHATGPT_MAX_REQUEST_BYTES'),
+      maxResponseBytes: readNumber(env, 1_048_576, 'GEMROUTER_CHATGPT_MAX_RESPONSE_BYTES'),
+      idempotencyTtlSeconds: readNumber(env, 900, 'GEMROUTER_CHATGPT_IDEMPOTENCY_TTL_SECONDS'),
+      retentionHours: readNumber(env, 24, 'GEMROUTER_CHATGPT_RETENTION_HOURS'),
     },
     llmRouting: {
       backendOrder: effectiveBackendOrder,
