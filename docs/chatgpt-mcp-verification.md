@@ -91,23 +91,32 @@ installare automaticamente un browser: usare Chrome/Chromium disponibile o
 
 ## Collegamento live con ChatGPT: non verificato
 
-Il gateway e il wizard sono stati pubblicati in produzione il 14 settembre
-2026. Dopo il riavvio controllato, il servizio systemd risulta attivo; la
-discovery OAuth pubblica risponde HTTP 200 con issuer e endpoint coerenti con
-`https://gemrouter.example.com`, mentre l'area riservata servita dal dominio
-contiene il wizard **Prepara → Autorizza → Avvia la chat**. Il riepilogo
-amministrativo locale autenticato conferma gateway abilitato, profilo
-`compatibility`, streaming `buffered` e `workerCount: 0`. Il database del
-gateway è stato creato con permessi `0600`. Uno smoke browser autenticato e
-in sola lettura contro il dominio di produzione ha inoltre confermato wizard e
-form visibili, avviso di feature disabilitata assente, sezione avanzata chiusa
-inizialmente, tre passaggi corretti e nessun overflow mobile o errore
-JavaScript/console. Il boundary MCP pubblico risponde `401` senza Bearer e
-pubblica nel `WWW-Authenticate` l'URL dei metadati della risorsa attesa.
+Il gateway, il wizard e il successivo hardening sono stati pubblicati in
+produzione il 14 settembre 2026. Dopo il riavvio controllato, sia
+`gemrouter.service` sia `cloudflared-gemrouter.service` risultano attivi. La
+discovery OAuth pubblica risponde HTTP 200 con issuer, registrazione DCR, PKCE
+S256, resource e scope coerenti con `https://gemrouter.example.com`; il boundary
+MCP pubblico risponde `401` senza Bearer e pubblica nel `WWW-Authenticate` l'URL
+dei metadati della risorsa attesa.
 
-Queste verifiche provano che frontend, discovery e gateway sono live, ma non
-che ChatGPT sia già collegato: non è stata autenticata una sessione ChatGPT
-reale e al momento della verifica non risultava alcun worker registrato.
+Il riepilogo amministrativo autenticato conferma gateway abilitato, un worker
+`AIR3PacificaTrade` abilitato e un grant OAuth attivo. Dopo il riavvio il worker
+è nello stato osservato `released`: non è quindi una prova che una chat sia in
+polling o stia elaborando richieste. Lo smoke browser autenticato sul dominio di
+produzione conferma inoltre sezione **ChatGPT MCP Gateway** collassata di default,
+wizard visibile dopo l'espansione, istruzioni ordinate e complete, nessun overflow
+a 390 px e nessun errore JavaScript/console.
+
+Lo stesso controllo post-deploy conferma che
+`gemini-3.1-flash-live-preview` non appare in riepilogo, alert, policy persistita
+o configurazione di produzione. L'app revocata `runchktest` è stata rimossa via
+nuova API ed è assente sia dal riepilogo sia da `data/apps.json`; prima della
+rimozione è stata salvata una copia con permessi `0600` in
+`backups/deploy-20260914T165443Z/apps.before-revoked-removal.json`.
+
+Queste verifiche provano che frontend, discovery, OAuth e gateway sono live, ma
+non che la conversazione ChatGPT stia eseguendo il reverse-RPC: non è stata
+inviata e completata una richiesta reale dell'app attraverso quella chat.
 
 La conferma OAuth e l'avvio della conversazione nell'interfaccia ChatGPT
 restano necessari. Disponibilità della modalità sviluppatore, approvazioni
@@ -126,3 +135,7 @@ e aggiornamenti alla licenza: il branch `feat/native-chatgpt-mcp-onboarding`
 senza force-push. Dopo il riallineamento, sorgenti, test, script e lockfile
 sono identici a quelli verificati; il branch è stato integrato in `main` con
 avanzamento fast-forward e pubblicato sul remoto.
+
+Il successivo hardening di modelli, app revocate e onboarding è stato integrato
+direttamente su `main` e pubblicato senza force-push. Lo stato persistente di
+produzione (`.env`, app e database runtime) resta intenzionalmente escluso da Git.
