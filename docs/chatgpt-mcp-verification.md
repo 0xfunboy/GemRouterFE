@@ -12,7 +12,8 @@ con creazione del worker, consenso all'uso della conversazione persistente,
 permessi esatti per l'app selezionata, URL/istruzioni copiabili, ripresa,
 scadenza pairing e stato osservato dal gateway. La gestione avanzata rimane
 disponibile separatamente. Il dominio di riferimento è
-`https://gemrouter.example.com`, senza abilitazione automatica della produzione.
+`https://gemrouter.example.com`; la produzione è stata abilitata soltanto dopo
+l'autorizzazione esplicita dell'operatore.
 
 La revisione ha corretto isolamento dei grant concorrenti, replay di claim
 scaduti/rilasciati, revoca del binding precedente, token refresh e scope,
@@ -79,11 +80,18 @@ installare automaticamente un browser: usare Chrome/Chromium disponibile o
 
 ## Collegamento live con ChatGPT: non verificato
 
-Il controllo pubblico in sola lettura ha osservato HTTPS 200 sulla home e
-verifica TLS riuscita, ma HTTP 404 su
-`/.well-known/oauth-authorization-server`. Non è stata verificata la
-disponibilità del nuovo gateway sul dominio pubblico né l'autenticazione di
-un account ChatGPT reale. Nessun deploy o riavvio di produzione è stato eseguito.
+Il gateway e il wizard sono stati pubblicati in produzione il 14 settembre
+2026. Dopo il riavvio controllato, il servizio systemd risulta attivo; la
+discovery OAuth pubblica risponde HTTP 200 con issuer e endpoint coerenti con
+`https://gemrouter.example.com`, mentre l'area riservata servita dal dominio
+contiene il wizard **Prepara → Autorizza → Avvia la chat**. Il riepilogo
+amministrativo locale autenticato conferma gateway abilitato, profilo
+`compatibility`, streaming `buffered` e `workerCount: 0`. Il database del
+gateway è stato creato con permessi `0600`.
+
+Queste verifiche provano che frontend, discovery e gateway sono live, ma non
+che ChatGPT sia già collegato: non è stata autenticata una sessione ChatGPT
+reale e al momento della verifica non risultava alcun worker registrato.
 
 La conferma OAuth e l'avvio della conversazione nell'interfaccia ChatGPT
 restano necessari. Disponibilità della modalità sviluppatore, approvazioni
@@ -99,6 +107,6 @@ Il checkout iniziale conteneva l'implementazione non ancora committata.
 Le modifiche sono state conservate. Il remoto aveva una cronologia riscritta
 e aggiornamenti alla licenza: il branch `feat/native-chatgpt-mcp-onboarding`
 è basato sul nuovo `origin/main` (`0904fb6`), preservando tali aggiornamenti
-senza force-push o modifica di `main`. Dopo il riallineamento, sorgenti, test,
-script e lockfile sono identici a quelli verificati. Il commit effettivamente
-pubblicato è indicato nel report finale della consegna.
+senza force-push. Dopo il riallineamento, sorgenti, test, script e lockfile
+sono identici a quelli verificati; il branch è stato integrato in `main` con
+avanzamento fast-forward e pubblicato sul remoto.

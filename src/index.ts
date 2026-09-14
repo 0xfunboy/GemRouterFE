@@ -4,7 +4,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, { LogController, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
 import { applyBackup, buildBackup, summarizeBackupContents } from './lib/backup.js';
@@ -237,7 +237,7 @@ appStore.restrictAllowedModels(appPolicyModelUniverse());
 const app = Fastify({
   logger: false,
   requestIdHeader: 'x-request-id',
-  disableRequestLogging: true,
+  logController: new LogController({ disableRequestLogging: true }),
 });
 
 function stableCompare(left: string, right: string): boolean {
