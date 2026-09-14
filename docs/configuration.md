@@ -43,6 +43,36 @@ GEMROUTER_BACKEND_ORDER=gemini-api,ollama
 
 Order determines which backend is tried first. When `backendPreference=auto`, the router also applies model-name heuristics: `gemini-*`/`gemma-*` models are routed to `gemini-api` first regardless of list order; all other models prefer `ollama` first. Explicit backend overrides (`x-gemrouter-backend` header) bypass this logic entirely.
 
+`chatgpt` is intentionally not added to the automatic backend order. A registered worker alias,
+the reserved `chatgpt/` namespace, or an explicit `x-gemrouter-backend: chatgpt` is resolved
+strictly before the ordinary router and can never spill to another provider.
+
+## Native ChatGPT MCP gateway
+
+Disabled by default. See [the complete gateway guide](chatgpt-mcp-gateway.md) before enabling it.
+
+The deployment origin for this checkout is `https://gemr.airewardrop.xyz`; `.env.example`
+includes it without enabling the feature. Once an operator has enabled the gateway
+through an authorized deployment, the reserved dashboard offers **Prepara → Autorizza →
+Avvia la chat**. Environment activation is deliberately not a dashboard restart action.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEMROUTER_CHATGPT_ENABLED` | `false` | Register the OAuth/MCP routes and open the durable gateway store |
+| `GEMROUTER_CHATGPT_PUBLIC_BASE_URL` | - | Required clean HTTPS public origin; loopback HTTP only for tests |
+| `GEMROUTER_CHATGPT_DATA_DIR` | `./data/chatgpt-gateway` | Private SQLite/WAL directory |
+| `GEMROUTER_CHATGPT_PROFILE` | `compatibility` | `compatibility` warns for ignored controls; `strict` rejects them |
+| `GEMROUTER_CHATGPT_TIMEOUT_MS` | `300000` | Default total worker request deadline |
+| `GEMROUTER_CHATGPT_QUEUE_TIMEOUT_MS` | `60000` | Default maximum time before a worker claims a queued job |
+| `GEMROUTER_CHATGPT_LONG_POLL_MS` | `20000` | Default bounded MCP poll duration |
+| `GEMROUTER_CHATGPT_STALE_AFTER_MS` | `120000` | Recent-contact window used for honest availability/status |
+| `GEMROUTER_CHATGPT_MAX_QUEUE_PER_WORKER` | `4` | Default per-worker queued-job limit |
+| `GEMROUTER_CHATGPT_MAX_ACTIVE_JOBS` | `32` | Global queued + claimed job limit |
+| `GEMROUTER_CHATGPT_MAX_REQUEST_BYTES` | `262144` | UTF-8 serialized request/message boundary |
+| `GEMROUTER_CHATGPT_MAX_RESPONSE_BYTES` | `1048576` | UTF-8 worker completion boundary |
+| `GEMROUTER_CHATGPT_IDEMPOTENCY_TTL_SECONDS` | `900` | HTTP idempotency and MCP exchange replay guarantee |
+| `GEMROUTER_CHATGPT_RETENTION_HOURS` | `24` | Terminal job retention before cleanup; must cover the idempotency TTL |
+
 ## Gemini API backend
 
 | Variable | Default | Description |

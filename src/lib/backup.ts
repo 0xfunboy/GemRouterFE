@@ -3,10 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * Full-state backup ("configuratore"): one gemrouter.cfg file holding the complete
- * .env plus every file under data/ (accounts and their keys, registered apps,
- * surfaces, model config, ledgers, scoreboard, interactions/statistics). Importing
- * it on a fresh install restores the router to the exact snapshot state.
+ * Router configuration backup ("configuratore"): one gemrouter.cfg file holding
+ * the complete .env plus the selected UTF-8 files under data/. Callers can exclude
+ * sensitive/binary runtime stores such as the ChatGPT OAuth/job database.
  *
  * The file contains every secret the router owns — treat it like a private key.
  */
@@ -22,27 +21,36 @@ export interface GemrouterBackup {
   createdAt: string;
   hostname: string;
   env: string | null;
-  /** dataDir-relative path → file content (all persisted state is UTF-8 text). */
+  /** dataDir-relative path → UTF-8 file content. */
   files: Record<string, string>;
   skipped: Array<{ path: string; reason: string }>;
 }
 
-function walkFiles(baseDir: string, relative = ''): string[] {
+function isExcluded(absolutePath: string, excludedPaths: string[]): boolean {
+  const target = path.resolve(absolutePath);
+  return excludedPaths.some((candidate) => {
+    const relative = path.relative(path.resolve(candidate), target);
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  });
+}
+
+function walkFiles(baseDir: string, relative = '', excludedPaths: string[] = []): string[] {
   const absolute = path.join(baseDir, relative);
+  if (isExcluded(absolute, excludedPaths)) return [];
   const entries = readdirSync(absolute, { withFileTypes: true });
   return entries.flatMap((entry) => {
     const childRelative = relative ? path.join(relative, entry.name) : entry.name;
-    if (entry.isDirectory()) return walkFiles(baseDir, childRelative);
+    if (entry.isDirectory()) return walkFiles(baseDir, childRelative, excludedPaths);
     if (entry.isFile()) return [childRelative];
     return [];
   });
 }
 
-export function buildBackup(input: { rootDir: string; dataDir: string }): GemrouterBackup {
+export function buildBackup(input: { rootDir: string; dataDir: string; excludedPaths?: string[] }): GemrouterBackup {
   const files: Record<string, string> = {};
   const skipped: Array<{ path: string; reason: string }> = [];
   if (existsSync(input.dataDir)) {
-    for (const relative of walkFiles(input.dataDir).sort()) {
+    for (const relative of walkFiles(input.dataDir, '', input.excludedPaths ?? []).sort()) {
       const absolute = path.join(input.dataDir, relative);
       try {
         const size = statSync(absolute).size;
@@ -69,7 +77,7 @@ export function buildBackup(input: { rootDir: string; dataDir: string }): Gemrou
 }
 
 /** Counts-only view of what a snapshot would contain — safe to show in the dashboard. */
-export function summarizeBackupContents(input: { rootDir: string; dataDir: string }): {
+export function summarizeBackupContents(input: { rootDir: string; dataDir: string; excludedPaths?: string[] }): {
   dataFiles: number;
   totalBytes: number;
   envVars: number;
@@ -78,7 +86,7 @@ export function summarizeBackupContents(input: { rootDir: string; dataDir: strin
   let dataFiles = 0;
   let totalBytes = 0;
   if (existsSync(input.dataDir)) {
-    for (const relative of walkFiles(input.dataDir)) {
+    for (const relative of walkFiles(input.dataDir, '', input.excludedPaths ?? [])) {
       try {
         const size = statSync(path.join(input.dataDir, relative)).size;
         if (size > MAX_FILE_BYTES) continue;
@@ -108,6 +116,7 @@ export function applyBackup(input: {
   rootDir: string;
   dataDir: string;
   payload: unknown;
+  excludedPaths?: string[];
 }): {
   ok: boolean;
   error?: string;
@@ -135,7 +144,10 @@ export function applyBackup(input: {
   const safetyCopyDir = path.join(input.rootDir, 'backups', `pre-import-${stamp}`);
   mkdirSync(safetyCopyDir, { recursive: true });
   if (existsSync(input.dataDir)) {
-    cpSync(input.dataDir, path.join(safetyCopyDir, 'data'), { recursive: true });
+    cpSync(input.dataDir, path.join(safetyCopyDir, 'data'), {
+      recursive: true,
+      filter: (source) => !isExcluded(source, input.excludedPaths ?? []),
+    });
   }
   const currentEnvPath = path.join(input.rootDir, '.env');
   if (existsSync(currentEnvPath)) {
@@ -151,6 +163,10 @@ export function applyBackup(input: {
       continue;
     }
     const target = path.join(input.dataDir, relative);
+    if (isExcluded(target, input.excludedPaths ?? [])) {
+      skippedPaths.push(rawPath);
+      continue;
+    }
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, content);
     restoredFiles += 1;

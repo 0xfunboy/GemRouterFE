@@ -13,6 +13,8 @@ Ollama-compatible HTTP surfaces while routing requests across a pool of Gemini A
 automatic fallback, local quota tracking, and resilient error handling - plus direct routes
 to a local Ollama for embeddings and vision.
 
+An optional, disabled-by-default native MCP reverse-RPC gateway can also bind exact local aliases to dedicated persistent ChatGPT conversations. Its admin area includes a three-step onboarding wizard with app permission setup, OAuth guidance and observed worker status. It uses no Pi Agent/PiLink runtime and no intermediate HTTP provider; see the [security and onboarding guide](docs/chatgpt-mcp-gateway.md) before enabling it at `https://gemr.airewardrop.xyz` (or your configured origin). ChatGPT-side authorization and conversation startup remain manual.
+
 It is designed to squeeze the maximum useful throughput out of **free-tier** Gemini accounts:
 pool many accounts, always try the strongest model first, and gracefully scale down a fallback
 chain that ends on very high-quota models - so most traffic is served at **zero API cost**.
@@ -63,12 +65,15 @@ OpenAI-compatible endpoint - without a paid plan and without external billing/mo
 - **Operator admin UI** at `/admin` - live quota, account manager (add/remove/priority/enable,
   per-account model discovery), routed-model editor, app/key management (with custom key
   prefixes), interaction telemetry filterable by app, and an outbound-proxy manager.
+- **Optional ChatGPT MCP workers** - exact alias/app policy, OAuth pairing, durable fenced jobs,
+  buffered SSE, recovery controls, and an honest operator-declared capability surface.
 
 ## Endpoints (quick reference)
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /v1/chat/completions`, `/chat/completions` | client key | Chat, routed across the Gemini pool |
+| `POST /v1/chat/completions`, `/chat/completions` | client key | Chat via ordinary routing or an exact authorized ChatGPT worker alias |
+| `GET /v1/chatgpt/capabilities?model=...` | client key | Authorized local ChatGPT worker capability statement |
 | `POST /v1/embeddings`, `/embeddings` | client key | Embeddings via local Ollama (`bge-m3`) |
 | `POST /v1/vision`, `/vision` | client key | Vision via local Ollama (separate flow, no queue) |
 | `GET /health`, `GET /dashboard/summary` | none | Health and guest-safe quota/stats |
@@ -125,6 +130,9 @@ Use it from the OpenAI SDK by pointing `base_url` at `http://<host>:4024/v1`.
 | [Routing and quota](docs/routing.md) | Multi-key routing, fallback, cooldowns, local Ollama, endpoints |
 | [Architecture and workflow](docs/architecture-workflow.md) | Startup, model discovery, app policy, routing, quota lifecycle, production checklist |
 | [Operations](docs/operations.md) | Deployment, systemd, security, live admin management, troubleshooting |
+| [ChatGPT MCP gateway](docs/chatgpt-mcp-gateway.md) | Native reverse-RPC architecture, OAuth pairing, policy, API, recovery, security, and verification |
+
+Third-party attribution for design references is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Account metadata/keys live in `data/gemini-api-accounts.json` (gitignored; see
 [`docs/gemini-api-accounts.example.json`](docs/gemini-api-accounts.example.json) for the format).

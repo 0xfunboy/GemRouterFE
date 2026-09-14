@@ -396,7 +396,7 @@ export function buildChatCompletionResponse(input: {
   id?: string;
   model: string;
   text: string;
-  usage: UsageSummary;
+  usage?: UsageSummary;
   finishReason?: 'stop' | 'length' | 'content_filter';
   created?: number;
 }): Record<string, unknown> {
@@ -415,7 +415,7 @@ export function buildChatCompletionResponse(input: {
         finish_reason: input.finishReason ?? 'stop',
       },
     ],
-    usage: input.usage,
+    ...(input.usage ? { usage: input.usage } : {}),
   };
 }
 

@@ -7,7 +7,7 @@ export interface LLMMessage {
   images?: string[];
 }
 
-export type LLMBackendId = 'gemini-api' | 'ollama' | 'nvidia';
+export type LLMBackendId = 'gemini-api' | 'ollama' | 'nvidia' | 'chatgpt';
 export type LLMBackendPreference = 'auto' | LLMBackendId;
 
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */
@@ -50,6 +50,10 @@ export interface LLMOptions {
   signal?: AbortSignal;
   /** Absolute epoch-ms deadline for the whole request; backends clamp their timeouts to it. */
   deadline?: number;
+  /** Trusted route-derived timeout override; never copied directly from a client field. */
+  requestDeadlineMs?: number;
+  /** Internal, server-authenticated ChatGPT gateway context. */
+  chatgpt?: import('./providers/chatgpt/types.js').ChatGptLlmContext;
 }
 
 export interface LLMResponse {
@@ -77,6 +81,18 @@ export interface LLMResponse {
   fallbackReason?: string;
   fallbackAttempts?: LLMFallbackAttempt[];
   latencyMs?: number;
+  modelVerification?: 'operator_declared';
+  declaredModel?: string;
+  declaredReasoning?: string;
+  usageSource?: 'unavailable';
+  contextMode?: 'persistent_chat';
+  contextEpoch?: number;
+  instructionVersion?: number;
+  streamingMode?: 'buffered';
+  queueWaitMs?: number;
+  processingWaitMs?: number;
+  gatewayWarnings?: string[];
+  gatewayProfile?: 'compatibility' | 'strict';
 }
 
 export interface LLMStreamChunk {
