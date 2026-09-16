@@ -115,6 +115,8 @@ export interface GatewayExchangeInput {
   run_id: string;
   exchange_id: string;
   maximum_wait_seconds?: number;
+  /** Optional protocol 1.0 extension, advertised by gateway_open limits. */
+  yield_after_completion?: boolean;
   completion?: GatewayCompletionInput;
 }
 
@@ -139,6 +141,7 @@ interface GatewayResultBase {
 export type GatewayExchangeResult =
   | (GatewayResultBase & { state: 'request'; continue: true; request: GatewayRequestPayload })
   | (GatewayResultBase & { state: 'idle'; continue: true; waited_seconds: number })
+  | (GatewayResultBase & { state: 'yielded'; continue: true })
   | (GatewayResultBase & {
       state: 'recovery';
       continue: true;
@@ -159,6 +162,7 @@ export interface GatewayOpenResult {
     default_wait_seconds: number;
     maximum_wait_seconds: number;
     maximum_response_bytes: number;
+    extensions?: ['yield_after_completion_v1'];
   };
 }
 

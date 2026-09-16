@@ -191,7 +191,7 @@ export function validateGatewayOpenInput(value: unknown): GatewayOpenInput {
 }
 
 export function validateGatewayExchangeInput(value: unknown, maximumWaitSeconds: number): GatewayExchangeInput {
-  if (!isRecord(value) || Object.keys(value).some((key) => !['run_id', 'exchange_id', 'maximum_wait_seconds', 'completion'].includes(key))) {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['run_id', 'exchange_id', 'maximum_wait_seconds', 'completion', 'yield_after_completion'].includes(key))) {
     throw new Error('gateway_exchange input is invalid');
   }
   if (typeof value.run_id !== 'string' || !RUN_ID.test(value.run_id)) throw new Error('run_id is invalid');
@@ -201,11 +201,16 @@ export function validateGatewayExchangeInput(value: unknown, maximumWaitSeconds:
     throw new Error(`maximum_wait_seconds must be an integer from 1 through ${maximumWaitSeconds}`);
   }
   const completion = value.completion === undefined ? undefined : validateCompletion(value.completion);
+  if (value.yield_after_completion !== undefined && typeof value.yield_after_completion !== 'boolean') {
+    throw new Error('yield_after_completion must be boolean');
+  }
+  if (value.yield_after_completion === true && !completion) throw new Error('yield_after_completion requires completion');
   return {
     run_id: value.run_id,
     exchange_id: value.exchange_id,
     ...(wait === undefined ? {} : { maximum_wait_seconds: Number(wait) }),
     ...(completion === undefined ? {} : { completion }),
+    ...(value.yield_after_completion === undefined ? {} : { yield_after_completion: value.yield_after_completion }),
   };
 }
 

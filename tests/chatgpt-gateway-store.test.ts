@@ -691,7 +691,7 @@ describe('ChatGPT reverse-RPC durable state machine', () => {
       assert.equal(fixture.oauth.authenticate(`Bearer ${fixture.accessToken}`, 'other-worker'), null);
       assert.throws(() => fixture.oauth.exchangeToken({
         grant_type: 'refresh_token',
-        client_id: 'grmcp_00000000000000000000000000000000',
+        client_id: 'grmcp_fixture_68fe558e0aa2',
         refresh_token: fixture.refreshToken,
       }));
       const rotated = fixture.oauth.exchangeToken({

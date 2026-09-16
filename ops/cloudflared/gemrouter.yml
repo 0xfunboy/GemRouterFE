@@ -1,7 +1,11 @@
-tunnel: 00000000-0000-0000-0000-ea15107c6537
+tunnel: 00000000-0000-0000-0000-e84a2da0bda5
 credentials-file: /home/OPERATOR/.cloudflared/credential-gemrouter.json
 
 ingress:
+  # Temporary, explicitly authorized widget wake microtest; admin stays loopback.
+  - hostname: gemrouter.example.com
+    path: ^/widget-wake-probe/.*
+    service: http://127.0.0.1:8807
   - hostname: gemrouter.example.com
     service: http://127.0.0.1:4024
   - service: http_status:404

@@ -20,7 +20,12 @@ export type ChatGptGatewayErrorCode =
   | 'chatgpt_gateway_restarted'
   | 'chatgpt_request_cancelled'
   | 'chatgpt_store_unavailable'
-  | 'chatgpt_protocol_error';
+  | 'chatgpt_protocol_error'
+  | 'chatgpt_control_unavailable'
+  | 'chatgpt_control_binding_changed'
+  | 'chatgpt_control_stopped'
+  | 'chatgpt_wake_failed'
+  | 'chatgpt_wake_timeout';
 
 export class ChatGptGatewayError extends LLMProviderError {
   declare readonly code: ChatGptGatewayErrorCode;
@@ -57,6 +62,11 @@ export function chatGptError(code: ChatGptGatewayErrorCode, message?: string): C
     chatgpt_request_cancelled: [499, 'The ChatGPT gateway request was cancelled.'],
     chatgpt_store_unavailable: [503, 'The ChatGPT gateway store is unavailable.'],
     chatgpt_protocol_error: [400, 'The ChatGPT gateway protocol request is invalid.'],
+    chatgpt_control_unavailable: [503, 'The personal-chat controller is unavailable.'],
+    chatgpt_control_binding_changed: [409, 'The personal-chat control binding changed while this request was pending.'],
+    chatgpt_control_stopped: [503, 'The operator stopped personal-chat wake control.'],
+    chatgpt_wake_failed: [503, 'The personal-chat wake failed or requires operator attention.'],
+    chatgpt_wake_timeout: [504, 'The personal-chat wake exceeded its original deadline.'],
   };
   const [status, fallback] = defaults[code];
   return new ChatGptGatewayError(code, message ?? fallback, status);

@@ -31,6 +31,7 @@ const child = spawn(process.execPath, [path.resolve('dist/index.js')], {
     GEMROUTER_BOOTSTRAP_APP_NAME: 'Browser smoke app',
     GEMROUTER_BOOTSTRAP_MODEL_ACCESS: 'custom',
     GEMROUTER_CHATGPT_ENABLED: 'true',
+    GEMROUTER_CHATGPT_CONTROL_ENABLED: 'false',
     GEMROUTER_CHATGPT_PUBLIC_BASE_URL: baseUrl,
     GEMROUTER_CHATGPT_DATA_DIR: 'data/chatgpt-gateway',
     GEMROUTER_GEMINI_API_ENABLED: 'false', GEMROUTER_NVIDIA_ENABLED: 'false',
@@ -82,6 +83,10 @@ try {
   await page.goto(baseUrl);
   process.stdout.write('Browser: guest page loaded; testing authenticated onboarding.\n');
   assert.equal(await page.locator('#chatgpt-wizard').isVisible(), false, 'Guest must not see the reserved wizard');
+  assert.equal(await page.locator('#personal-control').isVisible(), false, 'Guest must not see the personal-control card');
+  assert.equal((await page.content()).includes('00000000-0000-0000-0000-b40c114d0582'), false, 'Guest HTML/JS must not embed the private target URL');
+  assert.equal(await page.locator('#personal-control-form [name="chatgptConversationUrl"]').inputValue(), '', 'Guest target field stays empty');
+  assert.equal((await fetch(baseUrl + '/admin/chatgpt/control')).status, 401, 'Personal-control API is admin-only');
   await page.locator('#menu-toggle').click();
   await login(page);
   const chatGptSectionToggle = page.locator('[data-section-toggle="chatgpt-gateway-body"]');
@@ -89,6 +94,19 @@ try {
   assert.equal(await chatGptSectionToggle.getAttribute('aria-expanded'), 'false', 'ChatGPT gateway starts collapsed');
   await chatGptSectionToggle.click();
   await page.locator('#chatgpt-wizard-form').waitFor({ state: 'visible' });
+  const personalControl = page.locator('#personal-control');
+  await personalControl.waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.getElementById('personal-control-state')?.textContent?.includes('Wake disabilitato'));
+  assert.equal(await personalControl.locator('ol.chatgpt-instructions > li').count(), 5, 'Personal-chat onboarding presents five ordered stages');
+  for (const label of ['Collega Codex', 'Seleziona la chat esistente', 'Verifica connettore e tool', 'Prova il collegamento', 'Abilita wake su richiesta']) {
+    assert.ok((await personalControl.innerText()).includes(label), `Missing personal-control stage: ${label}`);
+  }
+  assert.equal(await page.locator('#personal-control-arm').isDisabled(), true, 'Disabled control must not appear armed/ready');
+  assert.equal(await page.locator('#personal-control-form [name="chatgptConversationUrl"]').inputValue(), 'https://chatgpt.com/c/00000000-0000-0000-0000-b40c114d0582', 'Exact target is populated only after authenticated admin data');
+  assert.equal(await personalControl.locator('[data-personal-worker-action="bootstrap"]').count(), 1, 'Explicit bootstrap remains separate from resume');
+  assert.equal(await personalControl.locator('[data-personal-worker-action="resume"]').count(), 1);
+  assert.match(await personalControl.innerText(), /solo la chat restituisce l’inferenza tramite MCP/u);
+  assert.equal((await adminJson('/admin/chatgpt/control')).account.running, false, 'Disabled UI inspection cannot launch Codex');
   await page.locator('#menu-toggle').click();
   await page.locator('#chatgpt-wizard').scrollIntoViewIfNeeded();
   if (process.env.GEMROUTER_UI_SCREENSHOT_DIR) await page.locator('#chatgpt-wizard').screenshot({ path: path.join(process.env.GEMROUTER_UI_SCREENSHOT_DIR, 'chatgpt-wizard-prepare-desktop.png'), style: '.site-header { visibility: hidden }' });
@@ -235,9 +253,40 @@ try {
   await page.locator('#chatgpt-wizard-disabled').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#chatgpt-wizard-form').isVisible(), false);
   assert.match(await page.locator('#chatgpt-wizard-disabled').innerText(), /non cambia l'ambiente né riavvia/u);
+
+  // A local response fixture drives the real login rendering/clearing lifecycle.
+  // No Codex process, OAuth login, account or ChatGPT browser is started.
+  let simulatedLoginReads = 0;
+  await page.route(baseUrl + '/admin/chatgpt/control/runtime/login', (route) => {
+    if (route.request().method() === 'GET') simulatedLoginReads++;
+    return route.fulfill({ contentType: 'application/json', json: {
+      status: 'pending', mode: 'device', userCode: 'SIMULATED-DEVICE-CODE',
+      verificationUrl: 'https://auth.openai.com/codex/device', expiresAt: Date.now() + 60_000,
+    } });
+  });
+  await page.locator('#personal-control [data-personal-action="runtime/login"]').click();
+  await page.locator('#personal-control-login').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => document.getElementById('personal-control-login-code')?.textContent === 'SIMULATED-DEVICE-CODE');
+  assert.equal(await page.locator('#personal-control-login-url').getAttribute('href'), 'https://auth.openai.com/codex/device');
+  await page.locator('#personal-control-form [name="expectedAccountLabel"]').fill('Private simulated account');
+  if (!await page.locator('#menu-logout-button').isVisible()) await page.locator('#menu-toggle').click();
+  await page.locator('#menu-logout-button').click();
+  await personalControl.waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#personal-control-login-code').textContent(), '', 'Logout removes transient login code');
+  assert.equal(await page.locator('#personal-control-login-url').getAttribute('href'), null, 'Logout removes login URL');
+  assert.equal(await page.locator('#personal-control-login').isVisible(), false);
+  assert.equal(await page.locator('#personal-control-form [name="chatgptConversationUrl"]').inputValue(), '', 'Logout clears private target');
+  assert.equal(await page.locator('#personal-control-form [name="expectedAccountLabel"]').inputValue(), '', 'Logout clears account declaration');
+  assert.equal(await page.locator('#personal-control-evidence').textContent(), '', 'Logout clears observed binding evidence');
+  assert.equal(await page.locator('#personal-control-arm').isDisabled(), true);
+  const readsAfterLogout = simulatedLoginReads;
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  assert.equal(simulatedLoginReads, readsAfterLogout, 'Logout cancels pending device-login polling');
+  assert.equal((await page.content()).includes('SIMULATED-DEVICE-CODE'), false, 'No transient code remains in guest markup');
+  assert.equal((await page.content()).includes('00000000-0000-0000-0000-b40c114d0582'), false, 'No private target remains in guest markup');
   assert.deepEqual(pageErrors, [], 'No browser JavaScript errors');
   assert.deepEqual(errors, [], 'No browser console errors');
-  process.stdout.write('Browser smoke passed: reserved onboarding, exact app permission, OAuth login/consent, gated progress, prompt resume, desktop/mobile layout. Worker polling was simulated; no live ChatGPT connection verified.\n');
+  process.stdout.write('Browser smoke passed: reserved onboarding, exact app permission, OAuth login/consent, gated progress, prompt resume, desktop/mobile layout, disabled personal-control five-step card, guest privacy and logout clearing. Worker polling and controller device login were simulated; no live ChatGPT connection verified.\n');
 } finally {
   await browser.close();
   await new Promise<void>((resolve, reject) => callbackServer.close((error) => error ? reject(error) : resolve()));

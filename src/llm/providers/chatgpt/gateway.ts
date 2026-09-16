@@ -141,6 +141,7 @@ function terminalError(code: string | null, message: string | null): Error {
     'chatgpt_queue_timeout', 'chatgpt_request_timeout', 'chatgpt_completion_failed', 'chatgpt_invalid_json',
     'chatgpt_empty_response', 'chatgpt_gateway_restarted', 'chatgpt_request_cancelled', 'chatgpt_store_unavailable',
     'chatgpt_protocol_error',
+    'chatgpt_control_unavailable', 'chatgpt_control_binding_changed', 'chatgpt_control_stopped', 'chatgpt_wake_failed', 'chatgpt_wake_timeout',
   ]);
   const selected = known.has(code as ChatGptGatewayErrorCode) ? code as ChatGptGatewayErrorCode : 'chatgpt_completion_failed';
   // Also protect idempotent outcomes created by older versions that retained

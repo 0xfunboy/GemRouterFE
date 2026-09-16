@@ -69,6 +69,9 @@ import { ChatGptWorkerRegistry } from './llm/providers/chatgpt/registry.js';
 import { registerChatGptGatewayRoutes } from './llm/providers/chatgpt/routes.js';
 import { ChatGptGatewayStore } from './llm/providers/chatgpt/store.js';
 import { toLlmMessages } from './llm/providers/chatgpt/types.js';
+import { readPersonalControlConfig } from './llm/providers/chatgpt/control/config.js';
+import { createPersonalChatController } from './llm/providers/chatgpt/control/controller.js';
+import { registerPersonalControlRoutes } from './llm/providers/chatgpt/control/adminRoutes.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -90,10 +93,12 @@ const PROJECT_NAME = 'GemRouter';
 const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
+const personalControlConfig = readPersonalControlConfig();
 const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
 const CHATGPT_BACKUP_EXCLUDED_PATHS = [
   config.chatgpt.dataDir,
   path.join(config.dataDir, 'chatgpt-gateway'),
+  personalControlConfig.privateDirectory,
 ];
 
 /** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
@@ -164,6 +169,9 @@ const chatGptStore = config.chatgpt.enabled
       details: {
         ...(event.workerId ? { workerId: event.workerId } : {}),
         ...(event.reasonCode ? { reasonCode: event.reasonCode } : {}),
+        ...(event.operationId ? { operationId: event.operationId } : {}),
+        ...(event.bindingVersion !== undefined ? { bindingVersion: event.bindingVersion } : {}),
+        ...(event.activationGeneration !== undefined ? { activationGeneration: event.activationGeneration } : {}),
       },
     }))
   : undefined;
@@ -188,6 +196,11 @@ const chatGptOAuth = chatGptGateway
   )
   : undefined;
 const chatGptLlm = chatGptGateway ? createChatGptClient(chatGptGateway) : undefined;
+const personalChatControl = chatGptGateway && chatGptOAuth
+  ? createPersonalChatController(personalControlConfig, chatGptGateway.store,
+    (workerId) => chatGptOAuth.workerResource(workerId), [config.rootDir, config.dataDir, config.chatgpt.dataDir])
+  : undefined;
+personalChatControl?.start();
 if (chatGptRegistry) {
   config.modelIds = [...new Set([...providerModelIds, ...chatGptRegistry.aliases()])];
 }
@@ -3359,7 +3372,14 @@ if (chatGptGateway && chatGptOAuth) {
     }),
   });
   app.addHook('onClose', async () => {
+    await personalChatControl?.close();
     chatGptGateway.close();
+  });
+  if (personalChatControl) registerPersonalControlRoutes(app, personalChatControl, {
+    ensureAdmin, ensureAdminMutation,
+    adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
+    audit: (event) => audit.write({ type: event.type, requestId: event.requestId,
+      details: { ...(event.details ?? {}), ...(event.workerId ? { workerId: event.workerId } : {}) } }),
   });
 }
 

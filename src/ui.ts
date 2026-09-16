@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { personalControlHtml, personalControlScript } from './llm/providers/chatgpt/control/dashboard.js';
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1840,6 +1841,7 @@ export function renderAppShell(input: {
           <div id="chatgpt-gateway-body" class="section-body hidden">
             <div id="chatgpt-gateway-meta" class="chip-row"></div>
             <div id="chatgpt-gateway-status" class="status" role="status" aria-live="polite">Loading gateway state…</div>
+            ${personalControlHtml}
             <div id="chatgpt-wizard" class="chatgpt-wizard" lang="it" aria-labelledby="chatgpt-wizard-title">
               <h4 id="chatgpt-wizard-title">La tua chat, collegata a GemRouter</h4>
               <p class="section-copy">Tre passaggi, nessuna chiave OpenAI da incollare. Serve un account ChatGPT che consenta le connessioni MCP in modalità sviluppatore.</p>
@@ -1865,7 +1867,7 @@ export function renderAppShell(input: {
                     <label class="chatgpt-consent" style="margin-top:16px"><input name="consent" type="checkbox" required /><span>Autorizzo questa app a usare il nuovo modello e a inviare i suoi messaggi alla chat ChatGPT dedicata. La conversazione conserva il contesto dei messaggi precedenti.</span></label>
                     <div class="button-row"><button type="submit" class="primary">Prepara collegamento</button></div>
                   </form>
-                  <aside class="chatgpt-note"><strong>Prima di iniziare</strong><p>Usa una nuova conversazione soltanto per questo collegamento. Non mescolare richieste di persone o progetti che non devono condividere il contesto.</p><p style="margin-top:12px">GemRouter non può aprire, autorizzare o tenere sveglia la chat al posto tuo. Ti guideremo nei pochi passaggi richiesti da ChatGPT.</p><p style="margin-top:12px">Il modello scelto in ChatGPT non è verificabile dal gateway. I consumi token non sono disponibili e le risposte in streaming arrivano dopo l'elaborazione.</p></aside>
+                  <aside class="chatgpt-note"><strong>Prima di iniziare</strong><p>Usa una conversazione dedicata a questo collegamento. Non mescolare richieste di persone o progetti che non devono condividere il contesto.</p><p style="margin-top:12px">Questa è la procedura manuale: autorizzazione e avvio restano sotto il tuo controllo. Il wake opzionale della chat personale si configura nel pannello dedicato sopra e richiede verifiche effettive.</p><p style="margin-top:12px">Il modello scelto in ChatGPT non è verificabile dal gateway. I consumi token non sono disponibili e le risposte in streaming arrivano dopo l'elaborazione.</p></aside>
                 </div>
                 <div id="chatgpt-wizard-panel-2" class="hidden">
                   <h4 tabindex="-1" id="chatgpt-wizard-heading-2">Autorizza il collegamento in ChatGPT</h4>
@@ -2180,34 +2182,34 @@ export function renderAppShell(input: {
               <span>AIRewardrop</span>
             </div>
             <p class="footer-brand-copy">Autonomous agent infrastructure for crypto.</p>
-            <a class="footer-blog-link" href="https://gemrouter.example.com/blog" target="_blank" rel="noreferrer">Our Blog →</a>
+            <a class="footer-blog-link" href="https://project.example.com/blog" target="_blank" rel="noreferrer">Our Blog →</a>
           </div>
           <div class="footer-columns">
             <div class="footer-column">
               <h4>Navigate</h4>
-              <a href="https://gemrouter.example.com/products" target="_blank" rel="noreferrer">Products</a>
-              <a href="https://gemrouter.example.com/agents" target="_blank" rel="noreferrer">Agents</a>
-              <a href="https://gemrouter.example.com/roadmap" target="_blank" rel="noreferrer">Roadmap</a>
-              <a href="https://gemrouter.example.com/clients" target="_blank" rel="noreferrer">Clients</a>
+              <a href="https://project.example.com/products" target="_blank" rel="noreferrer">Products</a>
+              <a href="https://project.example.com/agents" target="_blank" rel="noreferrer">Agents</a>
+              <a href="https://project.example.com/roadmap" target="_blank" rel="noreferrer">Roadmap</a>
+              <a href="https://project.example.com/clients" target="_blank" rel="noreferrer">Clients</a>
             </div>
             <div class="footer-column">
               <h4>Resources</h4>
-              <a href="https://gemrouter.example.com/commands" target="_blank" rel="noreferrer">User Manual</a>
-              <a href="https://gemrouter.example.com/tokenomics" target="_blank" rel="noreferrer">Tokenomics</a>
-              <a href="https://gemrouter.example.com/api-plugins" target="_blank" rel="noreferrer">API &amp; Plugins</a>
-              <a href="https://gemrouter.example.com/faq" target="_blank" rel="noreferrer">FAQ</a>
+              <a href="https://project.example.com/commands" target="_blank" rel="noreferrer">User Manual</a>
+              <a href="https://project.example.com/tokenomics" target="_blank" rel="noreferrer">Tokenomics</a>
+              <a href="https://project.example.com/api-plugins" target="_blank" rel="noreferrer">API &amp; Plugins</a>
+              <a href="https://project.example.com/faq" target="_blank" rel="noreferrer">FAQ</a>
             </div>
             <div class="footer-column">
               <h4>Community</h4>
-              <a href="https://t.me/AIRewardrop" target="_blank" rel="noreferrer">Telegram Channel</a>
-              <a href="https://t.me/AIR3Community" target="_blank" rel="noreferrer">Telegram Community</a>
-              <a href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer">Discord</a>
+              <a href="https://community.example.com" target="_blank" rel="noreferrer">Telegram Channel</a>
+              <a href="https://community.example.com" target="_blank" rel="noreferrer">Telegram Community</a>
+              <a href="https://community.example.com" target="_blank" rel="noreferrer">Discord</a>
             </div>
             <div class="footer-column">
               <h4>Legal</h4>
-              <a href="https://gemrouter.example.com/legal" target="_blank" rel="noreferrer">Terms of Service</a>
-              <a href="https://gemrouter.example.com/legal" target="_blank" rel="noreferrer">Privacy Policy</a>
-              <a href="https://gemrouter.example.com/legal" target="_blank" rel="noreferrer">Cookie Policy</a>
+              <a href="https://project.example.com/legal" target="_blank" rel="noreferrer">Terms of Service</a>
+              <a href="https://project.example.com/legal" target="_blank" rel="noreferrer">Privacy Policy</a>
+              <a href="https://project.example.com/legal" target="_blank" rel="noreferrer">Cookie Policy</a>
             </div>
           </div>
         </div>
@@ -2217,17 +2219,17 @@ export function renderAppShell(input: {
             <div>Disclaimer: Not financial advice. Always do your own research.</div>
           </div>
           <div class="footer-socials">
-            <a class="footer-social-link" href="https://x.com/AIRewardrop" target="_blank" rel="noreferrer" aria-label="X / Twitter">
+            <a class="footer-social-link" href="https://community.example.com" target="_blank" rel="noreferrer" aria-label="X / Twitter">
               <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
               </svg>
             </a>
-            <a class="footer-social-link" href="https://t.me/AIR3Community" target="_blank" rel="noreferrer" aria-label="Telegram">
+            <a class="footer-social-link" href="https://community.example.com" target="_blank" rel="noreferrer" aria-label="Telegram">
               <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.043 7.924c-.234-.94-.83-1.21-1.42.21L11.79 12.2l-3.26-1.026c-1.154-.384-1.153-1.144.24-1.523l8.693-2.9c.9-.3 1.623.192 1.348 1.487l-1.9 8.54c-.23 1.053-1.002 1.3-1.802.82l-3.514-2.58-1.7 1.64c-.19.19-.35.35-.69.35-.46 0-.62-.16-.69-.77l.25-2.22 5.02-4.52c.46-.43-.1-.68-.69-.26l-6.3 3.97-3.34-1.04c-1.02-.31-1.05-.98.24-1.42l1.33-.45z" />
               </svg>
             </a>
-            <a class="footer-social-link" href="https://discord.gg/S4f87VdsHt" target="_blank" rel="noreferrer" aria-label="Discord">
+            <a class="footer-social-link" href="https://community.example.com" target="_blank" rel="noreferrer" aria-label="Discord">
               <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M20.317 4.369A19.791 19.791 0 0016.556 3c-.215.39-.463.917-.636 1.333a18.626 18.626 0 00-3.848 0A12.64 12.64 0 0011.436 3a19.736 19.736 0 00-3.762 1.385c-2.381 3.49-3.025 6.892-2.701 10.24a19.903 19.903 0 003.996 2.02c.33-.452.624-.934.873-1.442a12.815 12.815 0 001.696.136c.6.021 1.2-.02 1.794-.123.253.5.546.98.872 1.432a19.758 19.758 0 004.003-2.03c.332-3.348-.321-6.75-2.703-10.239zM9.845 14.9c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.636 1.606-1.43 1.606zm4.31 0c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.627 1.606-1.43 1.606z" />
               </svg>
@@ -2614,6 +2616,7 @@ export function renderAppShell(input: {
       }
 
       // ---- Native ChatGPT MCP reverse-RPC gateway (admin) ----
+      ${personalControlScript}
       function setChatGptWizardStatus(message, error) {
         chatGptWizardStatus.textContent = message || '';
         chatGptWizardStatus.style.color = error ? 'var(--bad)' : 'var(--muted)';
@@ -2908,6 +2911,7 @@ export function renderAppShell(input: {
         }
         try {
           renderChatGptGateway(await request('/admin/chatgpt'));
+          await loadPersonalControl();
         } catch (error) {
           setChatGptStatus(error.message, true);
           setChatGptWizardStatus('Impossibile aggiornare lo stato del collegamento. Verifica la connessione o accedi di nuovo; la verifica verrà ritentata automaticamente.', true);
@@ -4663,6 +4667,7 @@ export function renderAppShell(input: {
           state.csrfToken = '';
           state.projectQuota = null;
           state.chatgpt = null;
+          clearPersonalControl();
           chatGptWizardPrompt.value = '';
           chatGptWorkerPrompt.value = '';
           chatGptWizardUrl.value = '';
@@ -4723,6 +4728,7 @@ export function renderAppShell(input: {
           state.csrfToken = '';
           state.projectQuota = null;
           state.chatgpt = null;
+          clearPersonalControl();
           chatGptWizardPrompt.value = '';
           chatGptWorkerPrompt.value = '';
           selectChatGptWizardWorker('');

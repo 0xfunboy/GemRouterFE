@@ -13,7 +13,9 @@ Ollama-compatible HTTP surfaces while routing requests across a pool of Gemini A
 automatic fallback, local quota tracking, and resilient error handling - plus direct routes
 to a local Ollama for embeddings and vision.
 
-An optional, disabled-by-default native MCP reverse-RPC gateway can also bind exact local aliases to dedicated persistent ChatGPT conversations. Its admin area includes a three-step onboarding wizard with app permission setup, OAuth guidance and observed worker status. It uses no Pi Agent/PiLink runtime and no intermediate HTTP provider; see the [security and onboarding guide](docs/chatgpt-mcp-gateway.md) before enabling it at `https://gemrouter.example.com` (or your configured origin). ChatGPT-side authorization and conversation startup remain manual.
+An optional, disabled-by-default native MCP reverse-RPC gateway can also bind exact local aliases to dedicated persistent ChatGPT conversations. Its admin area includes onboarding, app permissions, OAuth guidance and observed worker status. It uses no Pi Agent/PiLink runtime and no intermediate HTTP provider; see the [security and onboarding guide](docs/chatgpt-mcp-gateway.md) before enabling it at `https://gemrouter.example.com` (or your configured origin).
+
+The separate, opt-in [personal-chat controller](docs/chatgpt-personal-control.md) implements bounded Codex-triggered UI wake for an existing personal ChatGPT conversation; only that conversation's MCP completion can answer the client. This is an **experimental browser transport**, not a public ChatGPT chat-write API, Workspace Agent, or substitute Codex inference thread. It requires separate operator logins, an available graphical host and an account-specific, observed UI profile. No live personal-chat control has been verified in the current environment; the feature and every new binding start disarmed. Without this setup, startup/resume remain manual. See the [verification record](docs/chatgpt-mcp-verification.md) for the distinction between local implementation, simulation and live evidence.
 
 It is designed to squeeze the maximum useful throughput out of **free-tier** Gemini accounts:
 pool many accounts, always try the strongest model first, and gracefully scale down a fallback
@@ -67,6 +69,8 @@ OpenAI-compatible endpoint - without a paid plan and without external billing/mo
   prefixes), interaction telemetry filterable by app, and an outbound-proxy manager.
 - **Optional ChatGPT MCP workers** - exact alias/app policy, OAuth pairing, durable fenced jobs,
   buffered SSE, recovery controls, and an honest operator-declared capability surface.
+- **Opt-in personal-chat wake** - separate Codex controller login, explicit versioned chat binding,
+  transactional wake outbox and bounded UI operations; operator setup and live verification required.
 
 ## Endpoints (quick reference)
 
@@ -131,6 +135,8 @@ Use it from the OpenAI SDK by pointing `base_url` at `http://<host>:4024/v1`.
 | [Architecture and workflow](docs/architecture-workflow.md) | Startup, model discovery, app policy, routing, quota lifecycle, production checklist |
 | [Operations](docs/operations.md) | Deployment, systemd, security, live admin management, troubleshooting |
 | [ChatGPT MCP gateway](docs/chatgpt-mcp-gateway.md) | Native reverse-RPC architecture, OAuth pairing, policy, API, recovery, security, and verification |
+| [Personal ChatGPT control](docs/chatgpt-personal-control.md) | Dedicated Codex/browser setup, five-step onboarding, exact existing chat binding, bounded wake, recovery and live acceptance |
+| [ChatGPT verification record](docs/chatgpt-mcp-verification.md) | Historical deployment evidence separated from the new local controller and simulated/live checks |
 
 Third-party attribution for design references is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 

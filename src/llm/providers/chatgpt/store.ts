@@ -12,6 +12,10 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { chatGptError } from './errors.js';
 import { digestCanonical, safeJsonObjectResponse } from './protocol.js';
+import { canonicalPersonalChatUrl, CHATGPT_PERSONAL_SURFACE, PERSONAL_CHAT_TOOLS,
+  type ChatGptControlBinding, type ChatGptControlBindingInput, type ChatGptControlFailureCode,
+  type ChatGptControlStoreConfig, type ChatGptControlVerificationEvidence,
+  type ChatGptControlWakeOperation, type ChatGptControlWakeState } from './control/types.js';
 import {
   CHATGPT_GATEWAY_PROTOCOL_VERSION,
   type AuthenticatedMcpGrant,
@@ -109,6 +113,9 @@ export interface ChatGptStoreAuditEvent {
   appId?: string;
   requestId?: string;
   reasonCode?: string;
+  operationId?: string;
+  bindingVersion?: number;
+  activationGeneration?: number;
 }
 
 export interface OAuthAuthorizationRequestRecord {
@@ -134,6 +141,8 @@ export class ChatGptGatewayStore {
   private lastPruneAtMs = 0;
   private transactionAuditEvents: ChatGptStoreAuditEvent[] | null = null;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  private controlConfig = { enabled: false, maxConcurrentWakes: 1, maxAttempts: 3, backoffMs: 1_000, wakeTimeoutMs: 45_000 };
+  private controlReady: (binding: ChatGptControlBinding) => boolean = () => false;
 
   constructor(
     readonly config: ChatGptGatewayConfig,
@@ -341,21 +350,29 @@ export class ChatGptGatewayStore {
         return { job, reused: true };
       }
     }
-    if (!this.isWorkerAdmitting(worker, now)) throw chatGptError('chatgpt_worker_unavailable');
     let result!: { job: StoredJob; reused: boolean };
     this.transaction(() => {
+      for (const row of this.db.prepare(`SELECT * FROM control_wakes WHERE worker_id=? AND deadline_at_ms<=?
+        AND state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).all(worker.id, now) as SqlRow[]) {
+        this.terminalizeControlWakeInTransaction(controlWakeFromRow(row), 'wake_expired', 'wake_timeout');
+      }
+      const ordinarilyAdmitting = this.isWorkerAdmitting(worker, now);
+      const binding = this.getControlBinding(worker.id);
+      const canWake = binding !== null && this.controlBindingReady(binding, now);
+      if (!ordinarilyAdmitting && !canWake) throw chatGptError('chatgpt_worker_unavailable');
       const globalActive = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE status IN ('queued','claimed')`).get() as SqlRow).count);
       const queued = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM jobs WHERE worker_id=? AND status='queued'`).get(worker.id) as SqlRow).count);
       const retained = Number((this.db.prepare('SELECT COUNT(*) AS count FROM jobs').get() as SqlRow).count);
       if (globalActive >= this.config.maxActiveJobs || queued >= worker.maxQueuedRequests || retained >= MAX_RETAINED_JOBS) throw chatGptError('chatgpt_queue_full');
       const requestDeadlineAtMs = Math.min(input.deadline ?? Number.POSITIVE_INFINITY, now + worker.timeoutMs);
       const queueDeadlineAtMs = Math.min(requestDeadlineAtMs, now + worker.queueTimeoutMs);
+      if (requestDeadlineAtMs <= now || queueDeadlineAtMs <= now) throw chatGptError('chatgpt_request_timeout');
       const requestId = `req_${randomBytes(24).toString('base64url')}`;
       this.db.prepare(`
         INSERT INTO jobs (
           request_id,app_id,worker_id,alias,surface,status,messages_json,controls_json,fingerprint,
-          idempotency_digest,created_at_ms,queue_deadline_at_ms,request_deadline_at_ms,config_version,context_epoch,instruction_version,worker_snapshot_json
-        ) VALUES (?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?)
+          idempotency_digest,created_at_ms,queue_deadline_at_ms,request_deadline_at_ms,config_version,context_epoch,instruction_version,worker_snapshot_json,control_binding_version
+        ) VALUES (?,?,?,?,?,'queued',?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         requestId,
         input.appId,
@@ -373,7 +390,11 @@ export class ChatGptGatewayStore {
         worker.contextEpoch,
         worker.instructionVersion,
         JSON.stringify(worker),
+        canWake ? binding!.bindingVersion : null,
       );
+      // Intent is committed with the work. No runtime/browser side effect occurs
+      // here, and a current poll/claim suppresses redundant controller turns.
+      if (canWake) this.ensureControlWakeInTransaction(worker.id, now);
       result = { job: this.requireJob(requestId), reused: false };
     });
     this.emitChange(worker.id);
@@ -420,6 +441,7 @@ export class ChatGptGatewayStore {
           claim_token=NULL,claimed_at_ms=NULL,lease_expires_at_ms=NULL WHERE request_id=? AND status IN ('queued','claimed')
       `).run(code, message, Date.now(), requestId);
       this.redactInvalidRequestReplaysInTransaction();
+      this.cancelUnusedControlWakesInTransaction();
     });
     this.emitChange(job.workerId);
     this.recordAudit({ type: 'chatgpt.request.cancelled', workerId: job.workerId, appId: job.appId, requestId, reasonCode: code });
@@ -469,6 +491,8 @@ export class ChatGptGatewayStore {
 
   async exchange(context: ExchangeContext, signal?: AbortSignal): Promise<GatewayExchangeResult> {
     this.validateGrant(context.grant);
+    if (context.input.yield_after_completion !== undefined && typeof context.input.yield_after_completion !== 'boolean') throw new Error('Invalid yield_after_completion.');
+    if (context.input.yield_after_completion === true && !context.input.completion) throw new Error('yield_after_completion requires a completion.');
     if (signal?.aborted) throw new Error('exchange_aborted');
     this.maybePrune();
     const started = Date.now();
@@ -491,6 +515,11 @@ export class ChatGptGatewayStore {
       const count = Math.max(0, (this.pendingPolls.get(workerId) ?? 1) - 1);
       if (count === 0) this.pendingPolls.delete(workerId);
       else this.pendingPolls.set(workerId, count);
+      if (!this.closed && this.controlConfig.enabled && count === 0) {
+        try { this.transaction(() => this.ensureControlWakeInTransaction(workerId, Date.now())); } catch {
+          this.recordAudit({ type: 'chatgpt.control.wake_failed', workerId, reasonCode: 'controller_unavailable' });
+        }
+      }
       this.emitChange(workerId);
     }
   }
@@ -548,12 +577,271 @@ export class ChatGptGatewayStore {
 
   workerStatusForGrant(grant: AuthenticatedMcpGrant): ChatGptWorkerStatus {
     this.assertGrantActive(grant, grant.workerId);
+    this.noteControlStatusObservation(grant);
     return this.workerStatus(grant.workerId);
   }
 
   validateGrant(grant: AuthenticatedMcpGrant): void {
     this.assertOpen();
     this.assertGrantActive(grant, grant.workerId);
+  }
+
+  configureControl(config: ChatGptControlStoreConfig, ready: (binding: ChatGptControlBinding) => boolean = () => false): void {
+    const bounded = (value: number | undefined, fallback: number, min: number, max: number): number => {
+      const result = value ?? fallback;
+      if (!Number.isSafeInteger(result) || result < min || result > max) throw new Error('Invalid control runtime limits.');
+      return result;
+    };
+    this.controlConfig = {
+      enabled: config.enabled === true && this.config.enabled,
+      maxConcurrentWakes: bounded(config.maxConcurrentWakes, 1, 1, 8),
+      maxAttempts: bounded(config.maxAttempts, 3, 1, 5),
+      backoffMs: bounded(config.backoffMs, 1_000, 100, 30_000),
+      wakeTimeoutMs: bounded(config.wakeTimeoutMs, 45_000, 100, 300_000),
+    };
+    this.controlReady = ready;
+    if (!this.controlConfig.enabled) {
+      this.transaction(() => {
+        for (const binding of this.listControlBindings()) this.fenceControlBindingInTransaction(binding.workerId, 'controller_unavailable', false);
+      });
+    }
+  }
+
+  getControlBinding(workerId: string): ChatGptControlBinding | null {
+    const row = this.db.prepare('SELECT record_json FROM control_bindings WHERE worker_id=?').get(workerId) as SqlRow | undefined;
+    return row ? JSON.parse(String(row.record_json)) as ChatGptControlBinding : null;
+  }
+
+  listControlBindings(): ChatGptControlBinding[] {
+    return (this.db.prepare('SELECT record_json FROM control_bindings ORDER BY worker_id').all() as SqlRow[])
+      .map((row) => JSON.parse(String(row.record_json)) as ChatGptControlBinding);
+  }
+
+  saveControlBinding(workerId: string, input: ChatGptControlBindingInput): ChatGptControlBinding {
+    this.requireWorker(workerId);
+    const target = canonicalPersonalChatUrl(input.chatgptConversationUrl);
+    const text = (value: unknown, name: string, optional = false): string | undefined => {
+      if (optional && (value === undefined || value === '')) return undefined;
+      if (typeof value !== 'string' || !value.trim() || value.length > 256 || /[\r\n\0]/u.test(value)) throw new Error(`Invalid control ${name}.`);
+      return value.trim();
+    };
+    if (!['browser', 'native', 'manual'].includes(input.controlMode)) throw new Error('Invalid control mode.');
+    const expectedResource = `${new URL(this.config.publicBaseUrl ?? '').origin}/mcp/chatgpt/${encodeURIComponent(workerId)}`;
+    if (input.expectedMcpResource !== expectedResource) throw new Error('Control MCP resource does not match the exact worker.');
+    if (typeof input.operatorResourceConfirmed !== 'boolean') throw new Error('Explicit resource confirmation is required.');
+    const previous = this.getControlBinding(workerId);
+    const now = new Date().toISOString();
+    const binding: ChatGptControlBinding = {
+      workerId, chatgptConversationUrl: target.url, chatgptConversationId: target.id,
+      surface: CHATGPT_PERSONAL_SURFACE,
+      expectedConnectorLabel: text(input.expectedConnectorLabel, 'connector label')!,
+      expectedMcpResource: expectedResource,
+      expectedAccountLabel: text(input.expectedAccountLabel, 'account label')!,
+      expectedAccountId: text(input.expectedAccountId, 'account ID', true),
+      controllerRuntimeRef: text(input.controllerRuntimeRef, 'runtime reference')!,
+      browserOrHostRef: text(input.browserOrHostRef, 'browser reference', true),
+      controlMode: input.controlMode, operatorResourceConfirmed: input.operatorResourceConfirmed,
+      bindingVersion: (previous?.bindingVersion ?? 0) + 1,
+      wakeEnabled: false, operatorStopped: false,
+      operatorStopGeneration: (previous?.operatorStopGeneration ?? 0) + 1,
+      activationGeneration: previous?.activationGeneration ?? 0,
+      targetVerified: false, toolSetVerified: false, gatewayStatusVerified: false, writeApprovalVerified: false,
+      connectorIdentityObserved: null, lastTargetVerifiedAt: null, lastToolSetVerifiedAt: null,
+      lastStatusObservedAt: null, statusProbeSequence: 0, lastPollingObservedAt: null,
+      lastWakeAttemptAt: null, lastWakeOutcome: null, lastWakeReason: null,
+      boundGrantId: null, statusObservedGrantId: null,
+      createdAt: previous?.createdAt ?? now, updatedAt: now,
+    };
+    this.transaction(() => {
+      if (previous) this.fenceControlBindingInTransaction(workerId, 'binding_changed', true);
+      this.db.prepare('DELETE FROM control_bootstrap WHERE worker_id=?').run(workerId);
+      const duplicate = this.db.prepare('SELECT worker_id FROM control_bindings WHERE conversation_id=? AND worker_id!=?').get(target.id, workerId);
+      if (duplicate) throw new Error('This personal conversation is already bound to another worker.');
+      this.writeControlBinding(binding);
+      // An operator may recover an ambiguous creation by saving its actually
+      // observed URL. Only that explicit, committed binding clears the intent.
+      this.db.prepare('DELETE FROM control_creation WHERE worker_id=?').run(workerId);
+    });
+    this.emitChange(workerId);
+    return binding;
+  }
+
+  recordControlVerification(workerId: string, bindingVersion: number, evidence: ChatGptControlVerificationEvidence): ChatGptControlBinding {
+    let result!: ChatGptControlBinding;
+    this.transaction(() => {
+      const binding = this.getControlBinding(workerId);
+      if (!binding || binding.bindingVersion !== bindingVersion) throw new Error('binding_changed');
+      if (canonicalPersonalChatUrl(evidence.observedConversationUrl).url !== binding.chatgptConversationUrl) throw new Error('target_mismatch');
+      if (evidence.observedAccountLabel !== binding.expectedAccountLabel
+        || (binding.expectedAccountId && evidence.observedAccountId !== binding.expectedAccountId)) throw new Error('account_mismatch');
+      if (evidence.observedConnectorLabel !== binding.expectedConnectorLabel || !binding.operatorResourceConfirmed) throw new Error('connector_mismatch');
+      if (!Array.isArray(evidence.observedTools) || evidence.observedTools.length !== PERSONAL_CHAT_TOOLS.length
+        || PERSONAL_CHAT_TOOLS.some((tool) => !evidence.observedTools.includes(tool))) throw new Error('tools_missing');
+      if (evidence.writeApprovalObserved !== true) throw new Error('approval_required');
+      if (!Number.isSafeInteger(evidence.statusProbeSequenceBefore) || evidence.statusProbeSequenceBefore < 0
+        || !Number.isSafeInteger(evidence.statusProbeSequenceAfter)
+        || evidence.statusProbeSequenceAfter <= evidence.statusProbeSequenceBefore
+        || evidence.statusProbeSequenceAfter !== binding.statusProbeSequence
+        || evidence.observedWorkerId !== workerId || !binding.lastStatusObservedAt
+        || Date.now() - Date.parse(binding.lastStatusObservedAt) > 5 * 60_000 || !binding.statusObservedGrantId) throw new Error('Gateway status was not observed for this diagnostic.');
+      const updated: ChatGptControlBinding = {
+        ...binding, targetVerified: true, toolSetVerified: true, gatewayStatusVerified: true, writeApprovalVerified: true,
+        boundGrantId: binding.statusObservedGrantId,
+        connectorIdentityObserved: evidence.connectorIdentityObserved?.slice(0, 256) ?? null,
+        lastTargetVerifiedAt: new Date().toISOString(), lastToolSetVerifiedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      };
+      if (!this.controlGrantActive(updated, Date.now())) throw new Error('grant_revoked');
+      this.writeControlBinding(updated);
+      result = updated;
+    });
+    return result;
+  }
+
+  setControlWakeEnabled(workerId: string, enabled: boolean): ChatGptControlBinding {
+    this.transaction(() => {
+      const binding = this.getControlBinding(workerId);
+      if (!binding) throw new Error('Control binding is not configured.');
+      if (!enabled) { this.fenceControlBindingInTransaction(workerId, 'operator_stopped', false); return; }
+      const armed = { ...binding, wakeEnabled: true, operatorStopped: false };
+      if (!this.controlBindingReady(armed, Date.now())) throw new Error('Control is not verified, available, or resumable.');
+      this.writeControlBinding({ ...armed, updatedAt: new Date().toISOString() });
+    });
+    this.emitChange(workerId);
+    return this.getControlBinding(workerId)!;
+  }
+
+  getControlBootstrapId(workerId: string, bindingVersion: number): string {
+    return this.transaction(() => {
+      const binding = this.getControlBinding(workerId);
+      if (!binding || binding.bindingVersion !== bindingVersion) throw new Error('binding_changed');
+      if (this.db.prepare(`SELECT 1 FROM runs WHERE worker_id=? AND status IN ('active','draining')`).get(workerId)) throw new Error('worker_busy');
+      const generation = this.requireWorker(workerId).runGeneration;
+      const existing = this.db.prepare('SELECT open_id FROM control_bootstrap WHERE worker_id=? AND binding_version=? AND runtime_generation=?').get(workerId, bindingVersion, generation) as SqlRow | undefined;
+      if (existing) return String(existing.open_id);
+      const openId = `open_${randomBytes(24).toString('base64url')}`;
+      this.db.prepare(`INSERT INTO control_bootstrap(worker_id,binding_version,open_id,runtime_generation) VALUES (?,?,?,?)
+        ON CONFLICT(worker_id,binding_version) DO UPDATE SET open_id=excluded.open_id,runtime_generation=excluded.runtime_generation`).run(workerId, bindingVersion, openId, generation);
+      return openId;
+    });
+  }
+
+  claimControlCreation(workerId: string): string {
+    this.assertOpen();
+    if (!this.controlConfig.enabled) throw new Error('controller_disabled');
+    return this.transaction(() => {
+      this.requireWorker(workerId);
+      if (this.getControlBinding(workerId)) throw new Error('personal_chat_already_bound');
+      if (this.db.prepare('SELECT 1 FROM control_creation WHERE worker_id=?').get(workerId)) throw new Error('personal_chat_creation_pending');
+      if (this.db.prepare(`SELECT 1 FROM runs WHERE worker_id=? AND status IN ('active','draining')`).get(workerId)) throw new Error('worker_busy');
+      const operationId = `create_${randomBytes(18).toString('base64url')}`;
+      this.db.prepare('INSERT INTO control_creation(worker_id,operation_id,created_at_ms) VALUES (?,?,?)').run(workerId, operationId, Date.now());
+      this.recordAudit({ type: 'chatgpt.control.creation_requested', workerId, operationId });
+      return operationId;
+    });
+  }
+
+  stopControlWorker(workerId: string, reason: ChatGptControlFailureCode = 'operator_stopped'): void {
+    const clearVerification = ['target_mismatch', 'account_mismatch', 'connector_mismatch', 'tools_missing', 'approval_required',
+      'delivery_ambiguous', 'controller_not_authenticated', 'grant_revoked'].includes(reason);
+    this.transaction(() => this.fenceControlBindingInTransaction(workerId, reason, clearVerification));
+    this.emitChange(workerId);
+  }
+
+  claimNextControlWake(): ChatGptControlWakeOperation | null {
+    if (!this.controlConfig.enabled || this.closed) return null;
+    this.reconcileControlWakes();
+    let claimed: ChatGptControlWakeOperation | null = null;
+    this.transaction(() => {
+      const active = Number((this.db.prepare(`SELECT COUNT(*) AS count FROM control_wakes WHERE state IN ('controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).get() as SqlRow).count);
+      if (active >= this.controlConfig.maxConcurrentWakes) return;
+      const rows = this.db.prepare(`SELECT * FROM control_wakes WHERE state='wake_requested' AND next_attempt_at_ms<=? ORDER BY created_at_ms,id LIMIT 128`).all(Date.now()) as SqlRow[];
+      for (const row of rows) {
+        const operation = controlWakeFromRow(row);
+        if (!this.controlWakeCurrent(operation, Date.now())) continue;
+        if ((this.pendingPolls.get(operation.workerId) ?? 0) > 0 || this.hasActiveClaim(operation.workerId)) continue;
+        this.failJobsWhere(`control_operation_id=? AND status='queued' AND control_wake_count>=${this.controlConfig.maxAttempts}`,
+          [operation.id], 'chatgpt_wake_failed', 'The bounded wake attempt budget was exhausted.');
+        if (!this.controlWakeCurrent(operation, Date.now())) continue;
+        this.db.prepare(`UPDATE jobs SET control_wake_count=control_wake_count+1 WHERE control_operation_id=? AND status='queued'`).run(operation.id);
+        this.db.prepare(`UPDATE control_wakes SET state='controller_accepted',attempts=attempts+1 WHERE id=? AND state='wake_requested'`).run(operation.id);
+        claimed = { ...operation, state: 'controller_accepted', attempts: operation.attempts + 1 };
+        this.updateControlWakeMetadata(claimed);
+        this.recordAudit({ type: 'chatgpt.control.controller_accepted', workerId: operation.workerId,
+          operationId: operation.id, bindingVersion: operation.bindingVersion, activationGeneration: operation.activationGeneration });
+        break;
+      }
+    });
+    return claimed;
+  }
+
+  requireCurrentControlWake(operationId: string): ChatGptControlWakeOperation {
+    this.assertOpen();
+    this.reconcileControlWakes();
+    const row = this.db.prepare('SELECT * FROM control_wakes WHERE id=?').get(operationId) as SqlRow | undefined;
+    if (!row) throw new Error('binding_changed');
+    const operation = controlWakeFromRow(row);
+    if (operation.state === 'mcp_poll_observed') throw new Error('mcp_poll_observed');
+    if (!this.controlWakeCurrent(operation, Date.now())) throw new Error(operation.lastReason ?? 'binding_changed');
+    if ((this.pendingPolls.get(operation.workerId) ?? 0) > 0 || this.hasActiveClaim(operation.workerId)) throw new Error('mcp_poll_observed');
+    return operation;
+  }
+
+  markControlWake(operationId: string, state: 'target_verified' | 'wake_delivery_attempted' | 'wake_delivered_observed'): ChatGptControlWakeOperation {
+    const existing = this.db.prepare('SELECT * FROM control_wakes WHERE id=?').get(operationId) as SqlRow | undefined;
+    if (existing?.state === 'mcp_poll_observed') return controlWakeFromRow(existing);
+    const operation = this.requireCurrentControlWake(operationId);
+    const order = ['controller_accepted', 'target_verified', 'wake_delivery_attempted', 'wake_delivered_observed'];
+    const difference = order.indexOf(state) - order.indexOf(operation.state);
+    if (difference < 0 || difference > 1 || order.indexOf(operation.state) < 0) throw new Error('Invalid wake transition.');
+    this.transaction(() => {
+      this.db.prepare('UPDATE control_wakes SET state=? WHERE id=?').run(state, operationId);
+      if (state === 'wake_delivery_attempted') this.db.prepare('UPDATE control_wakes SET delivery_attempted_at_ms=COALESCE(delivery_attempted_at_ms,?) WHERE id=?').run(Date.now(), operationId);
+      if (state === 'wake_delivered_observed') this.db.prepare('UPDATE control_wakes SET delivered_observed_at_ms=COALESCE(delivered_observed_at_ms,?) WHERE id=?').run(Date.now(), operationId);
+      this.updateControlWakeMetadata({ ...operation, state });
+      this.recordAudit({ type: `chatgpt.control.${state}`, workerId: operation.workerId,
+        operationId: operation.id, bindingVersion: operation.bindingVersion, activationGeneration: operation.activationGeneration });
+    });
+    return controlWakeFromRow(this.db.prepare('SELECT * FROM control_wakes WHERE id=?').get(operationId) as SqlRow);
+  }
+
+  failControlWake(operationId: string, reason: ChatGptControlFailureCode, options: { ambiguous?: boolean; retryable?: boolean } = {}): void {
+    const row = this.db.prepare('SELECT * FROM control_wakes WHERE id=?').get(operationId) as SqlRow | undefined;
+    if (!row) return;
+    const operation = controlWakeFromRow(row);
+    if (isControlWakeTerminal(operation.state)) return;
+    const now = Date.now();
+    this.transaction(() => {
+      const ambiguous = options.ambiguous === true || operation.state === 'wake_delivery_attempted' || operation.state === 'wake_delivered_observed';
+      const retry = !ambiguous && options.retryable === true && operation.attempts < operation.maxAttempts
+        && now + this.controlConfig.backoffMs * Math.max(1, operation.attempts) < operation.deadlineAtMs
+        && this.controlWakeCurrent(operation, now);
+      if (retry) {
+        this.db.prepare(`UPDATE control_wakes SET state='wake_requested',last_reason=?,next_attempt_at_ms=? WHERE id=?`).run(reason, now + this.controlConfig.backoffMs * Math.max(1, operation.attempts), operationId);
+      } else {
+        this.terminalizeControlWakeInTransaction(operation, ambiguous ? 'operator_action_required' : 'wake_failed', ambiguous ? 'delivery_ambiguous' : reason);
+      }
+    });
+    this.emitChange(operation.workerId);
+  }
+
+  listControlWakeStatus(workerId?: string): Array<Omit<ChatGptControlWakeOperation, 'binding'>> {
+    const rows = (workerId
+      ? this.db.prepare('SELECT * FROM control_wakes WHERE worker_id=? ORDER BY created_at_ms DESC LIMIT 100').all(workerId)
+      : this.db.prepare('SELECT * FROM control_wakes ORDER BY created_at_ms DESC LIMIT 100').all()) as SqlRow[];
+    return rows.map((row) => { const { binding: _binding, ...metadata } = controlWakeFromRow(row); return metadata; });
+  }
+
+  reconcileControlWakes(): void {
+    if (this.closed) return;
+    this.transaction(() => {
+      const now = Date.now();
+      for (const row of this.db.prepare(`SELECT * FROM control_wakes WHERE state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).all() as SqlRow[]) {
+        const operation = controlWakeFromRow(row);
+        if (operation.deadlineAtMs <= now) this.terminalizeControlWakeInTransaction(operation, 'wake_expired', 'wake_timeout');
+        else if (!this.controlWakeCurrent(operation, now)) this.terminalizeControlWakeInTransaction(operation, 'cancelled', this.controlWakeInvalidReason(operation, now));
+      }
+      if (this.controlConfig.enabled) for (const binding of this.listControlBindings()) this.ensureControlWakeInTransaction(binding.workerId, now);
+    });
   }
 
   validateExchangeResult(grant: AuthenticatedMcpGrant, input: GatewayExchangeInput, result: GatewayExchangeResult): GatewayExchangeResult {
@@ -569,6 +857,7 @@ export class ChatGptGatewayStore {
   drainWorker(workerId: string): void {
     this.requireWorker(workerId);
     this.transaction(() => {
+      this.fenceControlBindingInTransaction(workerId, 'operator_stopped', false, false);
       this.db.prepare('UPDATE workers SET draining=1,config_version=config_version+1,updated_at_ms=? WHERE id=?').run(Date.now(), workerId);
       this.db.prepare(`UPDATE runs SET status='draining' WHERE worker_id=? AND status='active'`).run(workerId);
       this.finishDrainIfEmpty(workerId);
@@ -666,6 +955,7 @@ export class ChatGptGatewayStore {
           'chatgpt_worker_unavailable',
         );
       }
+      this.fenceControlBindingInTransaction(request.workerId, 'grant_revoked', true);
       // One worker has one approved binding. Re-pairing must not leave the
       // former conversation able to reclaim the newly released worker.
       this.db.prepare('UPDATE oauth_grants SET revoked_at_ms=? WHERE worker_id=? AND revoked_at_ms IS NULL').run(now, request.workerId);
@@ -794,6 +1084,7 @@ export class ChatGptGatewayStore {
       this.db.prepare('UPDATE oauth_grants SET revoked_at_ms=? WHERE id=? AND revoked_at_ms IS NULL').run(now, grant.id);
       this.db.prepare('UPDATE oauth_access_tokens SET revoked_at_ms=? WHERE grant_id=? AND revoked_at_ms IS NULL').run(now, grant.id);
       this.db.prepare('UPDATE oauth_refresh_tokens SET revoked_at_ms=? WHERE grant_id=? AND revoked_at_ms IS NULL').run(now, grant.id);
+      if (this.getControlBinding(grant.workerId)?.boundGrantId === grant.id) this.fenceControlBindingInTransaction(grant.workerId, 'grant_revoked', true);
       const run = this.db.prepare(`SELECT run_id FROM runs WHERE worker_id=? AND grant_id=? AND status IN ('active','draining')`).get(grant.workerId, grant.id) as SqlRow | undefined;
       if (run) this.releaseWorkerInTransaction(grant.workerId, 'OAuth token family revoked', 'chatgpt_worker_unavailable');
     });
@@ -838,6 +1129,7 @@ export class ChatGptGatewayStore {
       this.db.prepare('UPDATE oauth_grants SET revoked_at_ms=? WHERE id=? AND revoked_at_ms IS NULL').run(Date.now(), grantId);
       this.db.prepare(`UPDATE oauth_access_tokens SET revoked_at_ms=? WHERE grant_id=? AND revoked_at_ms IS NULL`).run(Date.now(), grantId);
       this.db.prepare(`UPDATE oauth_refresh_tokens SET revoked_at_ms=? WHERE grant_id=? AND revoked_at_ms IS NULL`).run(Date.now(), grantId);
+      if (this.getControlBinding(grant.workerId)?.boundGrantId === grantId) this.fenceControlBindingInTransaction(grant.workerId, 'grant_revoked', true);
       const run = this.db.prepare(`SELECT run_id FROM runs WHERE worker_id=? AND grant_id=? AND status IN ('active','draining')`).get(grant.workerId, grantId) as SqlRow | undefined;
       if (run) this.releaseWorkerInTransaction(grant.workerId, 'MCP grant revoked', 'chatgpt_worker_unavailable');
     });
@@ -859,6 +1151,7 @@ export class ChatGptGatewayStore {
       this.db.prepare(`DELETE FROM exchange_replays WHERE expires_at_ms<=?`).run(now);
       this.db.prepare(`UPDATE jobs SET idempotency_digest=NULL WHERE status IN ('completed','failed','cancelled') AND completed_at_ms<?`).run(idempotencyBefore);
       this.db.prepare(`DELETE FROM jobs WHERE status IN ('completed','failed','cancelled') AND completed_at_ms<?`).run(terminalBefore);
+      this.db.prepare('DELETE FROM control_wakes WHERE completed_at_ms IS NOT NULL AND completed_at_ms<?').run(terminalBefore);
       this.db.prepare('DELETE FROM oauth_codes WHERE expires_at_ms<=?').run(now);
       this.db.prepare('DELETE FROM oauth_authorization_requests WHERE expires_at_ms<=?').run(now);
       this.db.prepare('DELETE FROM pairing_windows WHERE expires_at_ms<=?').run(now);
@@ -901,6 +1194,8 @@ export class ChatGptGatewayStore {
         }
         if (replay.result_json != null) {
           output = this.fenceRequestResult(JSON.parse(String(replay.result_json)) as GatewayExchangeResult, run);
+          this.db.prepare('UPDATE runs SET last_exchange_at_ms=? WHERE run_id=?').run(Date.now(), context.input.run_id);
+          if (!context.input.yield_after_completion) this.noteControlPollingInTransaction(context.grant);
           replayed = true;
         }
       }
@@ -908,6 +1203,7 @@ export class ChatGptGatewayStore {
       if (String(run.next_exchange_id) !== context.input.exchange_id) throw new Error('exchange_out_of_order');
       const now = Date.now();
       this.db.prepare('UPDATE runs SET last_exchange_at_ms=? WHERE run_id=?').run(now, context.input.run_id);
+      if (!context.input.yield_after_completion) this.noteControlPollingInTransaction(context.grant);
       let completionAlreadyApplied = replay != null;
       if (context.input.completion && !completionAlreadyApplied) {
         output = this.applyCompletionInTransaction(context, run, now);
@@ -924,6 +1220,15 @@ export class ChatGptGatewayStore {
           now + this.config.idempotencyTtlSeconds * 1_000,
         );
         completionAlreadyApplied = true;
+      }
+      if (context.input.yield_after_completion === true) {
+        this.finishDrainIfEmpty(workerId);
+        const latest = this.db.prepare('SELECT status FROM runs WHERE run_id=?').get(context.input.run_id) as SqlRow | undefined;
+        output = latest?.status === 'released' ? releasedResult('Worker drain completed.') : {
+          protocol_version: CHATGPT_GATEWAY_PROTOCOL_VERSION, state: 'yielded', continue: true, next_exchange_id: newExchangeId(),
+        };
+        this.saveOrUpdateReplay(context, output);
+        return;
       }
       const claimed = this.db.prepare(`SELECT * FROM jobs WHERE worker_id=? AND status='claimed' ORDER BY claimed_at_ms LIMIT 1`).get(workerId) as SqlRow | undefined;
       if (claimed) {
@@ -1093,6 +1398,7 @@ export class ChatGptGatewayStore {
       default_wait_seconds: Math.min(maximumWaitSeconds, Math.max(1, Math.round(this.config.longPollMs / 1_000))),
       maximum_wait_seconds: maximumWaitSeconds,
       maximum_response_bytes: this.config.maxResponseBytes,
+      extensions: ['yield_after_completion_v1'],
     };
   }
 
@@ -1140,6 +1446,7 @@ export class ChatGptGatewayStore {
         claim_token=NULL,lease_expires_at_ms=NULL WHERE ${where}
     `).run(code, message, Date.now(), ...args);
     this.redactInvalidRequestReplaysInTransaction();
+    this.cancelUnusedControlWakesInTransaction();
   }
 
   private failJobInTransaction(requestId: string, code: string, message: string, completionDigest?: string): void {
@@ -1148,6 +1455,7 @@ export class ChatGptGatewayStore {
         claim_token=NULL,lease_expires_at_ms=NULL WHERE request_id=? AND status IN ('queued','claimed')
     `).run(code, message, completionDigest ?? null, Date.now(), requestId);
     this.redactInvalidRequestReplaysInTransaction();
+    this.cancelUnusedControlWakesInTransaction();
     const job = this.db.prepare('SELECT worker_id FROM jobs WHERE request_id=?').get(requestId) as SqlRow | undefined;
     if (job) this.db.prepare('UPDATE workers SET last_error_code=?,last_error_message=? WHERE id=?').run(code, message, String(job.worker_id));
   }
@@ -1161,6 +1469,7 @@ export class ChatGptGatewayStore {
       Date.now(),
       workerId,
     );
+    this.fenceControlBindingInTransaction(workerId, 'operator_stopped', false);
   }
 
   private finishDrainIfEmpty(workerId: string): void {
@@ -1168,6 +1477,173 @@ export class ChatGptGatewayStore {
     if (active > 0) return;
     this.db.prepare(`UPDATE runs SET status='released',released_at_ms=? WHERE worker_id=? AND status='draining'`).run(Date.now(), workerId);
     this.db.prepare('UPDATE workers SET draining=0,run_generation=run_generation+1,updated_at_ms=? WHERE id=? AND draining=1').run(Date.now(), workerId);
+  }
+
+  private writeControlBinding(binding: ChatGptControlBinding): void {
+    this.db.prepare(`INSERT INTO control_bindings(worker_id,conversation_id,record_json) VALUES (?,?,?)
+      ON CONFLICT(worker_id) DO UPDATE SET conversation_id=excluded.conversation_id,record_json=excluded.record_json`).run(
+      binding.workerId, binding.chatgptConversationId, JSON.stringify(binding),
+    );
+  }
+
+  private noteControlStatusObservation(grant: AuthenticatedMcpGrant): void {
+    const binding = this.getControlBinding(grant.workerId);
+    if (!binding || grant.resource !== binding.expectedMcpResource) return;
+    this.writeControlBinding({ ...binding, statusProbeSequence: binding.statusProbeSequence + 1,
+      lastStatusObservedAt: new Date().toISOString(), statusObservedGrantId: grant.id });
+  }
+
+  private controlGrantActive(binding: ChatGptControlBinding, now: number): boolean {
+    if (!binding.boundGrantId) return false;
+    const row = this.db.prepare(`SELECT g.* FROM oauth_grants g JOIN oauth_clients c ON c.client_id=g.client_id
+      WHERE g.id=? AND g.worker_id=? AND g.resource=? AND g.revoked_at_ms IS NULL AND c.revoked_at_ms IS NULL
+      AND (EXISTS(SELECT 1 FROM oauth_access_tokens t WHERE t.grant_id=g.id AND t.revoked_at_ms IS NULL AND t.expires_at_ms>?)
+        OR EXISTS(SELECT 1 FROM oauth_refresh_tokens t WHERE t.grant_id=g.id AND t.revoked_at_ms IS NULL AND t.consumed_at_ms IS NULL AND t.expires_at_ms>?))`).get(
+      binding.boundGrantId, binding.workerId, binding.expectedMcpResource, now, now,
+    ) as SqlRow | undefined;
+    return Boolean(row && String(row.scopes).split(/\s+/u).includes('mcp:tools'));
+  }
+
+  private controlBindingReady(binding: ChatGptControlBinding, now: number): boolean {
+    if (!this.controlConfig.enabled || !binding.wakeEnabled || binding.operatorStopped || binding.controlMode === 'manual'
+      || !binding.targetVerified || !binding.toolSetVerified || !binding.gatewayStatusVerified || !binding.writeApprovalVerified
+      || !binding.operatorResourceConfirmed || !this.controlGrantActive(binding, now)) return false;
+    const worker = this.getWorker(binding.workerId);
+    if (!worker?.enabled || worker.draining) return false;
+    // A stale existing run may be resumed. A released/restarted/unopened run
+    // requires explicit operator bootstrap, never a manufactured takeover.
+    const run = this.db.prepare(`SELECT 1 FROM runs WHERE worker_id=? AND grant_id=? AND status='active' AND generation=?`).get(binding.workerId, binding.boundGrantId, worker.runGeneration);
+    if (!run) return false;
+    try { return this.controlReady({ ...binding }) === true; } catch { return false; }
+  }
+
+  private hasActiveClaim(workerId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM jobs WHERE worker_id=? AND status='claimed' AND request_deadline_at_ms>? AND lease_expires_at_ms>? LIMIT 1`).get(workerId, Date.now(), Date.now()));
+  }
+
+  private hasValidControlJobs(workerId: string, bindingVersion: number, now: number): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM jobs WHERE worker_id=? AND control_binding_version=? AND status='queued'
+      AND queue_deadline_at_ms>? AND request_deadline_at_ms>? LIMIT 1`).get(workerId, bindingVersion, now, now));
+  }
+
+  private controlWakeCurrent(operation: ChatGptControlWakeOperation, now: number): boolean {
+    if (isControlWakeTerminal(operation.state) || operation.deadlineAtMs <= now) return false;
+    const binding = this.getControlBinding(operation.workerId);
+    return Boolean(binding && binding.bindingVersion === operation.bindingVersion
+      && binding.operatorStopGeneration === operation.operatorStopGeneration
+      && binding.activationGeneration === operation.activationGeneration
+      && this.controlBindingReady(binding, now) && this.hasValidControlJobs(operation.workerId, operation.bindingVersion, now));
+  }
+
+  private controlWakeInvalidReason(operation: ChatGptControlWakeOperation, now: number): ChatGptControlFailureCode {
+    if (operation.deadlineAtMs <= now) return 'wake_timeout';
+    const binding = this.getControlBinding(operation.workerId);
+    if (!binding || binding.bindingVersion !== operation.bindingVersion || binding.activationGeneration !== operation.activationGeneration) return 'binding_changed';
+    if (!binding.wakeEnabled || binding.operatorStopped || binding.operatorStopGeneration !== operation.operatorStopGeneration) return 'operator_stopped';
+    if (!this.controlGrantActive(binding, now)) return 'grant_revoked';
+    if (!this.hasValidControlJobs(operation.workerId, operation.bindingVersion, now)) return 'no_pending_jobs';
+    return 'controller_unavailable';
+  }
+
+  private ensureControlWakeInTransaction(workerId: string, now: number): void {
+    const binding = this.getControlBinding(workerId);
+    if (!binding || !this.controlBindingReady(binding, now) || !this.hasValidControlJobs(workerId, binding.bindingVersion, now)) return;
+    if ((this.pendingPolls.get(workerId) ?? 0) > 0 || this.hasActiveClaim(workerId)) return;
+    const existing = this.db.prepare(`SELECT * FROM control_wakes WHERE worker_id=? AND binding_version=?
+      AND state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).get(workerId, binding.bindingVersion) as SqlRow | undefined;
+    if (existing) {
+      if (Number(existing.deadline_at_ms) > now) {
+        this.db.prepare(`UPDATE jobs SET control_wake_count=control_wake_count+CASE WHEN COALESCE(control_operation_id,'')!=? AND ?!='wake_requested' THEN 1 ELSE 0 END,
+          control_operation_id=? WHERE worker_id=? AND control_binding_version=? AND status='queued'`).run(String(existing.id), String(existing.state), String(existing.id), workerId, binding.bindingVersion);
+        return;
+      }
+      this.terminalizeControlWakeInTransaction(controlWakeFromRow(existing), 'wake_expired', 'wake_timeout');
+    }
+    this.failJobsWhere(`worker_id=? AND control_binding_version=? AND status='queued' AND control_wake_count>=${this.controlConfig.maxAttempts}`,
+      [workerId, String(binding.bindingVersion)], 'chatgpt_wake_failed', 'The bounded wake activation budget was exhausted.');
+    const pending = this.db.prepare(`SELECT MIN(MIN(queue_deadline_at_ms,request_deadline_at_ms)) AS deadline FROM jobs
+      WHERE worker_id=? AND control_binding_version=? AND status='queued' AND queue_deadline_at_ms>? AND request_deadline_at_ms>?`).get(workerId, binding.bindingVersion, now, now) as SqlRow;
+    if (pending.deadline == null) return;
+    const count = Number((this.db.prepare('SELECT COUNT(*) AS count FROM control_wakes').get() as SqlRow).count);
+    if (count >= 4_096) throw chatGptError('chatgpt_control_unavailable', 'Control outbox retention capacity is full.');
+    const id = `wake_${randomBytes(18).toString('base64url')}`;
+    const operation: ChatGptControlWakeOperation = {
+      id, workerId, bindingVersion: binding.bindingVersion, activationGeneration: binding.activationGeneration + 1,
+      operatorStopGeneration: binding.operatorStopGeneration, marker: `GemRouter wake ${id}`,
+      state: 'wake_requested', attempts: 0, maxAttempts: this.controlConfig.maxAttempts,
+      createdAtMs: now, deadlineAtMs: Math.min(Number(pending.deadline), now + this.controlConfig.wakeTimeoutMs),
+      nextAttemptAtMs: now, lastReason: null, binding: { ...binding, activationGeneration: binding.activationGeneration + 1, lastWakeOutcome: 'wake_requested' },
+    };
+    this.db.prepare(`INSERT INTO control_wakes(id,worker_id,binding_version,activation_generation,stop_generation,marker,state,attempts,max_attempts,
+      created_at_ms,deadline_at_ms,next_attempt_at_ms,binding_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, workerId, operation.bindingVersion, operation.activationGeneration, operation.operatorStopGeneration, operation.marker,
+      operation.state, operation.attempts, operation.maxAttempts, now, operation.deadlineAtMs, now, JSON.stringify(operation.binding),
+    );
+    this.db.prepare(`UPDATE jobs SET control_operation_id=? WHERE worker_id=? AND control_binding_version=? AND status='queued'`).run(id, workerId, binding.bindingVersion);
+    this.writeControlBinding({ ...binding, activationGeneration: operation.activationGeneration, lastWakeOutcome: 'wake_requested', lastWakeReason: null });
+    this.recordAudit({ type: 'chatgpt.control.wake_requested', workerId, operationId: id,
+      bindingVersion: operation.bindingVersion, activationGeneration: operation.activationGeneration });
+  }
+
+  private updateControlWakeMetadata(operation: ChatGptControlWakeOperation): void {
+    const binding = this.getControlBinding(operation.workerId);
+    if (!binding || binding.bindingVersion !== operation.bindingVersion) return;
+    this.writeControlBinding({ ...binding, lastWakeOutcome: operation.state, lastWakeReason: operation.lastReason,
+      lastWakeAttemptAt: operation.state === 'controller_accepted' ? new Date().toISOString() : binding.lastWakeAttemptAt,
+      updatedAt: new Date().toISOString() });
+  }
+
+  private terminalizeControlWakeInTransaction(operation: ChatGptControlWakeOperation, state: ChatGptControlWakeState, reason: ChatGptControlFailureCode): void {
+    this.db.prepare('UPDATE control_wakes SET state=?,last_reason=?,completed_at_ms=? WHERE id=?').run(state, reason, Date.now(), operation.id);
+    this.updateControlWakeMetadata({ ...operation, state, lastReason: reason });
+    if (state !== 'mcp_poll_observed') this.failJobsWhere(`control_operation_id=? AND status='queued'`, [operation.id],
+      state === 'wake_expired' ? 'chatgpt_wake_timeout' : 'chatgpt_wake_failed',
+      state === 'wake_expired' ? 'The personal-chat wake reached its original deadline.' : 'The personal-chat wake requires operator attention.');
+    if (state === 'operator_action_required' || ['target_mismatch', 'account_mismatch', 'connector_mismatch', 'tools_missing', 'approval_required', 'grant_revoked'].includes(reason)) {
+      this.fenceControlBindingInTransaction(operation.workerId, reason, true);
+    }
+    this.recordAudit({ type: `chatgpt.control.${state}`, workerId: operation.workerId, reasonCode: reason,
+      operationId: operation.id, bindingVersion: operation.bindingVersion, activationGeneration: operation.activationGeneration });
+  }
+
+  private cancelUnusedControlWakesInTransaction(): void {
+    for (const row of this.db.prepare(`SELECT * FROM control_wakes WHERE state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).all() as SqlRow[]) {
+      const operation = controlWakeFromRow(row);
+      if (this.hasValidControlJobs(operation.workerId, operation.bindingVersion, Date.now())) continue;
+      this.db.prepare(`UPDATE control_wakes SET state='cancelled',last_reason='no_pending_jobs',completed_at_ms=? WHERE id=?`).run(Date.now(), operation.id);
+      this.updateControlWakeMetadata({ ...operation, state: 'cancelled', lastReason: 'no_pending_jobs' });
+      this.recordAudit({ type: 'chatgpt.control.cancelled', workerId: operation.workerId, reasonCode: 'no_pending_jobs',
+        operationId: operation.id, bindingVersion: operation.bindingVersion, activationGeneration: operation.activationGeneration });
+    }
+  }
+
+  private fenceControlBindingInTransaction(workerId: string, reason: ChatGptControlFailureCode, clearVerification: boolean, cancelJobs = true): void {
+    const binding = this.getControlBinding(workerId);
+    if (!binding) return;
+    this.writeControlBinding({ ...binding, wakeEnabled: false, operatorStopped: true,
+      operatorStopGeneration: binding.operatorStopGeneration + 1, updatedAt: new Date().toISOString(),
+      ...(clearVerification ? { targetVerified: false, toolSetVerified: false, gatewayStatusVerified: false, writeApprovalVerified: false,
+        boundGrantId: null, statusObservedGrantId: null, lastTargetVerifiedAt: null, lastToolSetVerifiedAt: null,
+        lastStatusObservedAt: null, statusProbeSequence: 0 } : {}),
+    });
+    this.db.prepare(`UPDATE control_wakes SET state='cancelled',last_reason=?,completed_at_ms=? WHERE worker_id=?
+      AND state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).run(reason, Date.now(), workerId);
+    if (cancelJobs) this.failJobsWhere(`worker_id=? AND control_binding_version IS NOT NULL AND status IN (${clearVerification ? "'queued','claimed'" : "'queued'"})`,
+      [workerId], reason === 'binding_changed' ? 'chatgpt_control_binding_changed' : 'chatgpt_control_stopped', 'The personal-chat control binding was changed or stopped by its operator.');
+  }
+
+  private noteControlPollingInTransaction(grant: AuthenticatedMcpGrant): void {
+    const binding = this.getControlBinding(grant.workerId);
+    if (!binding || binding.boundGrantId !== grant.id) return;
+    this.writeControlBinding({ ...binding, lastPollingObservedAt: new Date().toISOString() });
+    for (const row of this.db.prepare(`SELECT * FROM control_wakes WHERE worker_id=? AND binding_version=?
+      AND state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).all(grant.workerId, binding.bindingVersion) as SqlRow[]) {
+      const operation = controlWakeFromRow(row);
+      this.db.prepare(`UPDATE control_wakes SET state='mcp_poll_observed',completed_at_ms=?,polling_observed_at_ms=? WHERE id=?`).run(Date.now(), Date.now(), operation.id);
+      this.updateControlWakeMetadata({ ...operation, state: 'mcp_poll_observed' });
+      this.recordAudit({ type: 'chatgpt.control.mcp_poll_observed', workerId: grant.workerId,
+        operationId: operation.id, bindingVersion: operation.bindingVersion, activationGeneration: operation.activationGeneration });
+    }
   }
 
   private runIsCurrent(run: SqlRow): boolean {
@@ -1374,13 +1850,16 @@ export class ChatGptGatewayStore {
       this.db.prepare(`UPDATE runs SET status='released',released_at_ms=? WHERE status IN ('active','draining')`).run(Date.now());
       this.db.prepare('UPDATE workers SET run_generation=run_generation+1,draining=0').run();
       this.db.prepare('DELETE FROM exchange_replays').run();
+      this.db.prepare(`UPDATE control_wakes SET state='cancelled',last_reason='operator_stopped',completed_at_ms=?
+        WHERE state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed')`).run(Date.now());
+      for (const binding of this.listControlBindings()) this.fenceControlBindingInTransaction(binding.workerId, 'operator_stopped', true);
     });
     if (interrupted > 0) this.recordAudit({ type: 'chatgpt.gateway.recovered', reasonCode: 'chatgpt_gateway_restarted' });
   }
 
   private migrate(): void {
     const currentVersion = Number((this.db.prepare('PRAGMA user_version').get() as { user_version?: unknown } | undefined)?.user_version ?? 0);
-    if (currentVersion > 3) throw new Error(`Unsupported future ChatGPT gateway schema version ${currentVersion}.`);
+    if (currentVersion > 4) throw new Error(`Unsupported future ChatGPT gateway schema version ${currentVersion}.`);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS workers(
@@ -1438,6 +1917,27 @@ export class ChatGptGatewayStore {
         run_id TEXT NOT NULL,exchange_id TEXT NOT NULL,args_digest TEXT NOT NULL,result_json TEXT,expires_at_ms INTEGER NOT NULL,
         PRIMARY KEY(run_id,exchange_id)
       );
+      CREATE TABLE IF NOT EXISTS control_bindings(
+        worker_id TEXT PRIMARY KEY REFERENCES workers(id) ON DELETE CASCADE,conversation_id TEXT NOT NULL UNIQUE,record_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS control_creation(
+        worker_id TEXT PRIMARY KEY REFERENCES workers(id) ON DELETE CASCADE,operation_id TEXT NOT NULL UNIQUE,created_at_ms INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS control_bootstrap(
+        worker_id TEXT NOT NULL REFERENCES control_bindings(worker_id) ON DELETE CASCADE,binding_version INTEGER NOT NULL,open_id TEXT NOT NULL,
+        runtime_generation INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(worker_id,binding_version)
+      );
+      CREATE TABLE IF NOT EXISTS control_wakes(
+        id TEXT PRIMARY KEY,worker_id TEXT NOT NULL REFERENCES workers(id) ON DELETE CASCADE,binding_version INTEGER NOT NULL,
+        activation_generation INTEGER NOT NULL,stop_generation INTEGER NOT NULL,marker TEXT NOT NULL,state TEXT NOT NULL,
+        attempts INTEGER NOT NULL,max_attempts INTEGER NOT NULL,created_at_ms INTEGER NOT NULL,deadline_at_ms INTEGER NOT NULL,
+        next_attempt_at_ms INTEGER NOT NULL,binding_json TEXT NOT NULL,last_reason TEXT,completed_at_ms INTEGER,
+        delivery_attempted_at_ms INTEGER,delivered_observed_at_ms INTEGER,polling_observed_at_ms INTEGER,
+        UNIQUE(worker_id,binding_version,activation_generation)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS one_pending_control_wake ON control_wakes(worker_id)
+        WHERE state IN ('wake_requested','controller_accepted','target_verified','wake_delivery_attempted','wake_delivered_observed');
     `);
     const runColumns = this.db.prepare('PRAGMA table_info(runs)').all() as SqlRow[];
     if (!runColumns.some((column) => String(column.name) === 'next_exchange_id')) {
@@ -1447,8 +1947,36 @@ export class ChatGptGatewayStore {
     if (!jobColumns.some((column) => String(column.name) === 'worker_snapshot_json')) {
       this.db.exec('ALTER TABLE jobs ADD COLUMN worker_snapshot_json TEXT;');
     }
-    this.db.exec('PRAGMA user_version=3;');
+    if (!jobColumns.some((column) => String(column.name) === 'control_binding_version')) this.db.exec('ALTER TABLE jobs ADD COLUMN control_binding_version INTEGER;');
+    if (!jobColumns.some((column) => String(column.name) === 'control_operation_id')) this.db.exec('ALTER TABLE jobs ADD COLUMN control_operation_id TEXT;');
+    if (!jobColumns.some((column) => String(column.name) === 'control_wake_count')) this.db.exec('ALTER TABLE jobs ADD COLUMN control_wake_count INTEGER NOT NULL DEFAULT 0;');
+    const wakeColumns = this.db.prepare('PRAGMA table_info(control_wakes)').all() as SqlRow[];
+    for (const column of ['delivery_attempted_at_ms', 'delivered_observed_at_ms', 'polling_observed_at_ms']) {
+      if (!wakeColumns.some((row) => String(row.name) === column)) this.db.exec(`ALTER TABLE control_wakes ADD COLUMN ${column} INTEGER;`);
+    }
+    const bootstrapColumns = this.db.prepare('PRAGMA table_info(control_bootstrap)').all() as SqlRow[];
+    if (!bootstrapColumns.some((row) => String(row.name) === 'runtime_generation')) this.db.exec('ALTER TABLE control_bootstrap ADD COLUMN runtime_generation INTEGER NOT NULL DEFAULT 0;');
+    this.db.exec('PRAGMA user_version=4;');
   }
+}
+
+function isControlWakeTerminal(state: ChatGptControlWakeState): boolean {
+  return ['mcp_poll_observed', 'wake_failed', 'wake_expired', 'operator_action_required', 'cancelled'].includes(state);
+}
+
+function controlWakeFromRow(row: SqlRow): ChatGptControlWakeOperation {
+  return {
+    id: String(row.id), workerId: String(row.worker_id), bindingVersion: Number(row.binding_version),
+    activationGeneration: Number(row.activation_generation), operatorStopGeneration: Number(row.stop_generation),
+    marker: String(row.marker), state: String(row.state) as ChatGptControlWakeState,
+    attempts: Number(row.attempts), maxAttempts: Number(row.max_attempts), createdAtMs: Number(row.created_at_ms),
+    deadlineAtMs: Number(row.deadline_at_ms), nextAttemptAtMs: Number(row.next_attempt_at_ms),
+    lastReason: row.last_reason == null ? null : String(row.last_reason) as ChatGptControlFailureCode,
+    deliveryAttemptedAtMs: row.delivery_attempted_at_ms == null ? null : Number(row.delivery_attempted_at_ms),
+    deliveredObservedAtMs: row.delivered_observed_at_ms == null ? null : Number(row.delivered_observed_at_ms),
+    pollingObservedAtMs: row.polling_observed_at_ms == null ? null : Number(row.polling_observed_at_ms),
+    binding: JSON.parse(String(row.binding_json)) as ChatGptControlBinding,
+  };
 }
 
 function validateStoreConfig(config: ChatGptGatewayConfig): void {
