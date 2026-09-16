@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { personalControlHtml, personalControlScript } from './llm/providers/chatgpt/control/dashboard.js';
+import { codexAccountHtml, codexAccountScript } from './codex/dashboard.js';
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1335,42 +1335,6 @@ export function renderAppShell(input: {
         height: 18px;
         fill: currentColor;
       }
-      .chatgpt-wizard { margin-top: 18px; border: 1px solid var(--line-strong); border-radius: 18px; padding: clamp(18px, 3vw, 30px); background: linear-gradient(135deg, var(--surface-muted), var(--surface)); }
-      .chatgpt-wizard h4 { font-size: 22px; margin-bottom: 10px; }
-      .chatgpt-wizard p { line-height: 1.6; }
-      .chatgpt-wizard a { text-decoration: underline; text-underline-offset: 3px; }
-      .chatgpt-wizard button, .chatgpt-wizard .wizard-link { min-height: 44px; border-radius: 9px; }
-      .chatgpt-wizard :focus-visible, .chatgpt-advanced summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
-      .chatgpt-wizard .wizard-link { display: inline-flex; align-items: center; padding: 10px 16px; border: 1px solid var(--line-strong); text-decoration: none; }
-      .chatgpt-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; list-style: none; padding: 0; margin: 22px 0; }
-      .chatgpt-steps li { display: flex; align-items: center; gap: 9px; padding: 12px; border-radius: 10px; background: var(--surface-muted); border: 1px solid var(--line); color: var(--muted); }
-      .chatgpt-steps li[aria-current="step"] { border-color: var(--accent); color: var(--text); }
-      .chatgpt-step-number { display: grid; place-items: center; flex: 0 0 28px; width: 28px; min-width: 28px; height: 28px; border-radius: 50%; background: var(--line); font-weight: 700; }
-      .chatgpt-steps li[aria-current="step"] .chatgpt-step-number { background: var(--accent); color: var(--bg); }
-      .chatgpt-wizard-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 24px; }
-      .chatgpt-note { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-muted); }
-      .chatgpt-note strong { display: block; margin-bottom: 8px; }
-      .chatgpt-instructions { display: grid; gap: 14px; padding-left: 22px; line-height: 1.6; }
-      .chatgpt-live { display: flex; gap: 10px; align-items: flex-start; margin: 16px 0; padding: 16px; border-radius: 12px; border: 1px solid var(--line-strong); }
-      .chatgpt-live::before { content: ''; flex: 0 0 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: var(--warn); }
-      .chatgpt-live.is-connected::before { background: var(--good); }
-      .chatgpt-live p { font-size: 14px; color: var(--muted); margin-top: 5px; }
-      .chatgpt-advanced { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 18px; }
-      .chatgpt-advanced > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
-      .chatgpt-consent { display: flex; align-items: flex-start; gap: 10px; line-height: 1.5; }
-      .chatgpt-consent input { width: 18px; height: 18px; flex: 0 0 18px; margin-top: 3px; }
-      .chatgpt-wizard .button-row { margin-top: 16px; }
-      .chatgpt-wizard .status { min-height: 24px; overflow-wrap: anywhere; }
-      .chatgpt-wizard input, .chatgpt-wizard textarea, .chatgpt-wizard select { min-width: 0; width: 100%; }
-      .chatgpt-wizard textarea { resize: vertical; }
-      .chatgpt-wizard, .chatgpt-wizard [tabindex="-1"] { scroll-margin-top: 150px; }
-      @media (max-width: 760px) {
-        .chatgpt-wizard-grid { grid-template-columns: 1fr; }
-        .chatgpt-steps { gap: 5px; }
-        .chatgpt-steps li { flex-direction: column; text-align: center; padding: 10px 4px; font-size: 12px; }
-        .chatgpt-wizard .button-row > * { flex: 1 1 auto; justify-content: center; }
-      }
-      @media (prefers-reduced-motion: reduce) { .chatgpt-wizard * { scroll-behavior: auto !important; } }
       @media (max-width: 1120px) {
         .hero, .chart-grid, .shell-grid {
           grid-template-columns: 1fr;
@@ -1639,6 +1603,7 @@ export function renderAppShell(input: {
       </section>
 
       <section id="admin-dashboard" class="hidden">
+        ${codexAccountHtml}
         <div class="role-banner panel">
           <div>
             <strong id="admin-banner-title">Operator console active</strong>
@@ -1654,7 +1619,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">Backend Routing</h3>
-              <p class="section-copy">Requests stay on official Gemini API keys. Fallback rotates to the next usable key when a request hits a fallback-eligible upstream failure.</p>
+              <p class="section-copy">Gemini API, NVIDIA e Codex: instradamento per modello e autorizzazioni dell’app. Su quota Codex esaurita: fallback alla catena Gemini configurata.</p>
             </div>
             <div class="section-head-actions">
               <div id="backend-pills" class="meta-row"></div>
@@ -1825,143 +1790,6 @@ export function renderAppShell(input: {
         </section>
 
 
-        <section class="panel section" id="chatgpt-gateway-section">
-          <div class="section-head">
-            <div>
-              <h3 class="section-title">${svgIcon('plug')} ChatGPT MCP Gateway</h3>
-              <p class="section-copy">Collega una chat dedicata con una procedura guidata. GemRouter prepara il necessario; l'autorizzazione e l'avvio della chat restano sotto il tuo controllo.</p>
-            </div>
-            <div class="section-head-actions">
-              <button type="button" class="secondary section-toggle" data-section-toggle="chatgpt-gateway-body" aria-controls="chatgpt-gateway-body" aria-expanded="false">
-                <span class="section-toggle-label">Expand</span>
-                <span class="section-toggle-arrow" aria-hidden="true">▸</span>
-              </button>
-            </div>
-          </div>
-          <div id="chatgpt-gateway-body" class="section-body hidden">
-            <div id="chatgpt-gateway-meta" class="chip-row"></div>
-            <div id="chatgpt-gateway-status" class="status" role="status" aria-live="polite">Loading gateway state…</div>
-            ${personalControlHtml}
-            <div id="chatgpt-wizard" class="chatgpt-wizard" lang="it" aria-labelledby="chatgpt-wizard-title">
-              <h4 id="chatgpt-wizard-title">La tua chat, collegata a GemRouter</h4>
-              <p class="section-copy">Tre passaggi, nessuna chiave OpenAI da incollare. Serve un account ChatGPT che consenta le connessioni MCP in modalità sviluppatore.</p>
-              <div id="chatgpt-wizard-disabled" class="chatgpt-note hidden" style="margin-top:18px">
-                <strong>Il gateway deve essere attivato sul server</strong>
-                <p>Chiedi al gestore di abilitare il gateway e impostare l'origine HTTPS <span class="mono">https://gemrouter.example.com</span>. Questa pagina non cambia l'ambiente né riavvia la produzione. Dopo l'attivazione autorizzata, aggiorna la pagina.</p>
-                <details style="margin-top:12px"><summary>Indicazioni per il gestore</summary><p class="mono">GEMROUTER_CHATGPT_ENABLED=true<br>GEMROUTER_CHATGPT_PUBLIC_BASE_URL=https://gemrouter.example.com</p></details>
-              </div>
-              <div id="chatgpt-wizard-enabled">
-                <ol class="chatgpt-steps" aria-label="Avanzamento collegamento">
-                  <li data-chatgpt-step="1" aria-current="step"><span class="chatgpt-step-number">1</span>Prepara</li>
-                  <li data-chatgpt-step="2"><span class="chatgpt-step-number">2</span>Autorizza</li>
-                  <li data-chatgpt-step="3"><span class="chatgpt-step-number">3</span>Avvia la chat</li>
-                </ol>
-                <div id="chatgpt-wizard-resume-row" class="hidden" style="margin-bottom:18px"><label>Riprendi un collegamento<select id="chatgpt-wizard-resume"><option value="">Nuovo collegamento</option></select></label></div>
-                <div id="chatgpt-wizard-panel-1" class="chatgpt-wizard-grid">
-                  <form id="chatgpt-wizard-form">
-                    <label>Nome della chat<input name="label" required maxlength="100" value="La mia chat ChatGPT" autocomplete="off" /></label>
-                    <label>Nome da usare nella tua app<input name="alias" required maxlength="80" pattern="[a-z0-9](?:[a-z0-9._]|-)*" value="chatgpt-personale" aria-describedby="chatgpt-alias-help" /></label>
-                    <p id="chatgpt-alias-help" class="footer-note">Un nome semplice, senza spazi. La tua app lo userà nel campo modello.</p>
-                    <label style="margin-top:14px">App GemRouter autorizzata<select name="appId" required><option value="">Scegli un'app</option></select></label>
-                    <p id="chatgpt-wizard-app-help" class="footer-note">Scegli una sola app dello stesso ambito di fiducia. Puoi gestire le app nell'area riservata.</p>
-                    <label class="chatgpt-consent" style="margin-top:16px"><input name="consent" type="checkbox" required /><span>Autorizzo questa app a usare il nuovo modello e a inviare i suoi messaggi alla chat ChatGPT dedicata. La conversazione conserva il contesto dei messaggi precedenti.</span></label>
-                    <div class="button-row"><button type="submit" class="primary">Prepara collegamento</button></div>
-                  </form>
-                  <aside class="chatgpt-note"><strong>Prima di iniziare</strong><p>Usa una conversazione dedicata a questo collegamento. Non mescolare richieste di persone o progetti che non devono condividere il contesto.</p><p style="margin-top:12px">Questa è la procedura manuale: autorizzazione e avvio restano sotto il tuo controllo. Il wake opzionale della chat personale si configura nel pannello dedicato sopra e richiede verifiche effettive.</p><p style="margin-top:12px">Il modello scelto in ChatGPT non è verificabile dal gateway. I consumi token non sono disponibili e le risposte in streaming arrivano dopo l'elaborazione.</p></aside>
-                </div>
-                <div id="chatgpt-wizard-panel-2" class="hidden">
-                  <h4 tabindex="-1" id="chatgpt-wizard-heading-2">Autorizza il collegamento in ChatGPT</h4>
-                  <div class="chatgpt-wizard-grid">
-                    <div>
-                      <p class="section-copy"><strong>Compila la finestra “New Plugin” dall’alto verso il basso in questo ordine:</strong></p>
-                      <ol class="chatgpt-instructions">
-                        <li>Prima, in <strong>Settings → Security and login</strong>, attiva <strong>Developer mode</strong>. Poi apri <strong>Plugins</strong> e premi <strong>+</strong>.</li>
-                        <li><strong>Icon (optional):</strong> puoi lasciarla vuota o scegliere un’icona; non modifica il collegamento.</li>
-                        <li><strong>Name:</strong> incolla il nome suggerito mostrato a destra.</li>
-                        <li><strong>Description (optional):</strong> incolla la descrizione suggerita mostrata a destra.</li>
-                        <li><strong>Connection:</strong> seleziona <strong>Server URL</strong>, non Tunnel, e incolla l’indirizzo MCP mostrato a destra.</li>
-                        <li><strong>Authentication:</strong> seleziona <strong>OAuth</strong>.</li>
-                        <li>Apri <strong>Advanced OAuth settings → Client registration</strong>. In <strong>Registration method</strong> seleziona <strong>Dynamic Client Registration (DCR)</strong>. L’avviso arancione che CIMD non è disponibile è previsto per questa configurazione DCR.</li>
-                        <li>In <strong>Scopes → Default scopes</strong> lascia selezionati <strong>mcp:tools</strong> e <strong>offline_access</strong>. Lascia vuoto <strong>Base scopes</strong>.</li>
-                        <li>Seleziona <strong>I understand and want to continue</strong>, quindi premi <strong>Create</strong>.</li>
-                        <li>Quando si apre GemRouter, accedi se richiesto, verifica nome e worker e approva soltanto questo collegamento.</li>
-                      </ol>
-                      <p class="footer-note">Non inserire Client ID, Client secret, callback URL o scope aggiuntivi: ChatGPT li ricava automaticamente dalla discovery OAuth di GemRouter. Se la modalità sviluppatore non è disponibile, chiedi al gestore del workspace di abilitarla.</p>
-                      <div class="button-row"><a class="wizard-link" href="https://chatgpt.com/plugins" target="_blank" rel="noopener noreferrer">Apri ChatGPT ↗</a><a href="https://developers.openai.com/plugins/deploy/connect-chatgpt" target="_blank" rel="noopener noreferrer">Guida ufficiale</a></div>
-                    </div>
-                    <div class="chatgpt-note">
-                      <label>Name<input id="chatgpt-wizard-plugin-name" readonly /></label>
-                      <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-copy-name">Copia nome</button></div>
-                      <label style="margin-top:14px">Description<textarea id="chatgpt-wizard-plugin-description" readonly rows="2" class="compact-textarea"></textarea></label>
-                      <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-copy-description">Copia descrizione</button></div>
-                      <label style="margin-top:14px">Indirizzo del collegamento MCP<input id="chatgpt-wizard-url" readonly aria-describedby="chatgpt-wizard-expiry" /></label>
-                      <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-copy-url">Copia indirizzo</button></div>
-                      <p id="chatgpt-wizard-expiry" class="footer-note" style="margin-top:14px"></p>
-                      <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-pair">Apri finestra di collegamento</button><button type="button" class="secondary hidden" id="chatgpt-wizard-activate">Autorizza l'app e abilita il worker</button></div>
-                      <div id="chatgpt-wizard-authorization" class="chatgpt-live" role="status" aria-live="polite"></div>
-                    </div>
-                  </div>
-                  <div class="button-row"><button type="button" class="primary" id="chatgpt-wizard-next" disabled>Continua all'avvio della chat</button><button type="button" class="secondary" data-chatgpt-wizard-new>Nuovo collegamento</button></div>
-                </div>
-                <div id="chatgpt-wizard-panel-3" class="hidden">
-                  <h4 tabindex="-1" id="chatgpt-wizard-heading-3">Avvia la chat dedicata</h4>
-                  <p>Apri una nuova conversazione in ChatGPT, scegli il modello e aggiungi la connessione dal menu strumenti. Incolla le istruzioni qui sotto e inviale. Approva le chiamate agli strumenti se ChatGPT lo richiede.</p>
-                  <label style="margin-top:16px">Istruzioni pronte da incollare<textarea id="chatgpt-wizard-prompt" readonly rows="8" class="mono-box" placeholder="Le istruzioni compariranno qui."></textarea></label>
-                  <div class="button-row"><button type="button" class="primary" id="chatgpt-wizard-copy-prompt">Copia istruzioni</button><a class="wizard-link" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">Apri la chat ↗</a><button type="button" class="secondary" id="chatgpt-wizard-prompt-refresh">Rigenera istruzioni</button></div>
-                  <div id="chatgpt-wizard-contact" class="chatgpt-live" role="status" aria-live="polite"></div>
-                  <p id="chatgpt-wizard-ready" class="footer-note"></p>
-                  <p class="footer-note">Il contatto MCP non verifica l'identità di ChatGPT o il modello selezionato. Una verifica end-to-end richiede una richiesta reale dalla tua app. Se la chat si ferma, torna alla stessa conversazione e chiedile di continuare.</p>
-                  <div class="button-row"><button type="button" class="secondary" id="chatgpt-wizard-back">Rivedi autorizzazione</button><button type="button" class="secondary" data-chatgpt-wizard-new>Nuovo collegamento</button></div>
-                </div>
-                <div id="chatgpt-wizard-status" class="status" role="status" aria-live="polite" style="margin-top:16px"></div>
-              </div>
-            </div>
-            <details id="chatgpt-advanced" class="chatgpt-advanced"><summary>Gestione avanzata · worker, autorizzazioni e diagnostica</summary>
-            <div class="shell-grid" style="margin-top:16px">
-              <form id="chatgpt-worker-form">
-                <input type="hidden" name="editingId" />
-                <label>Worker ID<input name="id" required placeholder="research" /></label>
-                <label>Label<input name="label" required placeholder="Research chat" /></label>
-                <label>Public aliases (comma separated)<input name="publicModelIds" required placeholder="chatgpt-research" /></label>
-                <label>Trust-domain label<input name="domainLabel" placeholder="Optional, for example personal-market-analysis" /></label>
-                <label>Declared ChatGPT model<input name="declaredModel" required placeholder="Operator-selected model" /></label>
-                <label>Declared reasoning mode<input name="declaredReasoning" placeholder="Optional operator declaration" /></label>
-                <label>Allowed apps<select name="allowedAppIds" multiple size="5"></select></label>
-                <div class="shell-grid">
-                  <label>Request timeout ms<input name="timeoutMs" type="number" min="1000" value="300000" /></label>
-                  <label>Queue timeout ms<input name="queueTimeoutMs" type="number" min="100" value="60000" /></label>
-                </div>
-                <div class="shell-grid">
-                  <label>Max queued<input name="maxQueuedRequests" type="number" min="1" max="64" value="4" /></label>
-                  <label>Context epoch<input name="contextEpoch" type="number" min="1" value="1" /></label>
-                </div>
-                <label>Instruction version<input name="instructionVersion" type="number" min="1" value="1" /></label>
-                <label class="model-picker-option"><div><input name="enabled" type="checkbox" /> <span class="model-picker-title">Enable worker</span></div></label>
-                <div class="button-row">
-                  <button type="submit" class="primary">Save worker</button>
-                  <button type="button" class="secondary" id="chatgpt-worker-reset">New worker</button>
-                </div>
-              </form>
-              <div>
-                <label>Pairing / worker prompt
-                  <textarea id="chatgpt-worker-prompt" class="mono-box" rows="16" readonly placeholder="Open pairing on a worker to generate its MCP URL and copyable operational prompt."></textarea>
-                </label>
-                <div class="button-row" style="margin-top:10px"><button type="button" class="secondary" id="chatgpt-copy-prompt">Copy prompt</button></div>
-                <p class="footer-note">Pairing creates a short OAuth registration window. It does not enable the worker or grant inference apps. Each worker must use its own dedicated ChatGPT conversation.</p>
-              </div>
-            </div>
-            <div class="table-wrap" style="margin-top:18px">
-              <table class="table apps-table"><thead><tr><th>Worker / aliases</th><th>State</th><th>Queue</th><th>Last contact</th><th>Actions</th></tr></thead><tbody id="chatgpt-workers-table"></tbody></table>
-            </div>
-            <h4 class="model-picker-title" style="margin-top:18px">OAuth grants</h4>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Worker</th><th>Client / principal</th><th>Created</th><th>State</th><th>Action</th></tr></thead><tbody id="chatgpt-grants-table"></tbody></table></div>
-            <h4 class="model-picker-title" style="margin-top:18px">Pending OAuth authorization requests</h4>
-            <div class="table-wrap"><table class="table"><thead><tr><th>Worker / client</th><th>Resource / redirect</th><th>Scopes</th><th>Expires</th></tr></thead><tbody id="chatgpt-authorizations-table"></tbody></table></div>
-            </details>
-          </div>
-        </section>
-
-
         <section class="panel section">
           <div class="section-head">
             <div>
@@ -2088,6 +1916,13 @@ export function renderAppShell(input: {
                   Session namespace
                   <input type="text" name="sessionNamespace" placeholder="client-app" />
                 </label>
+                <fieldset>
+                  <legend>Codex per questa app</legend>
+                  <label class="model-access-option"><input type="checkbox" name="codexEnabled" /><span>Abilita l’uso della quota del mio account Codex</span></label>
+                  <label>Thinking predefinito<select name="codexReasoningEffort"><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option><option>ultra</option></select></label>
+                  <label class="model-access-option"><input type="checkbox" name="codexFallbackEnabled" checked /><span>Quota esaurita → fallback Gemini autorizzato</span></label>
+                  <p class="footer-note">Autorizza anche i modelli GPT nell’elenco sopra. La richiesta può scegliere il thinking con reasoning_effort; i livelli ammessi sono nel pannello Codex. Autorizza almeno un Gemini per il fallback.</p>
+                </fieldset>
                 <label>
                   <span class="field-inline">Custom API key <span class="field-help" title="Optional. Empty = auto-generate. Ending in '_' (e.g. esempio_) = brand prefix, a random suffix is appended. A full value is stored verbatim.">?</span></span>
                   <input type="text" name="apiKey" placeholder="(optional) esempio_ = prefix · or a full key" autocomplete="off" />
@@ -2174,68 +2009,24 @@ export function renderAppShell(input: {
       <footer class="panel app-footer">
         <div class="footer-grid">
           <div class="footer-brand">
-            <div class="footer-brand-top">
-              <svg class="footer-brand-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M20 4L6 36H14L20 22L26 36H34L20 4Z" fill="currentColor" />
-                <path d="M20 12V22" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-              </svg>
-              <span>AIRewardrop</span>
-            </div>
-            <p class="footer-brand-copy">Autonomous agent infrastructure for crypto.</p>
-            <a class="footer-blog-link" href="https://project.example.com/blog" target="_blank" rel="noreferrer">Our Blog →</a>
+            <div class="footer-brand-top"><span>GemRouterFE</span></div>
+            <p class="footer-brand-copy">Gemini, NVIDIA e Codex. Un endpoint, autorizzazioni per app.</p>
           </div>
           <div class="footer-columns">
             <div class="footer-column">
-              <h4>Navigate</h4>
-              <a href="https://project.example.com/products" target="_blank" rel="noreferrer">Products</a>
-              <a href="https://project.example.com/agents" target="_blank" rel="noreferrer">Agents</a>
-              <a href="https://project.example.com/roadmap" target="_blank" rel="noreferrer">Roadmap</a>
-              <a href="https://project.example.com/clients" target="_blank" rel="noreferrer">Clients</a>
+              <h4>Console</h4>
+              <a href="/">Dashboard</a>
+              <a href="/admin">Area riservata</a>
             </div>
             <div class="footer-column">
-              <h4>Resources</h4>
-              <a href="https://project.example.com/commands" target="_blank" rel="noreferrer">User Manual</a>
-              <a href="https://project.example.com/tokenomics" target="_blank" rel="noreferrer">Tokenomics</a>
-              <a href="https://project.example.com/api-plugins" target="_blank" rel="noreferrer">API &amp; Plugins</a>
-              <a href="https://project.example.com/faq" target="_blank" rel="noreferrer">FAQ</a>
-            </div>
-            <div class="footer-column">
-              <h4>Community</h4>
-              <a href="https://community.example.com" target="_blank" rel="noreferrer">Telegram Channel</a>
-              <a href="https://community.example.com" target="_blank" rel="noreferrer">Telegram Community</a>
-              <a href="https://community.example.com" target="_blank" rel="noreferrer">Discord</a>
-            </div>
-            <div class="footer-column">
-              <h4>Legal</h4>
-              <a href="https://project.example.com/legal" target="_blank" rel="noreferrer">Terms of Service</a>
-              <a href="https://project.example.com/legal" target="_blank" rel="noreferrer">Privacy Policy</a>
-              <a href="https://project.example.com/legal" target="_blank" rel="noreferrer">Cookie Policy</a>
+              <h4>Progetto</h4>
+              <a href="https://github.com/0xfunboy/GemRouterFE" target="_blank" rel="noopener noreferrer">Codice sorgente</a>
+              <a href="https://github.com/0xfunboy/GemRouterFE/tree/main/docs" target="_blank" rel="noopener noreferrer">Documentazione</a>
+              <a href="https://github.com/0xfunboy/GemRouterFE/blob/main/LICENSING.md" target="_blank" rel="noopener noreferrer">Licenza</a>
             </div>
           </div>
         </div>
-        <div class="footer-bottom">
-          <div class="footer-legal">
-            <div>© 2025 AIRewardrop. All rights reserved.</div>
-            <div>Disclaimer: Not financial advice. Always do your own research.</div>
-          </div>
-          <div class="footer-socials">
-            <a class="footer-social-link" href="https://community.example.com" target="_blank" rel="noreferrer" aria-label="X / Twitter">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-              </svg>
-            </a>
-            <a class="footer-social-link" href="https://community.example.com" target="_blank" rel="noreferrer" aria-label="Telegram">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0zm5.043 7.924c-.234-.94-.83-1.21-1.42.21L11.79 12.2l-3.26-1.026c-1.154-.384-1.153-1.144.24-1.523l8.693-2.9c.9-.3 1.623.192 1.348 1.487l-1.9 8.54c-.23 1.053-1.002 1.3-1.802.82l-3.514-2.58-1.7 1.64c-.19.19-.35.35-.69.35-.46 0-.62-.16-.69-.77l.25-2.22 5.02-4.52c.46-.43-.1-.68-.69-.26l-6.3 3.97-3.34-1.04c-1.02-.31-1.05-.98.24-1.42l1.33-.45z" />
-              </svg>
-            </a>
-            <a class="footer-social-link" href="https://community.example.com" target="_blank" rel="noreferrer" aria-label="Discord">
-              <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <path d="M20.317 4.369A19.791 19.791 0 0016.556 3c-.215.39-.463.917-.636 1.333a18.626 18.626 0 00-3.848 0A12.64 12.64 0 0011.436 3a19.736 19.736 0 00-3.762 1.385c-2.381 3.49-3.025 6.892-2.701 10.24a19.903 19.903 0 003.996 2.02c.33-.452.624-.934.873-1.442a12.815 12.815 0 001.696.136c.6.021 1.2-.02 1.794-.123.253.5.546.98.872 1.432a19.758 19.758 0 004.003-2.03c.332-3.348-.321-6.75-2.703-10.239zM9.845 14.9c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.636 1.606-1.43 1.606zm4.31 0c-.785 0-1.43-.72-1.43-1.606 0-.886.636-1.606 1.43-1.606.803 0 1.439.73 1.43 1.606 0 .886-.627 1.606-1.43 1.606z" />
-              </svg>
-            </a>
-          </div>
-        </div>
+        <div class="footer-bottom"><div class="footer-legal">© 2025 AIRewardrop. All rights reserved.</div></div>
       </footer>
       <div id="image-lightbox" class="image-lightbox hidden" aria-hidden="true">
         <img id="image-lightbox-media" src="" alt="Expanded generated image" />
@@ -2280,6 +2071,7 @@ export function renderAppShell(input: {
         adminStats: null,
         compatibility: null,
         authenticated: false,
+        csrfToken: '',
         interactionLimit: 10,
         interactionAppFilter: '',
         modelCatalog: [],
@@ -2288,8 +2080,6 @@ export function renderAppShell(input: {
         username: '',
         publicSummary: null,
         publicRefreshInFlight: false,
-        csrfToken: '',
-        chatgpt: null,
       };
       const PUBLIC_REFRESH_MS = 5000;
       const PROJECT_QUOTA_REFRESH_MS = 30000;
@@ -2365,52 +2155,9 @@ export function renderAppShell(input: {
       const allowedModelsAll = document.getElementById('allowed-models-all');
       const allowedModelsSelectAll = document.getElementById('allowed-models-select-all');
       const allowedModelsClear = document.getElementById('allowed-models-clear');
-      const chatGptSection = document.getElementById('chatgpt-gateway-section');
-      const chatGptMeta = document.getElementById('chatgpt-gateway-meta');
-      const chatGptStatus = document.getElementById('chatgpt-gateway-status');
-      const chatGptWorkerForm = document.getElementById('chatgpt-worker-form');
-      const chatGptWorkerReset = document.getElementById('chatgpt-worker-reset');
-      const chatGptWorkerPrompt = document.getElementById('chatgpt-worker-prompt');
-      const chatGptCopyPrompt = document.getElementById('chatgpt-copy-prompt');
-      const chatGptWorkersTable = document.getElementById('chatgpt-workers-table');
-      const chatGptGrantsTable = document.getElementById('chatgpt-grants-table');
-      const chatGptAuthorizationsTable = document.getElementById('chatgpt-authorizations-table');
-      const chatGptWizard = document.getElementById('chatgpt-wizard');
-      const chatGptWizardForm = document.getElementById('chatgpt-wizard-form');
-      const chatGptWizardStatus = document.getElementById('chatgpt-wizard-status');
-      const chatGptWizardResume = document.getElementById('chatgpt-wizard-resume');
-      const chatGptWizardPluginName = document.getElementById('chatgpt-wizard-plugin-name');
-      const chatGptWizardPluginDescription = document.getElementById('chatgpt-wizard-plugin-description');
-      const chatGptWizardUrl = document.getElementById('chatgpt-wizard-url');
-      const chatGptWizardPrompt = document.getElementById('chatgpt-wizard-prompt');
-      const chatGptWizardState = { workerId: '', step: 1, pairingExpiresAt: '', busy: false, loadedSelection: false };
-
-      // Only a same-origin, exact OAuth authorization path may continue after login.
-      // Never persist authorization URLs, credentials, prompts, or tokens in storage.
-      function chatGptAuthorizationContinuation(search, origin) {
-        const value = new URLSearchParams(search).get('chatgpt_authorize');
-        if (!value || !value.startsWith('/oauth/chatgpt/authorize?')) return null;
-        try {
-          const target = new URL(value, origin);
-          return target.origin === origin && target.pathname === '/oauth/chatgpt/authorize' && !target.hash
-            ? target.pathname + target.search : null;
-        } catch { return null; }
-      }
-      let pendingChatGptAuthorization = chatGptAuthorizationContinuation(window.location.search, window.location.origin);
-      if (pendingChatGptAuthorization) {
-        const cleanUrl = new URL(window.location.href);
-        cleanUrl.searchParams.delete('chatgpt_authorize');
-        window.history.replaceState(null, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
-        topMenu.classList.remove('hidden');
-        loginForm.elements.username.focus();
-      }
 
       function fmtNumber(value) {
         return new Intl.NumberFormat().format(value || 0);
-      }
-
-      function fmtUsageNumber(value) {
-        return value === null || value === undefined ? 'unknown' : new Intl.NumberFormat().format(value);
       }
 
       function escapeHtml(value) {
@@ -2594,15 +2341,14 @@ export function renderAppShell(input: {
       });
 
       async function request(url, options = {}) {
-        const headers = {
-          ...(options.body !== undefined ? { 'content-type': 'application/json' } : {}),
-          ...(state.csrfToken ? { 'x-gemrouter-csrf': state.csrfToken } : {}),
-          ...(options.headers || {}),
-        };
         const response = await fetch(url, {
           credentials: 'include',
           ...options,
-          headers,
+          headers: {
+            'content-type': 'application/json',
+            ...(options.headers || {}),
+            ...(state.csrfToken && !['GET', 'HEAD'].includes(options.method || 'GET') ? { 'x-gemrouter-csrf': state.csrfToken } : {}),
+          },
         });
         const contentType = response.headers.get('content-type') || '';
         const body = contentType.includes('application/json') ? await response.json() : await response.text();
@@ -2614,390 +2360,7 @@ export function renderAppShell(input: {
         }
         return body;
       }
-
-      // ---- Native ChatGPT MCP reverse-RPC gateway (admin) ----
-      ${personalControlScript}
-      function setChatGptWizardStatus(message, error) {
-        chatGptWizardStatus.textContent = message || '';
-        chatGptWizardStatus.style.color = error ? 'var(--bad)' : 'var(--muted)';
-      }
-
-      function setChatGptWizardStep(step, focus) {
-        chatGptWizardState.step = step;
-        for (let index = 1; index <= 3; index += 1) {
-          document.getElementById('chatgpt-wizard-panel-' + index).classList.toggle('hidden', index !== step);
-          const item = chatGptWizard.querySelector('[data-chatgpt-step="' + index + '"]');
-          if (index === step) item.setAttribute('aria-current', 'step');
-          else item.removeAttribute('aria-current');
-        }
-        if (focus && step > 1) document.getElementById('chatgpt-wizard-heading-' + step).focus();
-      }
-
-      function selectedChatGptWizardWorker() {
-        return (state.chatgpt && state.chatgpt.workers || []).find(function(worker) { return worker.id === chatGptWizardState.workerId; });
-      }
-
-      function selectChatGptWizardWorker(workerId) {
-        chatGptWizardState.workerId = workerId;
-        chatGptWizardState.pairingExpiresAt = '';
-        chatGptWizardPluginName.value = '';
-        chatGptWizardPluginDescription.value = '';
-        chatGptWizardUrl.value = '';
-        chatGptWizardPrompt.value = '';
-        try {
-          if (workerId) sessionStorage.setItem('gemrouter-chatgpt-worker', workerId);
-          else sessionStorage.removeItem('gemrouter-chatgpt-worker');
-        } catch { /* The wizard still works when browser storage is unavailable. */ }
-        chatGptWizardResume.value = workerId;
-        setChatGptWizardStep(workerId ? 2 : 1, Boolean(workerId));
-        setChatGptWizardStatus('', false);
-        renderChatGptWizard();
-      }
-
-      function renderChatGptWizard() {
-        if (!chatGptWizard) return;
-        const data = state.chatgpt || {};
-        const enabled = data.enabled === true;
-        document.getElementById('chatgpt-wizard-disabled').classList.toggle('hidden', enabled);
-        document.getElementById('chatgpt-wizard-enabled').classList.toggle('hidden', !enabled);
-        if (!enabled) return;
-        const workers = data.workers || [];
-        if (!chatGptWizardState.loadedSelection) {
-          chatGptWizardState.loadedSelection = true;
-          try {
-            const stored = sessionStorage.getItem('gemrouter-chatgpt-worker');
-            if (workers.some(function(worker) { return worker.id === stored; })) {
-              chatGptWizardState.workerId = stored;
-              setChatGptWizardStep(2, false);
-            }
-          } catch { /* No storage required. */ }
-        }
-        const currentOptions = workers.map(function(worker) { return '<option value="' + escapeHtml(worker.id) + '">' + escapeHtml(worker.label + ' · ' + worker.publicModelIds.join(', ')) + '</option>'; }).join('');
-        const desiredOptions = '<option value="">Nuovo collegamento</option>' + currentOptions;
-        if (chatGptWizardResume.innerHTML !== desiredOptions) chatGptWizardResume.innerHTML = desiredOptions;
-        chatGptWizardResume.value = chatGptWizardState.workerId;
-        document.getElementById('chatgpt-wizard-resume-row').classList.toggle('hidden', workers.length === 0);
-        const appSelect = chatGptWizardForm.elements.appId;
-        const selection = appSelect.value;
-        const apps = (state.apps || []).filter(function(app) { return !app.revokedAt; });
-        const appOptions = '<option value="">Scegli un’app</option>' + apps.map(function(app) { return '<option value="' + escapeHtml(app.id) + '">' + escapeHtml(app.name || app.id) + '</option>'; }).join('');
-        if (appSelect.innerHTML !== appOptions) { appSelect.innerHTML = appOptions; appSelect.value = selection; }
-        document.getElementById('chatgpt-wizard-app-help').textContent = apps.length ? 'Scegli una sola app dello stesso ambito di fiducia. Le autorizzazioni esistenti delle altre app restano invariate.' : 'Non ci sono app attive. Crea prima una API app nell’area riservata, poi torna qui.';
-        chatGptWizard.setAttribute('aria-busy', String(chatGptWizardState.busy));
-        chatGptWizard.querySelectorAll('button, select, input').forEach(function(control) { control.disabled = chatGptWizardState.busy; });
-        chatGptWizardForm.querySelector('button[type="submit"]').disabled = chatGptWizardState.busy || apps.length === 0;
-        const worker = selectedChatGptWizardWorker();
-        if (!worker) {
-          if (chatGptWizardState.workerId) selectChatGptWizardWorker('');
-          return;
-        }
-        chatGptWizardUrl.value = worker.mcpUrl || String(data.publicBaseUrl || '').replace(/\\/$/, '') + '/mcp/chatgpt/' + encodeURIComponent(worker.id);
-        chatGptWizardPluginName.value = worker.label || worker.id;
-        chatGptWizardPluginDescription.value = 'Collegamento MCP GemRouter dedicato a ' + (worker.label || worker.id) + ' per il modello ' + (worker.publicModelIds || []).join(', ') + '.';
-        autosizeTextarea(chatGptWizardPluginDescription);
-        const granted = (data.grants || []).some(function(grant) { return grant.workerId === worker.id && !grant.revokedAt; });
-        const pending = (data.authorizationRequests || []).some(function(item) { return item.workerId === worker.id && Date.parse(item.expiresAt) > Date.now(); });
-        const authorization = document.getElementById('chatgpt-wizard-authorization');
-        authorization.classList.toggle('is-connected', granted);
-        authorization.innerHTML = granted
-          ? '<div><strong>Autorizzazione ricevuta</strong><p>Il server ha registrato un consenso valido. Ora avvia la chat dedicata.</p></div>'
-          : '<div><strong>' + (pending ? 'Conferma il consenso in GemRouter' : 'In attesa dell’autorizzazione') + '</strong><p>Questa verifica si aggiorna automaticamente; aprire ChatGPT non significa essere già collegati.</p></div>';
-        const expiry = Date.parse(chatGptWizardState.pairingExpiresAt);
-        const expired = Number.isFinite(expiry) && expiry <= Date.now();
-        document.getElementById('chatgpt-wizard-expiry').textContent = granted ? 'Autorizzazione presente: non serve aprire una nuova finestra.' : expired ? 'La finestra è scaduta. Riaprila e ripeti la connessione in ChatGPT.' : Number.isFinite(expiry) ? 'Completa la connessione entro ' + new Date(expiry).toLocaleTimeString() + '. Se scade, puoi riaprirla qui.' : 'Apri una finestra temporanea prima di aggiungere la connessione in ChatGPT. Se hai ricaricato la pagina, puoi riaprirla.';
-        const pairButton = document.getElementById('chatgpt-wizard-pair');
-        pairButton.textContent = expired ? 'Riapri finestra scaduta' : granted ? 'Collega di nuovo' : 'Apri finestra di collegamento';
-        pairButton.disabled = chatGptWizardState.busy || !worker.enabled;
-        document.getElementById('chatgpt-wizard-activate').classList.toggle('hidden', worker.enabled);
-        document.getElementById('chatgpt-wizard-next').disabled = chatGptWizardState.busy || !granted || !worker.enabled;
-        const status = worker.status || {};
-        const active = ['polling', 'processing_claim'].includes(status.state);
-        const contacted = active || status.state === 'contact_recent';
-        const contact = document.getElementById('chatgpt-wizard-contact');
-        const titles = { polling: 'Il worker sta attendendo richieste', processing_claim: 'Il worker sta elaborando una richiesta', contact_recent: 'Contatto MCP recente', stale: 'La chat non sta più rispondendo', released: 'Collegamento rilasciato', draining: 'Worker in chiusura', disabled: 'Worker disabilitato', degraded: 'Serve verificare il worker' };
-        contact.classList.toggle('is-connected', active);
-        contact.innerHTML = '<div><strong>' + escapeHtml(titles[status.state] || 'In attesa che la chat chiami il gateway') + '</strong><p>' + escapeHtml(contacted ? 'Ultimo contatto: ' + formatTimestamp(status.lastExchangeAt) + '. ' + (active ? 'Stato rilevato dal server.' : 'Un contatto recente non garantisce che il worker sia ancora in ascolto.') : 'Invia le istruzioni in ChatGPT e conferma gli strumenti. Se la chat si è fermata, chiedile di continuare nella stessa conversazione.') + '</p></div>';
-        document.getElementById('chatgpt-wizard-ready').textContent = 'Modello da usare nella tua app: ' + worker.publicModelIds.join(', ') + '. Ultima risposta completata dal gateway: ' + formatTimestamp(status.lastSuccessfulCompletionAt) + '. Stato aggiornato automaticamente.';
-      }
-
-      async function chatGptWizardAction(action) {
-        if (chatGptWizardState.busy) return;
-        chatGptWizardState.busy = true;
-        setChatGptWizardStatus('Operazione in corso…', false);
-        renderChatGptWizard();
-        try { await action(); }
-        catch (error) { setChatGptWizardStatus(error.message, true); }
-        finally {
-          chatGptWizardState.busy = false;
-          if (chatGptWizardStatus.textContent === 'Operazione in corso…') setChatGptWizardStatus('', false);
-          renderChatGptWizard();
-        }
-      }
-
-      async function openChatGptWizardPairing() {
-        const pairing = await request('/admin/chatgpt/workers/' + encodeURIComponent(chatGptWizardState.workerId) + '/pairing', { method: 'POST', body: '{}' });
-        chatGptWizardState.pairingExpiresAt = pairing.expiresAt;
-        chatGptWizardPrompt.value = pairing.workerPrompt;
-        chatGptWizardUrl.value = pairing.mcpUrl;
-        setChatGptWizardStatus('Indirizzo pronto. Completa ora i passaggi in ChatGPT; qui verifichiamo l’autorizzazione automaticamente.', false);
-      }
-
-      async function loadChatGptWizardPrompt() {
-        const prompt = await request('/admin/chatgpt/workers/' + encodeURIComponent(chatGptWizardState.workerId) + '/prompt', { method: 'POST', body: '{}' });
-        chatGptWizardPrompt.value = prompt.workerPrompt;
-        setChatGptWizardStatus('Istruzioni pronte. Non è stata aperta una nuova registrazione OAuth.', false);
-      }
-
-      async function copyChatGptWizardField(field, message) {
-        if (!field.value) { setChatGptWizardStatus('Il contenuto non è ancora disponibile.', true); return; }
-        try { await navigator.clipboard.writeText(field.value); setChatGptWizardStatus(message, false); }
-        catch { field.focus(); field.select(); setChatGptWizardStatus('Copia automatica non disponibile: il testo è selezionato, usa Copia dal tuo dispositivo.', true); }
-      }
-
-      chatGptWizardForm.addEventListener('submit', function(event) {
-        event.preventDefault();
-        if (!chatGptWizardForm.reportValidity()) return;
-        const form = new FormData(chatGptWizardForm);
-        chatGptWizardAction(async function() {
-          const created = await request('/admin/chatgpt/onboarding', { method: 'POST', body: JSON.stringify({ label: form.get('label'), alias: form.get('alias'), appId: form.get('appId') }) });
-          await loadChatGptGateway(state.adminSummary);
-          selectChatGptWizardWorker(created.worker.id);
-          await request('/admin/chatgpt/workers/' + encodeURIComponent(created.worker.id) + '/activate', { method: 'POST', body: JSON.stringify({ appId: form.get('appId') }) });
-          await loadAdminSummary();
-          await openChatGptWizardPairing();
-          setChatGptWizardStep(2, true);
-        });
-      });
-      chatGptWizardResume.addEventListener('change', function() { selectChatGptWizardWorker(chatGptWizardResume.value); });
-      chatGptWizard.querySelectorAll('[data-chatgpt-wizard-new]').forEach(function(button) { button.addEventListener('click', function() { selectChatGptWizardWorker(''); }); });
-      document.getElementById('chatgpt-wizard-pair').addEventListener('click', function() {
-        const worker = selectedChatGptWizardWorker();
-        const hasGrant = (state.chatgpt && state.chatgpt.grants || []).some(function(grant) { return worker && grant.workerId === worker.id && !grant.revokedAt; });
-        if (hasGrant && !window.confirm('Un nuovo consenso sostituirà il collegamento corrente e interromperà il suo lavoro. Vuoi continuare?')) return;
-        chatGptWizardAction(openChatGptWizardPairing);
-      });
-      document.getElementById('chatgpt-wizard-activate').addEventListener('click', function() {
-        const worker = selectedChatGptWizardWorker();
-        const appId = worker && worker.allowedAppIds && worker.allowedAppIds[0];
-        if (!appId) { setChatGptWizardStatus('Seleziona un’app autorizzata nella gestione avanzata prima di abilitare questo worker.', true); return; }
-        const app = (state.apps || []).find(function(item) { return item.id === appId; });
-        if (!window.confirm('Autorizzare ' + (app && app.name || appId) + ' a usare ' + worker.publicModelIds.join(', ') + ' e inviare messaggi alla chat persistente?')) return;
-        chatGptWizardAction(async function() {
-          await request('/admin/chatgpt/workers/' + encodeURIComponent(worker.id) + '/activate', { method: 'POST', body: JSON.stringify({ appId: appId }) });
-          await loadAdminSummary();
-          setChatGptWizardStatus('App autorizzata e worker abilitato. Ora puoi aprire la finestra di collegamento.', false);
-        });
-      });
-      document.getElementById('chatgpt-wizard-next').addEventListener('click', function() { chatGptWizardAction(async function() { if (!chatGptWizardPrompt.value) await loadChatGptWizardPrompt(); setChatGptWizardStep(3, true); }); });
-      document.getElementById('chatgpt-wizard-back').addEventListener('click', function() { setChatGptWizardStep(2, true); });
-      document.getElementById('chatgpt-wizard-prompt-refresh').addEventListener('click', function() { chatGptWizardAction(loadChatGptWizardPrompt); });
-      document.getElementById('chatgpt-wizard-copy-name').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardPluginName, 'Nome copiato. Incollalo nel campo Name di ChatGPT.'); });
-      document.getElementById('chatgpt-wizard-copy-description').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardPluginDescription, 'Descrizione copiata. Incollala nel campo Description di ChatGPT.'); });
-      document.getElementById('chatgpt-wizard-copy-url').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardUrl, 'Indirizzo copiato. Incollalo nella connessione MCP in ChatGPT.'); });
-      document.getElementById('chatgpt-wizard-copy-prompt').addEventListener('click', function() { copyChatGptWizardField(chatGptWizardPrompt, 'Istruzioni copiate. Incollale nella conversazione ChatGPT dedicata.'); });
-
-      function setChatGptStatus(message, isError) {
-        if (!chatGptStatus) return;
-        chatGptStatus.textContent = message || '';
-        chatGptStatus.style.color = isError ? 'var(--bad)' : 'var(--muted)';
-      }
-
-      function fillChatGptAppOptions(selected) {
-        if (!chatGptWorkerForm) return;
-        const select = chatGptWorkerForm.elements.allowedAppIds;
-        const selectedSet = new Set(Array.isArray(selected) ? selected : []);
-        select.innerHTML = (state.apps || []).filter(function(app) { return !app.revokedAt; }).map(function(app) {
-          return '<option value="' + escapeHtml(app.id) + '"' + (selectedSet.has(app.id) ? ' selected' : '') + '>' + escapeHtml(app.name + ' (' + app.id + ')') + '</option>';
-        }).join('');
-      }
-
-      function resetChatGptWorkerForm(message) {
-        if (!chatGptWorkerForm) return;
-        chatGptWorkerForm.reset();
-        chatGptWorkerForm.elements.editingId.value = '';
-        chatGptWorkerForm.elements.id.disabled = false;
-        chatGptWorkerForm.elements.timeoutMs.value = '300000';
-        chatGptWorkerForm.elements.queueTimeoutMs.value = '60000';
-        chatGptWorkerForm.elements.maxQueuedRequests.value = '4';
-        chatGptWorkerForm.elements.contextEpoch.value = '1';
-        chatGptWorkerForm.elements.instructionVersion.value = '1';
-        fillChatGptAppOptions([]);
-        if (message) setChatGptStatus(message, false);
-      }
-
-      function populateChatGptWorkerForm(worker) {
-        if (!chatGptWorkerForm || !worker) return;
-        document.getElementById('chatgpt-advanced').open = true;
-        chatGptWorkerForm.elements.editingId.value = worker.id || '';
-        chatGptWorkerForm.elements.id.value = worker.id || '';
-        chatGptWorkerForm.elements.id.disabled = true;
-        chatGptWorkerForm.elements.label.value = worker.label || '';
-        chatGptWorkerForm.elements.publicModelIds.value = (worker.publicModelIds || []).join(', ');
-        chatGptWorkerForm.elements.domainLabel.value = worker.domainLabel || '';
-        chatGptWorkerForm.elements.declaredModel.value = worker.declaredModel || '';
-        chatGptWorkerForm.elements.declaredReasoning.value = worker.declaredReasoning || '';
-        chatGptWorkerForm.elements.timeoutMs.value = String(worker.timeoutMs || 300000);
-        chatGptWorkerForm.elements.queueTimeoutMs.value = String(worker.queueTimeoutMs || 60000);
-        chatGptWorkerForm.elements.maxQueuedRequests.value = String(worker.maxQueuedRequests || 4);
-        chatGptWorkerForm.elements.contextEpoch.value = String(worker.contextEpoch || 1);
-        chatGptWorkerForm.elements.instructionVersion.value = String(worker.instructionVersion || 1);
-        chatGptWorkerForm.elements.enabled.checked = worker.enabled === true;
-        fillChatGptAppOptions(worker.allowedAppIds || []);
-        chatGptWorkerForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-
-      function renderChatGptGateway(data) {
-        state.chatgpt = data || null;
-        if (chatGptWizardStatus.textContent.startsWith('Impossibile aggiornare lo stato del collegamento.')) setChatGptWizardStatus('', false);
-        renderChatGptWizard();
-        if (!chatGptMeta || !chatGptWorkersTable || !chatGptGrantsTable || !chatGptAuthorizationsTable) return;
-        if (!data || data.enabled !== true) {
-          chatGptMeta.innerHTML = '<span class="chip warn">Disabled by configuration</span>';
-          chatGptWorkersTable.innerHTML = '<tr><td colspan="5" class="muted">Set GEMROUTER_CHATGPT_ENABLED=true with an HTTPS public origin, then restart through the normal authorized operations workflow.</td></tr>';
-          chatGptGrantsTable.innerHTML = '<tr><td colspan="5" class="muted">No active gateway.</td></tr>';
-          chatGptAuthorizationsTable.innerHTML = '<tr><td colspan="4" class="muted">No active gateway.</td></tr>';
-          Array.from(chatGptWorkerForm ? chatGptWorkerForm.elements : []).forEach(function(control) { control.disabled = true; });
-          setChatGptStatus('The feature is off. No OAuth/MCP routes or runtime store are active.', false);
-          return;
-        }
-        Array.from(chatGptWorkerForm ? chatGptWorkerForm.elements : []).forEach(function(control) { control.disabled = false; });
-        chatGptMeta.innerHTML = [
-          '<span class="chip good">Enabled</span>',
-          '<span class="chip">Profile ' + escapeHtml(data.profile || 'compatibility') + '</span>',
-          '<span class="chip">Buffered stream</span>',
-          '<span class="chip">Usage unavailable</span>',
-          '<span class="chip">Persistent chat</span>',
-          '<span class="chip">Operator-declared model</span>',
-        ].join('');
-        const workers = Array.isArray(data.workers) ? data.workers : [];
-        chatGptWorkersTable.innerHTML = workers.map(function(worker) {
-          const status = worker.status || {};
-          const statusClass = ['polling', 'processing_claim', 'contact_recent'].includes(status.state) ? 'good' : (worker.enabled ? 'warn' : '');
-          return '<tr>' +
-            '<td data-label="Worker"><strong>' + escapeHtml(worker.label || worker.id) + '</strong><div class="footer-note mono">' + escapeHtml(worker.id) + '</div><div class="footer-note">Aliases: ' + escapeHtml((worker.publicModelIds || []).join(', ')) + '</div><div class="footer-note">Domain: ' + escapeHtml(worker.domainLabel || 'not declared') + '</div><div class="footer-note">Declared model: ' + escapeHtml(worker.declaredModel || 'not declared') + ' · reasoning: ' + escapeHtml(worker.declaredReasoning || 'not declared') + '</div><div class="footer-note">Model verification: unavailable (operator-declared) · context: persistent chat</div></td>' +
-            '<td data-label="State"><span class="chip ' + statusClass + '">' + escapeHtml(status.state || 'unknown') + '</span><div class="footer-note">generation ' + escapeHtml(String(worker.runGeneration || 0)) + ' · context epoch ' + escapeHtml(String(worker.contextEpoch || 1)) + ' · instructions ' + escapeHtml(String(worker.instructionVersion || 1)) + '</div><div class="footer-note">Claim: ' + (status.processingClaim ? 'in progress, age ' + escapeHtml(String(status.claimAgeMs || 0)) + ' ms, lease ' + escapeHtml(formatTimestamp(status.leaseExpiresAt)) : 'none') + '</div></td>' +
-            '<td data-label="Queue">' + escapeHtml(String(status.queueLength || 0)) + ' / ' + escapeHtml(String(worker.maxQueuedRequests || 0)) + '<div class="footer-note">oldest ' + escapeHtml(String(status.oldestQueueAgeMs || 0)) + ' ms</div><div class="footer-note">Usage: n/d · stream: buffered</div></td>' +
-            '<td data-label="Last contact">' + escapeHtml(formatTimestamp(status.lastExchangeAt)) + '<div class="footer-note">Last completion: ' + escapeHtml(formatTimestamp(status.lastSuccessfulCompletionAt)) + '</div><div class="footer-note">Next: ' + escapeHtml(status.nextAction || 'none') + '</div><div class="footer-note">Last error: ' + escapeHtml(status.lastError && (status.lastError.code + ': ' + status.lastError.message) || 'none') + '</div></td>' +
-            '<td data-label="Actions"><div class="button-row">' +
-              '<button type="button" class="secondary" data-chatgpt-action="edit" data-id="' + escapeHtml(worker.id) + '">Edit</button>' +
-              '<button type="button" class="secondary" data-chatgpt-action="pair" data-id="' + escapeHtml(worker.id) + '">Pair</button>' +
-              '<button type="button" class="secondary" data-chatgpt-action="drain" data-id="' + escapeHtml(worker.id) + '">Drain</button>' +
-              '<button type="button" class="secondary" data-chatgpt-action="release" data-id="' + escapeHtml(worker.id) + '">Release</button>' +
-              '<button type="button" class="danger" data-chatgpt-action="delete" data-id="' + escapeHtml(worker.id) + '">Delete</button>' +
-            '</div></td>' +
-          '</tr>';
-        }).join('') || '<tr><td colspan="5" class="muted">No workers configured. New workers start disabled and with an empty inference allowlist.</td></tr>';
-        const grants = Array.isArray(data.grants) ? data.grants : [];
-        chatGptGrantsTable.innerHTML = grants.map(function(grant) {
-          const revoked = Boolean(grant.revokedAt);
-          return '<tr><td>' + escapeHtml(grant.workerId || '') + '</td><td><span class="mono">' + escapeHtml(grant.clientId || '') + '</span><div class="footer-note">' + escapeHtml(grant.principalId || '') + '</div></td><td>' + escapeHtml(formatTimestamp(grant.createdAt)) + '</td><td><span class="chip ' + (revoked ? 'warn' : 'good') + '">' + (revoked ? 'revoked' : 'active') + '</span></td><td>' + (revoked ? '' : '<button type="button" class="danger" data-chatgpt-grant="' + escapeHtml(grant.id) + '">Revoke</button>') + '</td></tr>';
-        }).join('') || '<tr><td colspan="5" class="muted">No OAuth grants.</td></tr>';
-        const authorizations = Array.isArray(data.authorizationRequests) ? data.authorizationRequests : [];
-        chatGptAuthorizationsTable.innerHTML = authorizations.map(function(item) {
-          return '<tr><td><strong>' + escapeHtml(item.workerId || '') + '</strong><div class="footer-note mono">' + escapeHtml(item.clientId || '') + '</div></td><td><div class="footer-note mono">' + escapeHtml(item.resource || '') + '</div><div class="footer-note">Redirect: ' + escapeHtml(item.redirectUri || '') + '</div></td><td>' + escapeHtml(item.scope || '') + '<div class="footer-note">Approve only in the authenticated consent page opened by the connector.</div></td><td>' + escapeHtml(formatTimestamp(item.expiresAt)) + '</td></tr>';
-        }).join('') || '<tr><td colspan="4" class="muted">No pending authorization requests.</td></tr>';
-        fillChatGptAppOptions(chatGptWorkerForm
-          ? Array.from(chatGptWorkerForm.elements.allowedAppIds.selectedOptions).map(function(option) { return option.value; })
-          : []);
-        if (chatGptWorkerForm && chatGptWorkerForm.elements.editingId.value) chatGptWorkerForm.elements.id.disabled = true;
-        setChatGptStatus(workers.length + ' worker(s). MCP origin: ' + String(data.publicBaseUrl || ''), false);
-      }
-
-      async function loadChatGptGateway(summary) {
-        const configState = summary && summary.chatgpt || {};
-        if (configState.enabled !== true) {
-          renderChatGptGateway({ enabled: false, profile: configState.profile || 'compatibility' });
-          return;
-        }
-        try {
-          renderChatGptGateway(await request('/admin/chatgpt'));
-          await loadPersonalControl();
-        } catch (error) {
-          setChatGptStatus(error.message, true);
-          setChatGptWizardStatus('Impossibile aggiornare lo stato del collegamento. Verifica la connessione o accedi di nuovo; la verifica verrà ritentata automaticamente.', true);
-          const contact = document.getElementById('chatgpt-wizard-contact');
-          contact.classList.remove('is-connected');
-          contact.textContent = 'Stato attuale non disponibile. Non possiamo confermare che il worker sia in ascolto.';
-          document.getElementById('chatgpt-wizard-next').disabled = true;
-        }
-      }
-
-      if (chatGptWorkerForm) {
-        chatGptWorkerForm.addEventListener('submit', async function(event) {
-          event.preventDefault();
-          const form = new FormData(chatGptWorkerForm);
-          const editingId = String(form.get('editingId') || '');
-          const payload = {
-            id: editingId || String(form.get('id') || '').trim(),
-            label: form.get('label'),
-            publicModelIds: String(form.get('publicModelIds') || '').split(',').map(function(value) { return value.trim(); }).filter(Boolean),
-            domainLabel: form.get('domainLabel'),
-            declaredModel: form.get('declaredModel'),
-            declaredReasoning: form.get('declaredReasoning'),
-            allowedAppIds: Array.from(chatGptWorkerForm.elements.allowedAppIds.selectedOptions).map(function(option) { return option.value; }),
-            timeoutMs: Number(form.get('timeoutMs')),
-            queueTimeoutMs: Number(form.get('queueTimeoutMs')),
-            maxQueuedRequests: Number(form.get('maxQueuedRequests')),
-            contextEpoch: Number(form.get('contextEpoch')),
-            instructionVersion: Number(form.get('instructionVersion')),
-            enabled: form.get('enabled') === 'on',
-          };
-          try {
-            await request(editingId ? '/admin/chatgpt/workers/' + encodeURIComponent(editingId) : '/admin/chatgpt/workers', {
-              method: editingId ? 'PUT' : 'POST',
-              body: JSON.stringify(payload),
-            });
-            resetChatGptWorkerForm(editingId ? 'Worker updated.' : 'Worker created disabled. Edit it to enable after reviewing its policy.');
-            await loadChatGptGateway(state.adminSummary);
-            await loadAdminSummary();
-          } catch (error) {
-            setChatGptStatus(error.message, true);
-          }
-        });
-      }
-
-      if (chatGptWorkerReset) chatGptWorkerReset.addEventListener('click', function() { resetChatGptWorkerForm(); });
-      if (chatGptCopyPrompt) chatGptCopyPrompt.addEventListener('click', async function() {
-        const value = String(chatGptWorkerPrompt && chatGptWorkerPrompt.value || '');
-        if (!value) return;
-        try { await navigator.clipboard.writeText(value); setChatGptStatus('Worker prompt copied.', false); }
-        catch { chatGptWorkerPrompt.select(); setChatGptStatus('Copy failed; the prompt is selected for manual copy.', true); }
-      });
-
-      if (chatGptWorkersTable) chatGptWorkersTable.addEventListener('click', async function(event) {
-        const button = event.target.closest('button[data-chatgpt-action]');
-        if (!button) return;
-        const worker = state.chatgpt && state.chatgpt.workers && state.chatgpt.workers.find(function(item) { return item.id === button.dataset.id; });
-        if (!worker) return;
-        const action = button.dataset.chatgptAction;
-        if (action === 'edit') { populateChatGptWorkerForm(worker); return; }
-        if (action === 'drain' && !window.confirm('Drain worker ' + worker.id + '? New requests will be refused while current work finishes.')) return;
-        if (action === 'release' && !window.confirm('Release worker ' + worker.id + '? Pending and active requests will be cancelled. The dedicated chat must reopen its run.')) return;
-        if (action === 'delete' && !window.confirm('Delete worker ' + worker.id + '? Deletion is refused while jobs are active; OAuth bindings will be removed.')) return;
-        try {
-          if (action === 'pair') {
-            if (!window.confirm('Open pairing for ' + worker.id + '? A new approved connection will replace its current binding.')) return;
-            const pairing = await request('/admin/chatgpt/workers/' + encodeURIComponent(worker.id) + '/pairing', { method: 'POST', body: '{}' });
-            chatGptWorkerPrompt.value = 'MCP URL: ' + pairing.mcpUrl + '\\nPairing expires: ' + pairing.expiresAt + '\\n\\n' + pairing.workerPrompt;
-            setChatGptStatus('Pairing window opened for ' + worker.id + '.', false);
-          } else if (action === 'delete') {
-            await request('/admin/chatgpt/workers/' + encodeURIComponent(worker.id), { method: 'DELETE' });
-          } else {
-            await request('/admin/chatgpt/workers/' + encodeURIComponent(worker.id) + '/' + action, { method: 'POST', body: action === 'release' ? JSON.stringify({ reason: 'Released from dashboard' }) : '{}' });
-          }
-          await loadChatGptGateway(state.adminSummary);
-          await loadAdminSummary();
-        } catch (error) { setChatGptStatus(error.message, true); }
-      });
-
-      if (chatGptGrantsTable) chatGptGrantsTable.addEventListener('click', async function(event) {
-        const button = event.target.closest('button[data-chatgpt-grant]');
-        if (!button || !window.confirm('Revoke this OAuth grant and release its active run?')) return;
-        try {
-          await request('/admin/chatgpt/grants/' + encodeURIComponent(button.dataset.chatgptGrant) + '/revoke', { method: 'POST', body: '{}' });
-          await loadChatGptGateway(state.adminSummary);
-        } catch (error) { setChatGptStatus(error.message, true); }
-      });
+      ${codexAccountScript}
 
       // ---- Gemini account manager (admin) ----
       const accountsTable = document.getElementById('accounts-table');
@@ -3445,6 +2808,7 @@ export function renderAppShell(input: {
 
       function setAdminVisible(enabled) {
         adminDashboard.classList.toggle('hidden', !enabled);
+        if (!enabled) { state.csrfToken = ''; clearCodexAccount(); }
       }
 
       function renderPublicPills(summary) {
@@ -3472,7 +2836,7 @@ export function renderAppShell(input: {
           ['Requests (' + windowLabel + ')', fmtNumber(stats.requests), requestDetail],
           ['Success Rate', escapeHtml(String(stats.successRatePct || 0)) + '%', 'Calculated from logged requests'],
           ['Avg Latency', fmtNumber(stats.avgLatencyMs) + ' ms', 'Router-side average'],
-          ['Token Volume', fmtUsageNumber(stats.totalTokens), (stats.usageUnavailableRequests || 0) + ' request(s) with unavailable usage'],
+          ['Token Volume', fmtNumber(stats.totalTokens), 'Prompt and completion tokens'],
         ].map(function(entry) {
           return '<div class="card"><div class="label">' + escapeHtml(entry[0]) + '</div><div class="metric">' + entry[1] + '</div><div class="metric-sub">' + escapeHtml(entry[2]) + '</div></div>';
         }).join('');
@@ -3929,7 +3293,8 @@ export function renderAppShell(input: {
         const allowed = new Set(app && Array.isArray(app.allowedModels) ? app.allowedModels : []);
         const options = getModelCatalog().filter(function(entry) {
           const id = modelId(entry);
-          return modelSupportsRouter(entry) && id && (allowed.size === 0 || allowed.has(id));
+          return modelSupportsRouter(entry) && id && (allowed.size === 0 || allowed.has(id))
+            && (entry.provider !== 'codex' || app && app.codexEnabled === true);
         }).sort(byModelPower);
         const nextSelected = typeof selectedModel === 'string' && selectedModel.trim() ? selectedModel.trim() : promptModel.value;
         promptModel.innerHTML = options
@@ -4260,7 +3625,7 @@ export function renderAppShell(input: {
         const feedback = summary.feedback;
         statsGrid.innerHTML = [
           ['Requests', fmtNumber(totals.requests), totals.succeeded + ' ok / ' + totals.failed + ' failed'],
-          ['Tokens', fmtUsageNumber(totals.totalTokens), fmtUsageNumber(totals.promptTokens) + ' prompt / ' + fmtUsageNumber(totals.completionTokens) + ' completion · ' + String(totals.usageUnavailableRequests || 0) + ' unavailable'],
+          ['Tokens', fmtNumber(totals.totalTokens), fmtNumber(totals.promptTokens) + ' prompt / ' + fmtNumber(totals.completionTokens) + ' completion'],
           ['Avg latency', fmtNumber(totals.avgLatencyMs) + ' ms', 'Across logged interactions'],
           ['Feedback', feedback.good + ' good / ' + feedback.bad + ' bad', feedback.unrated + ' unrated'],
         ].map(function(entry) {
@@ -4346,6 +3711,9 @@ export function renderAppShell(input: {
         state.appFormRevision += 1;
         appForm.elements.id.value = app.id;
         appForm.elements.name.value = app.name;
+        appForm.elements.codexEnabled.checked = app.codexEnabled === true;
+        appForm.elements.codexReasoningEffort.value = app.codexReasoningEffort || 'high';
+        appForm.elements.codexFallbackEnabled.checked = app.codexFallbackEnabled !== false;
         appForm.elements.allowedOrigins.value = app.allowedOrigins.join(', ');
         appForm.elements.sessionNamespace.value = app.sessionNamespace;
         appForm.elements.rateLimitPerMinute.value = app.rateLimitPerMinute;
@@ -4575,12 +3943,12 @@ export function renderAppShell(input: {
           const appFormSnapshotCurrent =
             state.appFormRevision === appFormRevision && currentEditingAppId === editingAppId;
           state.adminSummary = data;
+          await loadCodexAccount();
           state.apps = data.apps;
           state.adminStats = data.stats || null;
           state.modelCatalog = Array.isArray(data.modelCatalog) ? data.modelCatalog : [];
           state.compatibility = data.compatibility || null;
           state.freeTierPolicy = data.freeTierPolicy || null;
-          await loadChatGptGateway(data);
           syncProjectQuotaState((data.provider && data.provider.quota) || null);
           // Never clobber the app form while the operator is editing it: a background
           // refresh must not wipe in-progress model checkboxes or reset the form fields.
@@ -4649,31 +4017,19 @@ export function renderAppShell(input: {
       async function refreshSession() {
         const me = await request('/auth/me');
         state.authenticated = me.authenticated === true;
-        state.username = me.username || '';
         state.csrfToken = me.csrfToken || '';
+        state.username = me.username || '';
         if (state.authenticated) {
-          if (pendingChatGptAuthorization) {
-            const destination = pendingChatGptAuthorization;
-            pendingChatGptAuthorization = null;
-            window.location.assign(destination);
-            return;
-          }
           authSummary.textContent = state.username ? 'Admin session active for ' + state.username + '.' : 'Admin session active.';
           authStatus.textContent = '';
           await loadAdminSummary();
           await loadProjectQuota(false);
         } else {
           state.adminSummary = null;
-          state.csrfToken = '';
           state.projectQuota = null;
-          state.chatgpt = null;
-          clearPersonalControl();
-          chatGptWizardPrompt.value = '';
-          chatGptWorkerPrompt.value = '';
-          chatGptWizardUrl.value = '';
           setAdminVisible(false);
           authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
-          authStatus.textContent = pendingChatGptAuthorization ? 'Accedi per autorizzare il collegamento ChatGPT. Dopo l’accesso tornerai alla richiesta di consenso.' : '';
+          authStatus.textContent = '';
         }
       }
 
@@ -4725,13 +4081,7 @@ export function renderAppShell(input: {
           state.authenticated = false;
           state.username = '';
           state.adminSummary = null;
-          state.csrfToken = '';
           state.projectQuota = null;
-          state.chatgpt = null;
-          clearPersonalControl();
-          chatGptWizardPrompt.value = '';
-          chatGptWorkerPrompt.value = '';
-          selectChatGptWizardWorker('');
           setAdminVisible(false);
           authSummary.textContent = 'Guest view is active. Sign in to manage apps, keys, routes and diagnostics.';
           authStatus.textContent = '';
@@ -4965,6 +4315,9 @@ export function renderAppShell(input: {
           name: form.get('name'),
           allowedOrigins: String(form.get('allowedOrigins') || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean),
           modelAccess: getModelAccess(),
+          codexEnabled: form.get('codexEnabled') === 'on',
+          codexReasoningEffort: form.get('codexReasoningEffort'),
+          codexFallbackEnabled: form.get('codexFallbackEnabled') === 'on',
           allowedModels: getAllowedModelSelection(),
           sessionNamespace: form.get('sessionNamespace'),
           rateLimitPerMinute: Number(form.get('rateLimitPerMinute') || 0),

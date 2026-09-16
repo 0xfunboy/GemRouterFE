@@ -30,7 +30,10 @@ Units:
 
 **Cloudflare Tunnel:**
 
-Template: `ops/cloudflared/gemrouter.yml`
+Template: `ops/cloudflared/gemrouter.example.yml`. Copy it to the gitignored
+`ops/cloudflared/gemrouter.yml` and fill tunnel/domain/credential-file values only
+on the deployment host. Systemd templates use `/home/OPERATOR`; customize them
+locally before installation. Existing installed units are not changed by Git.
 
 ## Security
 
@@ -51,11 +54,15 @@ persist under `data/` and reload in-process:
 - **Routed Models** - choose which Gemini models the router offers and their order
   (first = default, rest = fallback chain).
 - **Outbound Proxy** - manage the proxy pool (off by default, not yet applied to upstreams).
+- **Codex** - reuse the dedicated account login, inspect actual quota windows and
+  measured request tokens, and enable GPT models/thinking separately for each app.
+  Quota depletion can fall back to that app's authorized Gemini models. See
+  [configuration and limits](codex-account.md).
 - **Apps and API Keys** - create/rotate/revoke client apps and choose either a custom
   model allowlist or **All configured models**. A revoked app exposes only
   **Activate** (which creates a new one-time API key) and **Remove app** (which asks
   for confirmation and permanently removes that revoked record). Revocation also
-  detaches the app from ChatGPT workers. The all-model policy follows later catalog
+  removes it from the active registry. The all-model policy follows later catalog
   changes automatically; Recent Interactions can be filtered by app.
 
 ## Troubleshooting

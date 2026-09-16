@@ -1,0 +1,8 @@
+# Copy to gemrouter.yml (gitignored), then fill only on the deployment host.
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: /home/OPERATOR/.cloudflared/credential-gemrouter.json
+
+ingress:
+  - hostname: gemrouter.example.com
+    service: http://127.0.0.1:4024
+  - service: http_status:404

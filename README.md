@@ -13,9 +13,11 @@ Ollama-compatible HTTP surfaces while routing requests across a pool of Gemini A
 automatic fallback, local quota tracking, and resilient error handling - plus direct routes
 to a local Ollama for embeddings and vision.
 
-An optional, disabled-by-default native MCP reverse-RPC gateway can also bind exact local aliases to dedicated persistent ChatGPT conversations. Its admin area includes onboarding, app permissions, OAuth guidance and observed worker status. It uses no Pi Agent/PiLink runtime and no intermediate HTTP provider; see the [security and onboarding guide](docs/chatgpt-mcp-gateway.md) before enabling it at `https://gemrouter.example.com` (or your configured origin).
-
-The separate, opt-in [personal-chat controller](docs/chatgpt-personal-control.md) implements bounded Codex-triggered UI wake for an existing personal ChatGPT conversation; only that conversation's MCP completion can answer the client. This is an **experimental browser transport**, not a public ChatGPT chat-write API, Workspace Agent, or substitute Codex inference thread. It requires separate operator logins, an available graphical host and an account-specific, observed UI profile. No live personal-chat control has been verified in the current environment; the feature and every new binding start disarmed. Without this setup, startup/resume remain manual. See the [verification record](docs/chatgpt-mcp-verification.md) for the distinction between local implementation, simulation and live evidence.
+The optional **Codex provider** uses your authenticated account for text inference:
+`gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-6-astra`, with model-specific thinking.
+Enable it per app; on exhausted quota it can fall back to that app's authorized Gemini chain.
+The dashboard shows actual request token usage and account quota windows. No MCP,
+personal-chat wake, browser controller or coding tools. See [Codex](docs/codex-account.md).
 
 It is designed to squeeze the maximum useful throughput out of **free-tier** Gemini accounts:
 pool many accounts, always try the strongest model first, and gracefully scale down a fallback
@@ -67,17 +69,15 @@ OpenAI-compatible endpoint - without a paid plan and without external billing/mo
 - **Operator admin UI** at `/admin` - live quota, account manager (add/remove/priority/enable,
   per-account model discovery), routed-model editor, app/key management (with custom key
   prefixes), interaction telemetry filterable by app, and an outbound-proxy manager.
-- **Optional ChatGPT MCP workers** - exact alias/app policy, OAuth pairing, durable fenced jobs,
-  buffered SSE, recovery controls, and an honest operator-declared capability surface.
-- **Opt-in personal-chat wake** - separate Codex controller login, explicit versioned chat binding,
-  transactional wake outbox and bounded UI operations; operator setup and live verification required.
+- **Optional Codex inference** - account login, explicit app permission, thinking,
+  quota-only Gemini fallback, buffered SSE and measured token accounting.
 
 ## Endpoints (quick reference)
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /v1/chat/completions`, `/chat/completions` | client key | Chat via ordinary routing or an exact authorized ChatGPT worker alias |
-| `GET /v1/chatgpt/capabilities?model=...` | client key | Authorized local ChatGPT worker capability statement |
+| `POST /v1/chat/completions`, `/chat/completions` | client key | Gemini, NVIDIA or an authorized Codex model |
+| `POST /v1/responses` | client key | Responses-compatible text inference |
 | `POST /v1/embeddings`, `/embeddings` | client key | Embeddings via local Ollama (`bge-m3`) |
 | `POST /v1/vision`, `/vision` | client key | Vision via local Ollama (separate flow, no queue) |
 | `GET /health`, `GET /dashboard/summary` | none | Health and guest-safe quota/stats |
@@ -134,9 +134,7 @@ Use it from the OpenAI SDK by pointing `base_url` at `http://<host>:4024/v1`.
 | [Routing and quota](docs/routing.md) | Multi-key routing, fallback, cooldowns, local Ollama, endpoints |
 | [Architecture and workflow](docs/architecture-workflow.md) | Startup, model discovery, app policy, routing, quota lifecycle, production checklist |
 | [Operations](docs/operations.md) | Deployment, systemd, security, live admin management, troubleshooting |
-| [ChatGPT MCP gateway](docs/chatgpt-mcp-gateway.md) | Native reverse-RPC architecture, OAuth pairing, policy, API, recovery, security, and verification |
-| [Personal ChatGPT control](docs/chatgpt-personal-control.md) | Dedicated Codex/browser setup, five-step onboarding, exact existing chat binding, bounded wake, recovery and live acceptance |
-| [ChatGPT verification record](docs/chatgpt-mcp-verification.md) | Historical deployment evidence separated from the new local controller and simulated/live checks |
+| [Codex provider](docs/codex-account.md) | Login, models/thinking, quota, fallback, usage and verification |
 
 Third-party attribution for design references is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
@@ -146,3 +144,14 @@ Account metadata/keys live in `data/gemini-api-accounts.json` (gitignored; see
 ## Licensing
 
 Licensing scope and preserved third-party permissions are documented in [LICENSING.md](LICENSING.md). The [0xfunboy Non-Commercial License](LICENSE.md) covers eligible original material only.
+## Archived wake experiments
+
+The failed widget-wake microtest and preceding browser-controller experiment are
+archived in `archive/widget-wake-probe-2026-09-16` (`165a7b0`), including code,
+tests and chronological evidence, without private profiles or credentials.
+See [the archive pointer](docs/chatgpt-widget-wake-verification.md).
+
+The active checkout uses Codex as an inference provider. Read-only account tools:
+`pnpm --silent codex:account status|login|usage|models`.
+See [Codex account and usage](docs/codex-account.md) for dashboard configuration,
+measurement limits and the distinction between automated tests and real reads.

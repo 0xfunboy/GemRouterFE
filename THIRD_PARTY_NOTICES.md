@@ -2,6 +2,10 @@
 
 ## PiLink design reference
 
+Historical attribution: the referenced MCP implementation now lives only on
+`archive/widget-wake-probe-2026-09-16` (`83aac16`). It is absent from the active
+Codex-provider source. The following notice is retained, not rewritten or revoked.
+
 Upstream: `https://github.com/roccoangelella/PiLink`, commit `aa83d14e826cc7c38c6ac9bcc08da3ad30856f0b`.
 
 The implementation review covered PiLink's `src/llm-gateway-mcp.ts`, `src/llm-gateway-store.ts`, `src/llm-gateway-protocol.ts`, `src/llm-gateway-api.ts`, gateway operations documents, tests, `LICENSE`, and `NOTICE.md`. Durable reverse-RPC state-machine concepts from `src/llm-gateway-store.ts` informed GemRouter's `src/llm/providers/chatgpt/store.ts`.
@@ -36,4 +40,6 @@ SOFTWARE.
 
 ## Model Context Protocol TypeScript SDK
 
-GemRouter uses `@modelcontextprotocol/sdk` for its native Streamable HTTP MCP server and the isolated smoke client. See that package's bundled license and upstream project notices for its terms.
+The archived MCP server and isolated smoke client used `@modelcontextprotocol/sdk`.
+That dependency is removed from the active provider branch. See the archived
+package's bundled license and upstream notices for its terms.

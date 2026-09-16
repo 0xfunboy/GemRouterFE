@@ -30,9 +30,10 @@ export type LLMProviderErrorCode =
   | 'nvidia_empty_response'
   | 'nvidia_timeout'
   | 'nvidia_stream_error'
-  | import('./providers/chatgpt/errors.js').ChatGptGatewayErrorCode;
+  | `codex_${string}`;
 
 export interface LLMProviderErrorOptions {
+  usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
   statusCode?: number;
   fallbackEligible?: boolean;
   fallbackFrom?: LLMBackendId;

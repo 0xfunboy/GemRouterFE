@@ -14,7 +14,7 @@ client agent/app
   -> parsing e normalizzazione richiesta
   -> policy modello globale + allowlist app
   -> router tra backend, con deadline unica
-  -> scheduler Gemini / NVIDIA / Ollama
+  -> scheduler Gemini / NVIDIA / Ollama / Codex (opt-in)
   -> adattatore risposta della superficie richiesta
   -> audit + interaction telemetry
 ```
@@ -84,7 +84,7 @@ viene riavviato.
 2. `loadConfig()` crea `data/` se necessario e costruisce la configurazione completa.
 3. `data/model-config.json`, se valido, sovrascrive live l'insieme e l'ordine dei modelli
    Gemini di testo. Ogni ID non presente in `config.geminiApi.limits` viene scartato.
-4. Vengono creati i client Gemini, NVIDIA, Ollama, Ollama Local e Agnes, poi il router LLM.
+4. Vengono creati i client Gemini, NVIDIA, Ollama, Ollama Local, Agnes e Codex, poi il router LLM. Codex è disabilitato per default e richiede anche abilitazione per app; non usa più MCP o controller browser. Vedi [provider Codex](codex-account.md).
 5. `AppStore` carica `data/apps.json`.
 6. L'app bootstrap viene creata o aggiornata cercando l'hash della chiave definita in
    `.env`. Nome, origin, modelli e limiti della bootstrap app vengono quindi riallineati

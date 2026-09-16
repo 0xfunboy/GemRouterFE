@@ -7,7 +7,7 @@ export interface LLMMessage {
   images?: string[];
 }
 
-export type LLMBackendId = 'gemini-api' | 'ollama' | 'nvidia' | 'chatgpt';
+export type LLMBackendId = 'gemini-api' | 'ollama' | 'nvidia' | 'codex';
 export type LLMBackendPreference = 'auto' | LLMBackendId;
 
 /** 'small' = classificazione/routing rapido | 'medium' = drafting | 'large' = reasoning complesso */
@@ -26,6 +26,8 @@ export interface LLMFallbackAttempt {
 }
 
 export interface LLMOptions {
+  /** Trusted app policy; never copied wholesale from request JSON. */
+  codex?: { enabled: boolean; reasoningEffort?: string; fallbackEnabled?: boolean };
   model?: string;
   allowedModelIds?: string[];
   tier?: ModelTier;
@@ -50,10 +52,6 @@ export interface LLMOptions {
   signal?: AbortSignal;
   /** Absolute epoch-ms deadline for the whole request; backends clamp their timeouts to it. */
   deadline?: number;
-  /** Trusted route-derived timeout override; never copied directly from a client field. */
-  requestDeadlineMs?: number;
-  /** Internal, server-authenticated ChatGPT gateway context. */
-  chatgpt?: import('./providers/chatgpt/types.js').ChatGptLlmContext;
 }
 
 export interface LLMResponse {
@@ -76,27 +74,22 @@ export interface LLMResponse {
     promptTokens?: number;
     completionTokens?: number;
     totalTokens?: number;
+    cachedInputTokens?: number;
+    reasoningTokens?: number;
   };
+  usageSource?: 'upstream' | 'unavailable';
+  reasoningEffort?: string;
+  streamingMode?: 'buffered';
+  ignoredParameters?: string[];
   fallbackFrom?: LLMBackendId;
   fallbackReason?: string;
   fallbackAttempts?: LLMFallbackAttempt[];
   latencyMs?: number;
-  modelVerification?: 'operator_declared';
-  declaredModel?: string;
-  declaredReasoning?: string;
-  usageSource?: 'unavailable';
-  contextMode?: 'persistent_chat';
-  contextEpoch?: number;
-  instructionVersion?: number;
-  streamingMode?: 'buffered';
-  queueWaitMs?: number;
-  processingWaitMs?: number;
-  gatewayWarnings?: string[];
-  gatewayProfile?: 'compatibility' | 'strict';
 }
 
 export interface LLMStreamChunk {
   content: string;
+  model?: string;
 }
 
 export interface LLMClient {

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import type { LLMMessage } from '../llm/types.js';
+import type { LLMMessage, LLMResponse } from '../llm/types.js';
 import type { SemanticActionPolicy } from './semantics.js';
 import { DEFAULT_DIRECT_MODEL_IDS, normalizePublicModelId } from './models.js';
 
@@ -10,6 +10,9 @@ export interface ChatCompletionsRequest {
   stream?: boolean;
   stream_options?: { include_usage?: boolean };
   max_tokens?: number;
+  max_completion_tokens?: number;
+  reasoning_effort?: string;
+  reasoning?: { effort?: string };
   temperature?: number;
   user?: string;
   response_format?: Record<string, unknown>;
@@ -23,6 +26,7 @@ export interface ResponsesRequest {
   instructions?: string;
   stream?: boolean;
   max_output_tokens?: number;
+  reasoning?: { effort?: string };
   temperature?: number;
   user?: string;
   text?: {
@@ -44,6 +48,8 @@ export interface UsageSummary {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  prompt_tokens_details?: { cached_tokens: number };
+  completion_tokens_details?: { reasoning_tokens: number };
 }
 
 export interface NormalizedImageSize {
@@ -241,7 +247,7 @@ export function parseChatCompletionsRequest(body: ChatCompletionsRequest): {
     stream: body.stream === true,
     includeUsageChunk: body.stream_options?.include_usage === true,
     user: typeof body.user === 'string' ? body.user.trim() : undefined,
-    maxTokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
+    maxTokens: typeof body.max_completion_tokens === 'number' ? body.max_completion_tokens : typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
     outputMode: responseFormatType.startsWith('json') ? 'json' : 'text',
     jsonSchema,
@@ -419,11 +425,21 @@ export function buildChatCompletionResponse(input: {
   };
 }
 
+/** Codex counters are upstream measurements. Missing measurements stay missing. */
+export function responseUsage(messages: LLMMessage[], output: string, response?: Partial<LLMResponse>): UsageSummary | undefined {
+  if (response?.backend !== 'codex' && response?.provider !== 'codex') return estimateUsage(messages, output);
+  const usage = response.usage;
+  if (usage?.promptTokens == null || usage.completionTokens == null || usage.totalTokens == null) return undefined;
+  return { prompt_tokens: usage.promptTokens, completion_tokens: usage.completionTokens, total_tokens: usage.totalTokens,
+    ...(usage.cachedInputTokens != null ? { prompt_tokens_details: { cached_tokens: usage.cachedInputTokens } } : {}),
+    ...(usage.reasoningTokens != null ? { completion_tokens_details: { reasoning_tokens: usage.reasoningTokens } } : {}) };
+}
+
 export function buildResponsesApiResponse(input: {
   id?: string;
   model: string;
   text: string;
-  usage: UsageSummary;
+  usage?: UsageSummary;
   createdAt?: number;
 }): Record<string, unknown> {
   const responseId = input.id ?? `resp_${randomUUID().replace(/-/g, '')}`;
@@ -453,11 +469,13 @@ export function buildResponsesApiResponse(input: {
     ],
     parallel_tool_calls: false,
     tools: [],
-    usage: {
+    usage: input.usage ? {
       input_tokens: input.usage.prompt_tokens,
       output_tokens: input.usage.completion_tokens,
       total_tokens: input.usage.total_tokens,
-    },
+      ...(input.usage.prompt_tokens_details ? { input_tokens_details: input.usage.prompt_tokens_details } : {}),
+      ...(input.usage.completion_tokens_details ? { output_tokens_details: input.usage.completion_tokens_details } : {}),
+    } : null,
   };
 }
 

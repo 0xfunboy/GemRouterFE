@@ -7,6 +7,12 @@ import path from 'node:path';
 import Fastify, { LogController, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
+import { CodexRuntime } from './codex/runtime.js';
+import { CodexProvider } from './codex/provider.js';
+import { CodexMetrics } from './codex/metrics.js';
+import { registerCodexAccountRoutes } from './codex/routes.js';
+import { CODEX_REASONING_EFFORTS, isCodexRequest } from './codex/models.js';
+import { codexRequestPolicy } from './codex/request.js';
 import { applyBackup, buildBackup, summarizeBackupContents } from './lib/backup.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
 import {
@@ -24,6 +30,7 @@ import {
   buildResponsesApiResponse,
   createRequestFingerprint,
   estimateUsage,
+  responseUsage,
   type ImageGenerationsRequest,
   parseImageGenerationsRequest,
   normalizeModelId,
@@ -56,22 +63,6 @@ import { buildNvidiaServableModelIds } from './llm/providers/nvidia/naming.js';
 import { createOllamaRouterClient } from './llm/providers/ollama/client.js';
 import { createOllamaLocalClient } from './llm/providers/ollama-local/client.js';
 import { createAgnesClient } from './llm/providers/agnes/client.js';
-import { canonicalChatGptOrigin, ChatGptOAuthService } from './llm/providers/chatgpt/auth.js';
-import { createChatGptClient } from './llm/providers/chatgpt/client.js';
-import { readDormantChatGptAliases } from './llm/providers/chatgpt/dormant.js';
-import { chatGptError } from './llm/providers/chatgpt/errors.js';
-import { ChatGptGateway } from './llm/providers/chatgpt/gateway.js';
-import {
-  parseChatGptCompletionRequest,
-  type ParsedChatGptRequest,
-} from './llm/providers/chatgpt/protocol.js';
-import { ChatGptWorkerRegistry } from './llm/providers/chatgpt/registry.js';
-import { registerChatGptGatewayRoutes } from './llm/providers/chatgpt/routes.js';
-import { ChatGptGatewayStore } from './llm/providers/chatgpt/store.js';
-import { toLlmMessages } from './llm/providers/chatgpt/types.js';
-import { readPersonalControlConfig } from './llm/providers/chatgpt/control/config.js';
-import { createPersonalChatController } from './llm/providers/chatgpt/control/controller.js';
-import { registerPersonalControlRoutes } from './llm/providers/chatgpt/control/adminRoutes.js';
 import { LLMProviderError } from './llm/errors.js';
 import { createLlmRouter } from './llm/router.js';
 import type { LLMBackendId, LLMBackendPreference, LLMMessage, LLMOptions, LLMResponse } from './llm/types.js';
@@ -93,13 +84,9 @@ const PROJECT_NAME = 'GemRouter';
 const SERVICE_NAME = 'gem-router';
 const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
-const personalControlConfig = readPersonalControlConfig();
 const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
-const CHATGPT_BACKUP_EXCLUDED_PATHS = [
-  config.chatgpt.dataDir,
-  path.join(config.dataDir, 'chatgpt-gateway'),
-  personalControlConfig.privateDirectory,
-];
+const PRIVATE_BACKUP_EXCLUSIONS = [config.codex.privateDirectory, path.join(config.dataDir, 'chatgpt-gateway'),
+  path.resolve(config.rootDir, process.env.GEMROUTER_CHATGPT_DATA_DIR || path.join(config.dataDir, 'chatgpt-gateway'))];
 
 /** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
 function knownGeminiTextModels(): string[] {
@@ -143,88 +130,22 @@ const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
 const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
 const agnesLlm = createAgnesClient(config.agnes);
-const audit = new AuditLogger(config.auditLogPath);
-const providerModelIds = new Set(config.modelIds.map((model) => normalizeModelId(model)));
-let appStoreForChatGptAliases: AppStore | undefined;
-// Keep persisted bare aliases reserved while the feature is disabled, without
-// initializing SQLite state, advertising models, or widening any app allowlist.
-const dormantChatGptAliases = config.chatgpt.enabled
-  ? new Set<string>()
-  : readDormantChatGptAliases(config.chatgpt.dataDir);
-// Validate the remotely published origin before the enabled gateway can create
-// any SQLite/OAuth runtime state.
-const chatGptPublicBaseUrl = config.chatgpt.enabled
-  ? canonicalChatGptOrigin(config.chatgpt.publicBaseUrl ?? (() => {
-      throw new Error('GEMROUTER_CHATGPT_PUBLIC_BASE_URL is required when the ChatGPT gateway is enabled.');
-    })())
-  : undefined;
-function appPolicyModelUniverse(): string[] {
-  return [...new Set([...config.modelIds, ...dormantChatGptAliases])];
-}
-const chatGptStore = config.chatgpt.enabled
-  ? new ChatGptGatewayStore(config.chatgpt, (event) => audit.write({
-      type: event.type,
-      requestId: event.requestId,
-      appId: event.appId,
-      details: {
-        ...(event.workerId ? { workerId: event.workerId } : {}),
-        ...(event.reasonCode ? { reasonCode: event.reasonCode } : {}),
-        ...(event.operationId ? { operationId: event.operationId } : {}),
-        ...(event.bindingVersion !== undefined ? { bindingVersion: event.bindingVersion } : {}),
-        ...(event.activationGeneration !== undefined ? { activationGeneration: event.activationGeneration } : {}),
-      },
-    }))
-  : undefined;
-const chatGptRegistry = chatGptStore
-  ? new ChatGptWorkerRegistry(
-    chatGptStore,
-    config.chatgpt,
-    () => providerModelIds,
-    (aliases) => {
-      config.modelIds = [...new Set([...providerModelIds, ...aliases])];
-      appStoreForChatGptAliases?.restrictAllowedModels(appPolicyModelUniverse());
-    },
-  )
-  : undefined;
-const chatGptGateway = chatGptStore && chatGptRegistry
-  ? new ChatGptGateway(chatGptStore, chatGptRegistry)
-  : undefined;
-const chatGptOAuth = chatGptGateway
-  ? new ChatGptOAuthService(
-    chatGptGateway.store,
-    chatGptPublicBaseUrl!,
-  )
-  : undefined;
-const chatGptLlm = chatGptGateway ? createChatGptClient(chatGptGateway) : undefined;
-const personalChatControl = chatGptGateway && chatGptOAuth
-  ? createPersonalChatController(personalControlConfig, chatGptGateway.store,
-    (workerId) => chatGptOAuth.workerResource(workerId), [config.rootDir, config.dataDir, config.chatgpt.dataDir])
-  : undefined;
-personalChatControl?.start();
-if (chatGptRegistry) {
-  config.modelIds = [...new Set([...providerModelIds, ...chatGptRegistry.aliases()])];
-}
-function refreshProviderModelUniverse(): void {
-  const aliases = new Set(chatGptRegistry?.aliases() ?? []);
-  providerModelIds.clear();
-  for (const model of config.modelIds.map((value) => normalizeModelId(value))) {
-    if (!aliases.has(model)) providerModelIds.add(model);
-  }
-  config.modelIds = [...new Set([...providerModelIds, ...aliases])];
-}
+const codexRuntime = new CodexRuntime({ ...config.codex, excludedDirectories: [config.rootDir, config.dataDir] });
+const codexLlm = new CodexProvider(config.codex, codexRuntime, new CodexMetrics(path.join(config.dataDir, 'codex-metrics.json')));
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
   nvidiaServableModelIds: buildNvidiaServableModelIds(config.nvidia.models),
   nvidiaHedgeDelayMs: config.nvidia.raceHedgeDelayMs,
+  codexFallbackModels: () => config.freeTierPolicy.fallbackModelIds,
 }, {
   geminiApi: geminiApiLlm,
   ollama: ollamaLlm,
   nvidia: nvidiaLlm,
-  chatgpt: chatGptLlm,
+  codex: codexLlm,
 });
 const appStore = new AppStore(config.appsStorePath);
-appStoreForChatGptAliases = appStore;
+const audit = new AuditLogger(config.auditLogPath);
 const adminSessions = new AdminSessionStore(config.adminSessionTtlMs);
 const compatibility = new CompatibilityStore(config.compatibility.settingsStorePath, {
   defaultSurface: config.compatibility.defaultSurface,
@@ -232,26 +153,42 @@ const compatibility = new CompatibilityStore(config.compatibility.settingsStoreP
 });
 const interactions = new InteractionStore(config.interactionsStorePath);
 
-// Environment still governs ordinary bootstrap policy. Preserve only explicitly
-// granted worker aliases across restarts, including a temporarily disabled gateway.
-const bootstrapWorkerAliases = appStore.verify(config.bootstrapApp.apiKey)?.allowedModels.filter((alias) =>
-  chatGptRegistry?.resolveAlias(alias) || dormantChatGptAliases.has(alias)) ?? [];
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
   rawKey: config.bootstrapApp.apiKey,
   modelAccess: config.bootstrapApp.modelAccess,
   allowedOrigins: config.bootstrapApp.allowedOrigins,
-  allowedModels: [...new Set([...config.bootstrapApp.allowedModels, ...bootstrapWorkerAliases])],
+  allowedModels: config.bootstrapApp.allowedModels,
   sessionNamespace: config.bootstrapApp.sessionNamespace,
   rateLimitPerMinute: config.bootstrapApp.rateLimitPerMinute,
   maxConcurrency: config.bootstrapApp.maxConcurrency,
 });
-appStore.restrictAllowedModels(appPolicyModelUniverse());
+appStore.restrictAllowedModels(config.modelIds);
 
 const app = Fastify({
   logger: false,
   requestIdHeader: 'x-request-id',
   logController: new LogController({ disableRequestLogging: true }),
+});
+
+registerCodexAccountRoutes(app, codexRuntime, {
+  ensureAdmin, ensureAdminMutation,
+  adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
+  audit: (event) => audit.write(event),
+}, codexLlm);
+let codexRefreshTimer: ReturnType<typeof setInterval> | undefined;
+app.addHook('onReady', async () => {
+  if (!config.codex.enabled) return;
+  await codexLlm.refresh();
+  codexRefreshTimer = setInterval(() => { void codexLlm.refresh(); }, config.codex.quotaRefreshMs);
+  codexRefreshTimer.unref();
+});
+app.addHook('onClose', async () => { clearInterval(codexRefreshTimer); await codexRuntime.close(); });
+app.addHook('onRequest', async (request, reply) => {
+  const pathname = request.url.split('?')[0];
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)
+    && ((pathname.startsWith('/admin/') && pathname !== '/admin/login') || pathname.startsWith('/v1/admin/') || pathname === '/auth/logout')
+    && !ensureAdminMutation(request, reply)) return reply;
 });
 
 function stableCompare(left: string, right: string): boolean {
@@ -318,8 +255,7 @@ function parseCookies(request: FastifyRequest): Record<string, string> {
     .map((chunk) => {
       const separator = chunk.indexOf('=');
       if (separator < 0) return [chunk, ''];
-      try { return [chunk.slice(0, separator), decodeURIComponent(chunk.slice(separator + 1))]; }
-      catch { return [chunk.slice(0, separator), '']; }
+      return [chunk.slice(0, separator), decodeURIComponent(chunk.slice(separator + 1))];
     });
   return Object.fromEntries(entries);
 }
@@ -332,19 +268,19 @@ function getAdminSession(request: FastifyRequest) {
   return adminSessions.read(getAdminSessionId(request));
 }
 
-function setAdminCookie(reply: FastifyReply, sessionId: string, request: FastifyRequest): void {
+function setAdminCookie(reply: FastifyReply, sessionId: string): void {
   reply.header(
     'set-cookie',
     `${ADMIN_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(
       config.adminSessionTtlMs / 1000,
-    )}${adminBrowserOrigin(request).startsWith('https://') ? '; Secure' : ''}`,
+    )}`,
   );
 }
 
-function clearAdminCookie(reply: FastifyReply, request: FastifyRequest): void {
+function clearAdminCookie(reply: FastifyReply): void {
   reply.header(
     'set-cookie',
-    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${adminBrowserOrigin(request).startsWith('https://') ? '; Secure' : ''}`,
+    `${ADMIN_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
   );
 }
 
@@ -481,19 +417,6 @@ function sanitizeAdminApp(appRecord: ApiAppRecord): Omit<ApiAppRecord, 'apiKeyHa
   return rest;
 }
 
-function detachAppFromChatGptWorkers(appId: string): string[] {
-  if (!chatGptRegistry) return [];
-  const detachedWorkerIds: string[] = [];
-  for (const worker of chatGptRegistry.list()) {
-    if (!worker.allowedAppIds.includes(appId)) continue;
-    chatGptRegistry.update(worker.id, {
-      allowedAppIds: worker.allowedAppIds.filter((allowedAppId) => allowedAppId !== appId),
-    });
-    detachedWorkerIds.push(worker.id);
-  }
-  return detachedWorkerIds;
-}
-
 function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
   const origin = getRequestOrigin(request) ?? null;
   const administrative = /^\/(?:admin(?:\/|$)|auth(?:\/|$)|v1\/admin(?:\/|$)|oauth\/)/u.test(request.url.split('?')[0]);
@@ -515,9 +438,7 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
       'x-gemrouter-stateful',
       'x-gemrouter-reset-session',
       'x-gemrouter-backend',
-      'x-gemrouter-gateway-profile',
       'x-gemrouter-csrf',
-      'Idempotency-Key',
       'x-baribi-session',
       'x-baribi-user',
       'x-baribi-stateful',
@@ -533,7 +454,6 @@ function setCorsHeaders(request: FastifyRequest, reply: FastifyReply): void {
 function adminBrowserOrigin(request: FastifyRequest): string {
   // Do not let an app's wildcard origins or untrusted forwarded host grant
   // credentialed browser access to the administration plane.
-  if (chatGptPublicBaseUrl) return chatGptPublicBaseUrl;
   const scheme = request.protocol === 'https' || request.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
   return `${scheme}://${request.headers.host ?? ''}`;
 }
@@ -658,7 +578,6 @@ function ensureModelAllowed(
 
 function isConfiguredTextModel(modelId: string): boolean {
   const normalized = normalizeModelId(modelId);
-  if (normalized.startsWith('chatgpt/') || chatGptRegistry?.resolveAlias(normalized) || dormantChatGptAliases.has(normalized)) return false;
   if (config.freeTierPolicy.textModelIds.includes(normalized)) return true;
   return config.modelIds.map((model) => model.toLowerCase()).includes(normalized) &&
     !config.freeTierPolicy.audioModelIds.includes(normalized) &&
@@ -677,6 +596,12 @@ function resolveTextModelForApp(
 ): { model: string; requestedModel: string; policyFallbackReason?: string; allowedModelIds: string[] } | null {
   const requested = normalizeModelId(requestedModel);
   const allowedModelIds = textModelsAllowedForApp(clientApp);
+  if (isCodexRequest(requested)) {
+    if (!config.codex.enabled) throw new LLMProviderError('backend_disabled', 'codex', 'Codex provider is disabled.', { statusCode: 503 });
+    if (!config.codex.models.includes(requested)) throw new LLMProviderError('codex_model_unavailable', 'codex', 'Unknown Codex model.', { statusCode: 404 });
+    if (!appStore.isModelAllowed(clientApp, requested)) throw new LLMProviderError('codex_model_not_allowed', 'codex', 'Codex/model is not enabled for this app.', { statusCode: 403 });
+    return { model: requested, requestedModel: requested, allowedModelIds };
+  }
   if (allowedModelIds.length === 0) return null;
   if (appStore.isModelAllowed(clientApp, requested) && isConfiguredTextModel(requested)) {
     return { model: requested, requestedModel: requested, allowedModelIds };
@@ -731,12 +656,14 @@ function parseBackendPreference(request: FastifyRequest): LLMBackendPreference {
   if (value === 'auto') return 'auto';
   if (value === 'gemini-api' || value === 'gemini' || value === 'ai-studio') return 'gemini-api';
   if (value === 'nvidia' || value === 'nvidia-api' || value === 'nim') return 'nvidia';
-  if (value === 'chatgpt') return 'chatgpt';
+  if (value === 'codex') return 'codex';
   throw new Error(`Unsupported backend override: ${raw}`);
 }
 
 function buildRequestLlmOptions(input: {
   request: FastifyRequest;
+  reply: FastifyReply;
+  appRecord: ApiAppRecord;
   user?: string;
   sessionNamespace: string;
   model: string;
@@ -756,7 +683,7 @@ function buildRequestLlmOptions(input: {
     .trim()
     .toLowerCase();
   const stateful = ['1', 'true', 'yes', 'on'].includes(statefulHeader);
-  return buildSessionOptions({
+  const options = buildSessionOptions({
     backendPreference: parseBackendPreference(input.request),
     model: input.model,
     allowedModelIds: input.allowedModelIds,
@@ -769,6 +696,18 @@ function buildRequestLlmOptions(input: {
     fingerprintFallback: input.fingerprintFallback,
     semanticSurface: input.semanticSurface,
   });
+  if (isCodexRequest(input.model)) {
+    options.codex = codexRequestPolicy(input.request.body, input.request.headers['x-gemrouter-reasoning-effort'], input.appRecord, options.backendPreference);
+    const controller = new AbortController();
+    const cancel = () => { if (!input.reply.raw.writableFinished) controller.abort(); };
+    const cleanup = () => { input.request.raw.removeListener('aborted', cancel); input.reply.raw.removeListener('close', cancel); };
+    input.request.raw.once('aborted', cancel);
+    input.reply.raw.once('close', () => { cancel(); cleanup(); });
+    input.reply.raw.once('finish', cleanup);
+    options.signal = controller.signal;
+    options.deadline = getStartedAt(input.request) + config.codex.timeoutMs;
+  }
+  return options;
 }
 
 function buildSemanticProfile(input: {
@@ -995,11 +934,9 @@ function recordInteraction(input: {
   response?: Partial<LLMResponse>;
   llmError?: unknown;
   error?: string;
-  /** ChatGPT conversations are personal state; never persist their prompt or reply. */
-  privateContent?: boolean;
-  usageSource?: 'unavailable';
 }): void {
   const response = input.response ?? buildInteractionResponseFromError(input.llmError);
+  const usage = input.usage ?? (response?.backend === 'codex' ? responseUsage(input.messages, '', response) : undefined);
   interactions.record({
     requestId: input.request.id,
     appId: input.appRecord.id,
@@ -1010,10 +947,10 @@ function recordInteraction(input: {
     backendModel: response?.backendModel,
     apiKeyId: response?.apiKeyId,
     quotaGroup: response?.quotaGroup,
-    prompt: input.privateContent ? '' : flattenPrompt(input.messages),
-    response: input.privateContent ? undefined : input.responseText,
-    usage: input.usage,
-    usageSource: input.usageSource ?? response?.usageSource,
+    prompt: flattenPrompt(input.messages),
+    response: input.responseText,
+    usage,
+    usageSource: response?.usageSource === 'unavailable' || (response?.backend === 'codex' && !usage) ? 'unavailable' : undefined,
     status: input.status,
     statusCode: input.statusCode,
     latencyMs: Date.now() - getStartedAt(input.request),
@@ -1038,6 +975,8 @@ function buildInteractionResponseFromError(error: unknown): Partial<LLMResponse>
     fallbackFrom: error.options.fallbackFrom,
     fallbackReason: error.options.fallbackReason ?? error.code,
     fallbackAttempts: error.options.fallbackAttempts,
+    usage: error.options.usage,
+    usageSource: error.backend === 'codex' && !error.options.usage ? 'unavailable' : undefined,
   };
 }
 
@@ -1138,6 +1077,10 @@ function resolveProviderLabel(response: LLMResponse): string {
 }
 
 function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
+  if (response.reasoningEffort) reply.header('x-gemrouter-reasoning-effort', response.reasoningEffort);
+  if (response.usageSource) reply.header('x-gemrouter-usage-source', response.usageSource);
+  if (response.streamingMode) reply.header('x-gemrouter-stream-mode', response.streamingMode);
+  if (response.ignoredParameters?.length) reply.header('x-gemrouter-ignored-parameters', response.ignoredParameters.join(','));
   if (response.backend) reply.header('x-gemrouter-backend', response.backend);
   reply.header('x-gemrouter-provider', resolveProviderLabel(response));
   if (response.fallbackFrom) reply.header('x-gemrouter-fallback-from', response.fallbackFrom);
@@ -1146,16 +1089,6 @@ function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
   if (response.apiKeyId) reply.header('x-gemrouter-api-key-id', response.apiKeyId);
   if (response.quotaGroup) reply.header('x-gemrouter-quota-group', response.quotaGroup);
   if (response.quotaSource) reply.header('x-gemrouter-quota-source', response.quotaSource);
-  if (response.modelVerification) reply.header('x-gemrouter-model-verification', response.modelVerification.replace('_', '-'));
-  if (response.streamingMode) reply.header('x-gemrouter-stream', response.streamingMode);
-  if (response.usageSource) reply.header('x-gemrouter-usage', response.usageSource);
-  if (response.contextMode) reply.header('x-gemrouter-context', response.contextMode.replace('_', '-'));
-  if (response.gatewayProfile) reply.header('x-gemrouter-gateway-profile', response.gatewayProfile);
-  if (response.gatewayWarnings?.length) reply.header('x-gemrouter-gateway-warnings', response.gatewayWarnings.join(','));
-  if (response.contextEpoch !== undefined) reply.header('x-gemrouter-context-epoch', response.contextEpoch);
-  if (response.instructionVersion !== undefined) reply.header('x-gemrouter-instruction-version', response.instructionVersion);
-  if (response.queueWaitMs !== undefined) reply.header('x-gemrouter-queue-wait-ms', response.queueWaitMs);
-  if (response.processingWaitMs !== undefined) reply.header('x-gemrouter-processing-wait-ms', response.processingWaitMs);
 }
 
 function withFallbackReason(response: LLMResponse, fallbackReason?: string): LLMResponse {
@@ -1181,6 +1114,11 @@ function buildAuditDetailsFromResponse(response: LLMResponse): Record<string, un
   };
 }
 
+async function* bufferedStream(response: LLMResponse) {
+  yield { content: response.content, model: response.model };
+  return response;
+}
+
 function buildStreamResponseHeaders(request: FastifyRequest, response?: LLMResponse): Record<string, string> {
   const headers: Record<string, string> = {
     'Content-Type': 'text/event-stream',
@@ -1197,16 +1135,10 @@ function buildStreamResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.apiKeyId) headers['x-gemrouter-api-key-id'] = response.apiKeyId;
   if (response?.quotaGroup) headers['x-gemrouter-quota-group'] = response.quotaGroup;
   if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
-  if (response?.modelVerification) headers['x-gemrouter-model-verification'] = response.modelVerification.replace('_', '-');
-  if (response?.streamingMode) headers['x-gemrouter-stream'] = response.streamingMode;
-  if (response?.usageSource) headers['x-gemrouter-usage'] = response.usageSource;
-  if (response?.contextMode) headers['x-gemrouter-context'] = response.contextMode.replace('_', '-');
-  if (response?.contextEpoch !== undefined) headers['x-gemrouter-context-epoch'] = String(response.contextEpoch);
-  if (response?.instructionVersion !== undefined) headers['x-gemrouter-instruction-version'] = String(response.instructionVersion);
-  if (response?.queueWaitMs !== undefined) headers['x-gemrouter-queue-wait-ms'] = String(response.queueWaitMs);
-  if (response?.processingWaitMs !== undefined) headers['x-gemrouter-processing-wait-ms'] = String(response.processingWaitMs);
-  if (response?.gatewayProfile) headers['x-gemrouter-gateway-profile'] = response.gatewayProfile;
-  if (response?.gatewayWarnings?.length) headers['x-gemrouter-gateway-warnings'] = response.gatewayWarnings.join(',');
+  if (response?.usageSource) headers['x-gemrouter-usage-source'] = response.usageSource;
+  if (response?.reasoningEffort) headers['x-gemrouter-reasoning-effort'] = response.reasoningEffort;
+  if (response?.streamingMode || response?.fallbackFrom === 'codex') headers['x-gemrouter-stream-mode'] = 'buffered';
+  if (response?.ignoredParameters?.length) headers['x-gemrouter-ignored-parameters'] = response.ignoredParameters.join(',');
   return headers;
 }
 
@@ -1226,6 +1158,10 @@ function buildNdjsonResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.apiKeyId) headers['x-gemrouter-api-key-id'] = response.apiKeyId;
   if (response?.quotaGroup) headers['x-gemrouter-quota-group'] = response.quotaGroup;
   if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
+  if (response?.usageSource) headers['x-gemrouter-usage-source'] = response.usageSource;
+  if (response?.reasoningEffort) headers['x-gemrouter-reasoning-effort'] = response.reasoningEffort;
+  if (response?.streamingMode || response?.fallbackFrom === 'codex') headers['x-gemrouter-stream-mode'] = 'buffered';
+  if (response?.ignoredParameters?.length) headers['x-gemrouter-ignored-parameters'] = response.ignoredParameters.join(',');
   return headers;
 }
 
@@ -1237,12 +1173,17 @@ function mapLlmErrorToHttp(error: unknown): {
 } {
   if (error instanceof LLMProviderError) {
     const statusCode = error.options.statusCode ?? 502;
+    if (error.backend === 'codex') return {
+      statusCode, code: error.code, message: error.message,
+      type: statusCode === 429 ? 'rate_limit_error' : statusCode === 403 ? 'permission_error'
+        : statusCode === 400 || statusCode === 404 ? 'invalid_request_error' : 'server_error',
+    };
     const type =
       error.code === 'gemini_api_rate_limited' ||
-      error.code === 'gemini_api_quota_unavailable' || statusCode === 429
+      error.code === 'gemini_api_quota_unavailable'
         ? 'rate_limit_error'
         : error.code === 'gemini_api_invalid_request' ||
-            error.code === 'gemini_api_model_not_found' || statusCode < 500
+            error.code === 'gemini_api_model_not_found'
           ? 'invalid_request_error'
           : 'server_error';
     return {
@@ -1370,7 +1311,9 @@ function buildAdminModelCatalog(
 // accepted by config.modelIds. Provider-specific entries carry richer metadata;
 // configured entries absent from discovery still receive a safe capability fallback.
 function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<Record<string, unknown>> {
-  const providerEntries = [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries()];
+  const providerEntries = [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries(),
+    ...codexLlm.getDiagnostics().models.map((model) => ({ id: model.model, provider: 'codex', displayName: model.displayName,
+      supportedReasoningEfforts: model.supportedReasoningEfforts, available: true, capabilities: { chat: true } }))];
   const byId = new Map(
     providerEntries.map((entry) => [String(entry.id ?? '').trim().toLowerCase(), entry] as const),
   );
@@ -1382,25 +1325,13 @@ function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<R
     const providerEntry = byId.get(normalized);
     if (providerEntry) return providerEntry;
 
-    const chatGptWorker = chatGptRegistry?.resolveAlias(normalized);
-    if (chatGptWorker) {
-      return {
-        id: normalized,
-        displayName: normalized,
-        label: `${normalized} [ChatGPT worker: ${chatGptWorker.label}]`,
-        provider: 'chatgpt-mcp',
-        supportedGenerationMethods: ['generateContent'],
-        capabilities: { chat: true, imageGeneration: false, live: false, nativeAudio: false, tts: false, embeddings: false },
-      };
-    }
-
     const isAgnesImage = agnesImageModels.has(normalized);
     const isAgnesVideo = agnesVideoModels.has(normalized);
     const provider = isAgnesImage || isAgnesVideo
       ? 'agnes'
       : /^(gemini|gemma)-/.test(normalized)
         ? 'gemini-api'
-        : 'ollama';
+        : isCodexRequest(normalized) ? 'codex' : 'ollama';
     const capabilities = {
       chat: !isAgnesImage && !isAgnesVideo,
       imageGeneration: isAgnesImage,
@@ -1496,6 +1427,8 @@ function buildProviderSnapshot(
       lastSuccessAt: ollama.lastSuccessAt ?? null,
     },
     models: [
+      ...codexLlm.getDiagnostics().models.map((model) => ({ id: model.model, displayName: model.displayName,
+        provider: 'codex', backends: { codex: true }, capabilities: { chat: true }, supportedReasoningEfforts: model.supportedReasoningEfforts })),
       ...buildProviderModelState(geminiApi),
       ...ollamaModels.map((model) => ({
         ...model,
@@ -1692,6 +1625,7 @@ function getRuntimeSnapshot(
     },
     provider,
     models: [
+      ...codexLlm.getDiagnostics().models.map((model) => model.model),
       ...buildCompatibleSurfaceModelIds(geminiApiDiagnostics, 'chat-or-image'),
       ...(Array.isArray(ollamaDiagnostics.models)
         ? (ollamaDiagnostics.models as Record<string, unknown>[]).map((model) => String(model.id ?? '').trim()).filter(Boolean)
@@ -1714,6 +1648,7 @@ function getRuntimeSnapshot(
       geminiApi: geminiApiDiagnostics,
       ollama: ollamaDiagnostics,
       nvidia: nvidiaDiagnostics,
+      ...(options?.includeSensitiveLlm ? { codex: codexLlm.getDiagnostics() } : {}),
     },
     compatibility: request ? getCompatibilitySnapshot(request) : compatibility.get(),
     llm: sanitizedLlmDiagnostics,
@@ -1724,7 +1659,7 @@ function normalizeAllowedModels(
   values: unknown,
   emptyFallback: string[] = config.bootstrapApp.allowedModels,
 ): string[] {
-  const knownModels = new Set(appPolicyModelUniverse().map((modelId) => modelId.toLowerCase()));
+  const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
   const fallback = emptyFallback
     .map((modelId) => String(modelId).trim().toLowerCase().replace(/^models\//, ''))
     .filter((modelId) => knownModels.has(modelId));
@@ -1737,7 +1672,7 @@ function normalizeAllowedModels(
 
 function unknownAllowedModels(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
-  const knownModels = new Set(appPolicyModelUniverse().map((modelId) => modelId.toLowerCase()));
+  const knownModels = new Set(config.modelIds.map((modelId) => modelId.toLowerCase()));
   return [...new Set(
     values
       .map((value) => String(value ?? '').trim().toLowerCase().replace(/^models\//, ''))
@@ -1745,11 +1680,17 @@ function unknownAllowedModels(values: unknown): string[] {
   )];
 }
 
+function validateCodexAppPolicy(body: Record<string, unknown>): void {
+  if (['codexEnabled', 'codexFallbackEnabled'].some((key) => body[key] !== undefined && typeof body[key] !== 'boolean')
+    || (body.codexReasoningEffort !== undefined && !(CODEX_REASONING_EFFORTS as readonly unknown[]).includes(body.codexReasoningEffort))) {
+    throw Object.assign(new Error('Invalid Codex app policy: boolean flags and a supported reasoning effort are required.'), { statusCode: 400 });
+  }
+}
+
 function listPublicEndpoints(): string[] {
   const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
   if (isSurfaceEnabled('openai')) {
     endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses', '/v1/images/generations');
-    if (config.chatgpt.enabled) endpoints.push('/v1/chatgpt/capabilities');
   }
   if (isAnySurfaceEnabled(['gemrouter', 'deepseek'])) {
     endpoints.push('/models', '/chat/completions', '/images/generations');
@@ -1774,18 +1715,13 @@ async function handleModelsRequest(
   if (!access) return reply;
   try {
     const runtime = getRuntimeSnapshot();
-    const runtimeModels = Array.isArray(runtime.models)
+    const models = Array.isArray(runtime.models)
       ? runtime.models.map((model) => String(model).trim()).filter(Boolean)
       : config.modelIds;
-    const models = [...new Set([...runtimeModels, ...(chatGptRegistry?.aliases() ?? [])])];
     return {
       object: 'list',
       data: models
-        .filter((modelId) => {
-          if (!appStore.isModelAllowed(access.app, modelId)) return false;
-          const worker = chatGptRegistry?.resolveAlias(modelId);
-          return !worker || worker.enabled && worker.allowedAppIds.includes(access.app.id);
-        })
+        .filter((modelId) => appStore.isModelAllowed(access.app, modelId))
         .map((modelId) => ({
           id: modelId,
           object: 'model',
@@ -1805,6 +1741,8 @@ function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: Authe
   const filteredModels = clientApp
     ? providerModels.filter((model) => appStore.isModelAllowed(clientApp, String(model.id ?? '')))
     : providerModels;
+  const clientBackends = { ...(runtime.backends as Record<string, unknown>) };
+  delete clientBackends.codex; // Account-wide quota and request counters are admin-only.
   return {
     ok: true,
     project: PROJECT_NAME,
@@ -1817,7 +1755,7 @@ function buildProviderRuntimeResponse(request: FastifyRequest, clientApp?: Authe
       ...provider,
       models: filteredModels,
     },
-    backends: runtime.backends,
+    backends: clientBackends,
     compatibility: getCompatibilitySnapshot(request),
   };
 }
@@ -1843,8 +1781,6 @@ async function handleVisionRequest(
   if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
     return sendError(reply, 403, { message: `Origin not allowed for app ${clientApp.name}`, type: 'permission_error', code: 'origin_not_allowed' });
   }
-  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-  if (unsupported) return unsupported;
   if (!config.ollamaLocal.enabled || !config.ollamaLocal.visionModel) {
     return sendError(reply, 404, { message: 'Vision model is not configured', type: 'invalid_request_error', code: 'vision_model_not_available' });
   }
@@ -1891,214 +1827,6 @@ async function handleVisionRequest(
   }
 }
 
-function rawRequestedModel(request: FastifyRequest): string {
-  const body = request.body;
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return '';
-  const record = body as Record<string, unknown>;
-  const value = record.model ?? record.name;
-  return typeof value === 'string' ? value.trim().toLowerCase().replace(/^models\//u, '') : '';
-}
-
-function rawBackendOverride(request: FastifyRequest): string {
-  return String(readHeaderValue(request, 'x-gemrouter-backend', 'x-baribi-backend') ?? 'auto')
-    .trim()
-    .toLowerCase();
-}
-
-/** Detect the reserved backend before any permissive model-policy fallback runs. */
-function hasChatGptIntent(request: FastifyRequest): boolean {
-  const model = rawRequestedModel(request);
-  return rawBackendOverride(request) === 'chatgpt'
-    || model.startsWith('chatgpt/')
-    || Boolean(chatGptRegistry?.resolveAlias(model))
-    || dormantChatGptAliases.has(model);
-}
-
-function rejectUnsupportedChatGptSurface(request: FastifyRequest, reply: FastifyReply): FastifyReply | null {
-  if (!hasChatGptIntent(request)) return null;
-  const error = chatGptError('chatgpt_unsupported_surface');
-  applyErrorHeaders(reply, error);
-  return sendError(reply, error.options.statusCode ?? 400, {
-    message: error.message,
-    type: 'invalid_request_error',
-    code: error.code,
-  });
-}
-
-function ensureNoExplicitChatGptContextReset(request: FastifyRequest): void {
-  const stateful = readHeaderValue(request, 'x-gemrouter-stateful', 'x-baribi-stateful');
-  if (stateful !== undefined && !['1', 'true', 'yes', 'on'].includes(stateful.toLowerCase())) {
-    throw chatGptError('chatgpt_context_reset_unsupported');
-  }
-  const reset = readHeaderValue(request, 'x-gemrouter-reset-session', 'x-baribi-reset-session');
-  if (reset !== undefined && ['1', 'true', 'yes', 'on'].includes(reset.toLowerCase())) {
-    throw chatGptError('chatgpt_context_reset_unsupported');
-  }
-}
-
-async function handleChatGptCompletion(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  access: AuthenticatedClientAccess,
-  surface: 'openai' | 'gemrouter',
-): Promise<FastifyReply | Record<string, unknown>> {
-  let parsed: ParsedChatGptRequest | undefined;
-  try {
-    if (!chatGptGateway || !chatGptRegistry) throw chatGptError('chatgpt_feature_disabled');
-    const rawModel = rawRequestedModel(request);
-    if (!rawModel) throw chatGptError('chatgpt_model_not_found', 'An explicit ChatGPT model alias is required.');
-    const backend = rawBackendOverride(request);
-    if (backend !== 'auto' && backend !== 'chatgpt') throw chatGptError('chatgpt_backend_mismatch');
-    ensureNoExplicitChatGptContextReset(request);
-    parsed = parseChatGptCompletionRequest({
-      body: request.body,
-      profile: config.chatgpt.profile,
-      profileHeader: readHeaderValue(request, 'x-gemrouter-gateway-profile'),
-      idempotencyKey: readHeaderValue(request, 'idempotency-key'),
-      maxRequestBytes: config.chatgpt.maxRequestBytes,
-    });
-    const worker = chatGptRegistry.resolveAlias(parsed.model);
-    if (!worker) throw chatGptError('chatgpt_model_not_found');
-    if (!appStore.isModelAllowed(access.app, parsed.model) || !worker.allowedAppIds.includes(access.app.id)) {
-      throw chatGptError('chatgpt_model_not_allowed');
-    }
-
-    const requestController = new AbortController();
-    const abortOnDisconnect = (): void => {
-      if (!reply.raw.writableEnded) requestController.abort(new Error('client_disconnected'));
-    };
-    request.raw.once('aborted', abortOnDisconnect);
-    reply.raw.once('close', abortOnDisconnect);
-    const deadline = getStartedAt(request) + worker.timeoutMs;
-    const messages = toLlmMessages(parsed.messages);
-    let response: LLMResponse;
-    try {
-      response = await llm.chat(messages, {
-        model: parsed.model,
-        allowedModelIds: [parsed.model],
-        backendPreference: 'chatgpt',
-        requestDeadlineMs: worker.timeoutMs,
-        deadline,
-        signal: requestController.signal,
-        chatgpt: {
-          appId: access.app.id,
-          surface,
-          fingerprint: parsed.fingerprint,
-          idempotencyKey: parsed.idempotencyKey,
-          messages: parsed.messages,
-          controls: parsed.controls,
-          requestTimeoutMs: worker.timeoutMs,
-        },
-      });
-    } finally {
-      request.raw.removeListener('aborted', abortOnDisconnect);
-      reply.raw.removeListener('close', abortOnDisconnect);
-    }
-
-    recordInteraction({
-      request,
-      route: request.url,
-      appRecord: access.app,
-      model: parsed.model,
-      messages,
-      status: 'succeeded',
-      statusCode: 200,
-      provider: response.provider,
-      response,
-      privateContent: true,
-      usageSource: 'unavailable',
-    });
-    audit.write({
-      type: parsed.controls.stream ? 'chatgpt.stream' : 'chatgpt.completion',
-      requestId: request.id,
-      appId: access.app.id,
-      route: request.url,
-      model: parsed.model,
-      statusCode: 200,
-      latencyMs: Date.now() - getStartedAt(request),
-      details: buildAuditDetailsFromResponse(response),
-    });
-
-    if (!parsed.controls.stream) {
-      applyBackendHeaders(reply, response);
-      return buildChatCompletionResponse({
-        model: parsed.model,
-        text: response.content,
-        finishReason: response.finishReason,
-      });
-    }
-
-    // The gateway stream is intentionally buffered: no success status or SSE data is
-    // committed until the reverse-RPC completion has passed all gateway validation.
-    reply.hijack();
-    for (const [name, value] of Object.entries(reply.getHeaders())) {
-      if (value !== undefined) reply.raw.setHeader(name, value);
-    }
-    reply.raw.writeHead(200, buildStreamResponseHeaders(request, response));
-    const completionId = `chatcmpl_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
-    const created = Math.floor(Date.now() / 1000);
-    const send = (payload: unknown): void => {
-      if (!reply.raw.writableEnded) reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-    };
-    send({
-      id: completionId,
-      object: 'chat.completion.chunk',
-      created,
-      model: parsed.model,
-      choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-    });
-    if (response.content) {
-      send({
-        id: completionId,
-        object: 'chat.completion.chunk',
-        created,
-        model: parsed.model,
-        choices: [{ index: 0, delta: { content: response.content }, finish_reason: null }],
-      });
-    }
-    send({
-      id: completionId,
-      object: 'chat.completion.chunk',
-      created,
-      model: parsed.model,
-      choices: [{ index: 0, delta: {}, finish_reason: response.finishReason ?? 'stop' }],
-    });
-    reply.raw.end('data: [DONE]\n\n');
-    return reply;
-  } catch (error) {
-    const http = mapLlmErrorToHttp(error);
-    applyErrorHeaders(reply, error);
-    recordInteraction({
-      request,
-      route: request.url,
-      appRecord: access.app,
-      model: parsed?.model ?? rawRequestedModel(request),
-      messages: parsed ? toLlmMessages(parsed.messages) : [],
-      status: 'failed',
-      statusCode: http.statusCode,
-      llmError: error,
-      error: http.message,
-      privateContent: true,
-      usageSource: 'unavailable',
-    });
-    audit.write({
-      type: 'chatgpt.completion.error',
-      requestId: request.id,
-      appId: access.app.id,
-      route: request.url,
-      model: parsed?.model ?? rawRequestedModel(request),
-      statusCode: http.statusCode,
-      latencyMs: Date.now() - getStartedAt(request),
-      details: { code: http.code, error: http.message },
-    });
-    return sendError(reply, http.statusCode, {
-      message: http.message,
-      type: http.type,
-      code: http.code,
-    });
-  }
-}
-
 async function handleChatCompletionsRequest(
   request: FastifyRequest<{ Body: ChatCompletionsRequest }>,
   reply: FastifyReply,
@@ -2111,14 +1839,6 @@ async function handleChatCompletionsRequest(
   }
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
-
-  if (hasChatGptIntent(request)) {
-    try {
-      return await handleChatGptCompletion(request, reply, access, surface);
-    } finally {
-      access.release();
-    }
-  }
 
   let parsed: ReturnType<typeof parseChatCompletionsRequest>;
   try {
@@ -2134,7 +1854,6 @@ async function handleChatCompletionsRequest(
       latencyMs: Date.now() - getStartedAt(request),
       details: { error: message },
     });
-    access.release();
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -2154,6 +1873,7 @@ async function handleChatCompletionsRequest(
     }
     const sessionOptions = buildRequestLlmOptions({
       request,
+      reply, appRecord: access.app,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
       model: resolvedModel.model,
@@ -2175,7 +1895,7 @@ async function handleChatCompletionsRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = responseUsage(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -2205,14 +1925,16 @@ async function handleChatCompletionsRequest(
         details: buildAuditDetailsFromResponse(response),
       });
       return buildChatCompletionResponse({
-        model: parsed.model,
+        model: response.model ?? parsed.model,
         text: response.content,
         usage,
         finishReason: response.finishReason,
       });
     }
 
-    reply.raw.writeHead(200, buildStreamResponseHeaders(request));
+    const bufferedResponse = isCodexRequest(resolvedModel.model) ? await llm.chat(parsed.messages, sessionOptions) : undefined;
+    const wireModel = bufferedResponse?.model ?? parsed.model;
+    reply.raw.writeHead(200, buildStreamResponseHeaders(request, bufferedResponse));
 
     const completionId = `chatcmpl_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
     const created = Math.floor(Date.now() / 1000);
@@ -2226,7 +1948,7 @@ async function handleChatCompletionsRequest(
       id: completionId,
       object: 'chat.completion.chunk',
       created,
-      model: parsed.model,
+      model: wireModel,
       choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
       usage: null,
     });
@@ -2236,7 +1958,7 @@ async function handleChatCompletionsRequest(
     let finalProvider: string | undefined;
     let finalResponse: LLMResponse | undefined;
     try {
-      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      const stream = bufferedResponse ? bufferedStream(bufferedResponse) : llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
@@ -2254,13 +1976,13 @@ async function handleChatCompletionsRequest(
           id: completionId,
           object: 'chat.completion.chunk',
           created,
-          model: parsed.model,
+          model: wireModel,
           choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
           usage: null,
         });
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = responseUsage(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -2280,7 +2002,7 @@ async function handleChatCompletionsRequest(
         id: completionId,
         object: 'chat.completion.chunk',
         created,
-        model: parsed.model,
+        model: wireModel,
         choices: [{ index: 0, delta: {}, finish_reason: finalResponse?.finishReason ?? 'stop' }],
         usage: null,
       });
@@ -2289,7 +2011,7 @@ async function handleChatCompletionsRequest(
           id: completionId,
           object: 'chat.completion.chunk',
           created,
-          model: parsed.model,
+          model: wireModel,
           choices: [],
           usage,
         });
@@ -2386,11 +2108,6 @@ async function handleResponsesRequest(
   if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
-  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-  if (unsupported) {
-    access.release();
-    return unsupported;
-  }
 
   let parsed: ReturnType<typeof parseResponsesRequest>;
   try {
@@ -2406,7 +2123,6 @@ async function handleResponsesRequest(
       latencyMs: Date.now() - getStartedAt(request),
       details: { error: message },
     });
-    access.release();
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -2426,6 +2142,7 @@ async function handleResponsesRequest(
     }
     const sessionOptions = buildRequestLlmOptions({
       request,
+      reply, appRecord: access.app,
       user: parsed.user,
       sessionNamespace: access.app.sessionNamespace,
       model: resolvedModel.model,
@@ -2447,7 +2164,7 @@ async function handleResponsesRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = responseUsage(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -2476,10 +2193,12 @@ async function handleResponsesRequest(
         latencyMs: Date.now() - getStartedAt(request),
         details: buildAuditDetailsFromResponse(response),
       });
-      return buildResponsesApiResponse({ model: parsed.model, text: response.content, usage });
+      return buildResponsesApiResponse({ model: response.model ?? parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, buildStreamResponseHeaders(request));
+    const bufferedResponse = isCodexRequest(resolvedModel.model) ? await llm.chat(parsed.messages, sessionOptions) : undefined;
+    const wireModel = bufferedResponse?.model ?? parsed.model;
+    reply.raw.writeHead(200, buildStreamResponseHeaders(request, bufferedResponse));
 
     const responseId = `resp_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
     const messageId = `msg_${request.id.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -2496,7 +2215,7 @@ async function handleResponsesRequest(
         id: responseId,
         object: 'response',
         created_at: createdAt,
-        model: parsed.model,
+        model: wireModel,
         status: 'in_progress',
       },
     });
@@ -2527,7 +2246,7 @@ async function handleResponsesRequest(
     let finalProvider: string | undefined;
     let finalResponse: LLMResponse | undefined;
     try {
-      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      const stream = bufferedResponse ? bufferedStream(bufferedResponse) : llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
@@ -2550,7 +2269,7 @@ async function handleResponsesRequest(
         });
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = responseUsage(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -2605,7 +2324,7 @@ async function handleResponsesRequest(
         type: 'response.completed',
         response: buildResponsesApiResponse({
           id: responseId,
-          model: parsed.model,
+          model: finalResponse?.model ?? parsed.model,
           text: finalText,
           usage,
           createdAt,
@@ -2708,11 +2427,6 @@ async function handleImageGenerationsRequest(
   }
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
-  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-  if (unsupported) {
-    access.release();
-    return unsupported;
-  }
 
   let parsed: ReturnType<typeof parseImageGenerationsRequest>;
   try {
@@ -2728,7 +2442,6 @@ async function handleImageGenerationsRequest(
       latencyMs: Date.now() - getStartedAt(request),
       details: { error: message },
     });
-    access.release();
     return sendError(reply, 400, {
       message,
       type: 'invalid_request_error',
@@ -2870,11 +2583,6 @@ async function handleOllamaChatRequest(
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
-  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-  if (unsupported) {
-    access.release();
-    return unsupported;
-  }
 
   let parsed: ReturnType<typeof parseOllamaChatRequest>;
   try {
@@ -2909,6 +2617,7 @@ async function handleOllamaChatRequest(
     }
     const sessionOptions = buildRequestLlmOptions({
       request,
+      reply, appRecord: access.app,
       sessionNamespace: access.app.sessionNamespace,
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
@@ -2928,7 +2637,7 @@ async function handleOllamaChatRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = responseUsage(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -2957,10 +2666,12 @@ async function handleOllamaChatRequest(
         latencyMs: Date.now() - getStartedAt(request),
         details: buildAuditDetailsFromResponse(response),
       });
-      return buildOllamaChatResponse({ model: parsed.model, text: response.content, usage });
+      return buildOllamaChatResponse({ model: response.model ?? parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, buildNdjsonResponseHeaders(request));
+    const bufferedResponse = isCodexRequest(resolvedModel.model) ? await llm.chat(parsed.messages, sessionOptions) : undefined;
+    const wireModel = bufferedResponse?.model ?? parsed.model;
+    reply.raw.writeHead(200, buildNdjsonResponseHeaders(request, bufferedResponse));
 
     const sendChunk = (payload: unknown): void => {
       if (!reply.raw.writableEnded) {
@@ -2973,7 +2684,7 @@ async function handleOllamaChatRequest(
     let finalProvider: string | undefined;
     let finalResponse: LLMResponse | undefined;
     try {
-      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      const stream = bufferedResponse ? bufferedStream(bufferedResponse) : llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
@@ -2987,10 +2698,10 @@ async function handleOllamaChatRequest(
         const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
         emitted = latest;
         if (!delta) continue;
-        sendChunk(buildOllamaChatChunk({ model: parsed.model, text: delta }));
+        sendChunk(buildOllamaChatChunk({ model: wireModel, text: delta }));
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = responseUsage(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -3004,7 +2715,7 @@ async function handleOllamaChatRequest(
         provider: finalProvider,
         response: finalResponse,
       });
-      sendChunk(buildOllamaChatDone({ model: parsed.model, usage }));
+      sendChunk(buildOllamaChatDone({ model: wireModel, usage }));
       audit.write({
         type: 'ollama.chat.stream',
         requestId: request.id,
@@ -3088,11 +2799,6 @@ async function handleOllamaGenerateRequest(
   if (!ensureOllamaSurfaceEnabled(reply)) return reply;
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
-  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-  if (unsupported) {
-    access.release();
-    return unsupported;
-  }
 
   let parsed: ReturnType<typeof parseOllamaGenerateRequest>;
   try {
@@ -3127,6 +2833,7 @@ async function handleOllamaGenerateRequest(
     }
     const sessionOptions = buildRequestLlmOptions({
       request,
+      reply, appRecord: access.app,
       sessionNamespace: access.app.sessionNamespace,
       model: resolvedModel.model,
       allowedModelIds: resolvedModel.allowedModelIds,
@@ -3146,7 +2853,7 @@ async function handleOllamaGenerateRequest(
     if (!parsed.stream) {
       const response = await llm.chat(parsed.messages, sessionOptions);
       applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-      const usage = estimateUsage(parsed.messages, response.content);
+      const usage = responseUsage(parsed.messages, response.content, response);
       recordInteraction({
         request,
         route: request.url,
@@ -3175,10 +2882,12 @@ async function handleOllamaGenerateRequest(
         latencyMs: Date.now() - getStartedAt(request),
         details: buildAuditDetailsFromResponse(response),
       });
-      return buildOllamaGenerateResponse({ model: parsed.model, text: response.content, usage });
+      return buildOllamaGenerateResponse({ model: response.model ?? parsed.model, text: response.content, usage });
     }
 
-    reply.raw.writeHead(200, buildNdjsonResponseHeaders(request));
+    const bufferedResponse = isCodexRequest(resolvedModel.model) ? await llm.chat(parsed.messages, sessionOptions) : undefined;
+    const wireModel = bufferedResponse?.model ?? parsed.model;
+    reply.raw.writeHead(200, buildNdjsonResponseHeaders(request, bufferedResponse));
 
     const sendChunk = (payload: unknown): void => {
       if (!reply.raw.writableEnded) {
@@ -3191,7 +2900,7 @@ async function handleOllamaGenerateRequest(
     let finalProvider: string | undefined;
     let finalResponse: LLMResponse | undefined;
     try {
-      const stream = llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
+      const stream = bufferedResponse ? bufferedStream(bufferedResponse) : llm.streamChat ? llm.streamChat(parsed.messages, sessionOptions) : null;
       if (!stream) throw new Error('Streaming is not available');
       while (true) {
         const next = await stream.next();
@@ -3205,10 +2914,10 @@ async function handleOllamaGenerateRequest(
         const delta = latest.startsWith(emitted) ? latest.slice(emitted.length) : latest;
         emitted = latest;
         if (!delta) continue;
-        sendChunk(buildOllamaGenerateChunk({ model: parsed.model, text: delta }));
+        sendChunk(buildOllamaGenerateChunk({ model: wireModel, text: delta }));
       }
 
-      const usage = estimateUsage(parsed.messages, finalText);
+      const usage = responseUsage(parsed.messages, finalText, finalResponse);
       recordInteraction({
         request,
         route: request.url,
@@ -3222,7 +2931,7 @@ async function handleOllamaGenerateRequest(
         provider: finalProvider,
         response: finalResponse,
       });
-      sendChunk(buildOllamaGenerateDone({ model: parsed.model, usage }));
+      sendChunk(buildOllamaGenerateDone({ model: wireModel, usage }));
       audit.write({
         type: 'ollama.generate.stream',
         requestId: request.id,
@@ -3315,74 +3024,6 @@ app.addHook('onSend', async (request, reply, payload) => {
   return payload;
 });
 
-if (chatGptGateway && chatGptOAuth) {
-  // Guided setup uses the same authenticated registry and exact app policy as
-  // advanced management. No credentials, model names or grants are inferred.
-  app.post<{ Body: { label?: unknown; alias?: unknown; appId?: unknown } }>('/admin/chatgpt/onboarding', async (request, reply) => {
-    if (!ensureAdminMutation(request, reply)) return reply;
-    const body = request.body;
-    if (!body || typeof body.appId !== 'string') return reply.code(400).send({ error: 'Select an application.' });
-    const selectedApp = appStore.findById(body.appId);
-    if (!selectedApp || selectedApp.revokedAt) return reply.code(400).send({ error: 'Select an active application.' });
-    try {
-      const worker = chatGptGateway.registry.create({
-        id: `worker-${randomBytes(10).toString('hex')}`,
-        label: body.label,
-        publicModelIds: [body.alias],
-        allowedAppIds: [selectedApp.id],
-        declaredModel: 'Selected in dedicated ChatGPT chat (unverified)',
-      });
-      audit.write({ type: 'chatgpt.onboarding.created', requestId: request.id, details: { workerId: worker.id, appId: selectedApp.id } });
-      return reply.code(201).send({ ok: true, worker });
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : 'Invalid setup.' });
-    }
-  });
-  app.post<{ Params: { workerId: string }; Body: { appId?: unknown } }>('/admin/chatgpt/workers/:workerId/activate', async (request, reply) => {
-    if (!ensureAdminMutation(request, reply)) return reply;
-    const worker = chatGptGateway.registry.get(request.params.workerId);
-    if (!worker) return reply.code(404).send({ error: 'worker_not_found' });
-    const appId = request.body?.appId;
-    const selectedApp = typeof appId === 'string' ? appStore.findById(appId) : undefined;
-    if (!selectedApp || selectedApp.revokedAt || !worker.allowedAppIds.includes(selectedApp.id)) {
-      return reply.code(400).send({ error: 'Select an active application already assigned to this worker.' });
-    }
-    // Preserve every existing app permission; activation only adds this worker's
-    // exact aliases to the explicitly selected application's custom allowlist.
-    if (selectedApp.modelAccess === 'custom') {
-      appStore.update(selectedApp.id, { allowedModels: [...new Set([...selectedApp.allowedModels, ...worker.publicModelIds])] });
-    }
-    const enabledWorker = chatGptGateway.registry.update(worker.id, { enabled: true });
-    audit.write({ type: 'chatgpt.onboarding.activated', requestId: request.id, details: { workerId: worker.id, appId: selectedApp.id } });
-    return { ok: true, worker: enabledWorker };
-  });
-  registerChatGptGatewayRoutes(app, chatGptGateway, chatGptOAuth, {
-    isAdmin: hasAdminAccess,
-    ensureAdmin,
-    ensureAdminMutation,
-    adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
-    appIds: () => appStore.list().filter((record) => !record.revokedAt).map((record) => record.id),
-    audit: (event) => audit.write({
-      type: event.type,
-      requestId: event.requestId,
-      details: {
-        ...(event.details ?? {}),
-        ...(event.workerId ? { workerId: event.workerId } : {}),
-      },
-    }),
-  });
-  app.addHook('onClose', async () => {
-    await personalChatControl?.close();
-    chatGptGateway.close();
-  });
-  if (personalChatControl) registerPersonalControlRoutes(app, personalChatControl, {
-    ensureAdmin, ensureAdminMutation,
-    adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
-    audit: (event) => audit.write({ type: event.type, requestId: event.requestId,
-      details: { ...(event.details ?? {}), ...(event.workerId ? { workerId: event.workerId } : {}) } }),
-  });
-}
-
 app.get('/', async (request, reply) => {
   if (config.dashboardEnabled && wantsHtmlShell(request)) {
     return reply
@@ -3390,7 +3031,7 @@ app.get('/', async (request, reply) => {
       .send(
         renderAppShell({
           projectName: PROJECT_NAME,
-          modelIds: [...providerModelIds],
+          modelIds: config.modelIds,
           publicBaseUrl: inferPublicBaseUrl(request),
         }),
       );
@@ -3410,7 +3051,7 @@ app.get('/admin', async (request, reply) =>
     .send(
       renderAppShell({
         projectName: PROJECT_NAME,
-        modelIds: [...providerModelIds],
+        modelIds: config.modelIds,
         publicBaseUrl: inferPublicBaseUrl(request),
       }),
     ),
@@ -3419,13 +3060,11 @@ app.get('/admin', async (request, reply) =>
 app.get('/health', async (request) => getRuntimeSnapshot(request));
 
 async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: string; username?: string; password?: string } }>, reply: FastifyReply) {
-  const origin = getRequestOrigin(request);
-  if (origin && origin !== adminBrowserOrigin(request)) return reply.code(403).send({ error: 'origin_not_allowed' });
   const token = String(request.body?.token ?? '').trim();
   const username = String(request.body?.username ?? '').trim();
   const password = String(request.body?.password ?? '').trim();
 
-  const adminUser = stableCompare(token, config.adminToken)
+  const adminUser = token === config.adminToken
     ? { username: 'token-admin' }
     : findDashboardAdminUser(username, password);
 
@@ -3438,7 +3077,7 @@ async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: st
   }
 
   const sessionId = adminSessions.create({ username: adminUser.username });
-  setAdminCookie(reply, sessionId, request);
+  setAdminCookie(reply, sessionId);
   audit.write({
     type: 'admin.login',
     requestId: request.id,
@@ -3455,10 +3094,8 @@ async function handleDashboardLogin(request: FastifyRequest<{ Body: { token?: st
 }
 
 async function handleDashboardLogout(request: FastifyRequest, reply: FastifyReply) {
-  const origin = getRequestOrigin(request);
-  if (origin && origin !== adminBrowserOrigin(request)) return reply.code(403).send({ error: 'origin_not_allowed' });
   adminSessions.revoke(getAdminSessionId(request));
-  clearAdminCookie(reply, request);
+  clearAdminCookie(reply);
   return {
     ok: true,
   };
@@ -3482,9 +3119,9 @@ app.get('/auth/me', async (request) => {
   return {
     ok: true,
     authenticated: true,
+    csrfToken: session.csrfToken,
     role: 'admin',
     username: session.username ?? 'admin',
-    csrfToken: session.csrfToken,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
   };
@@ -3508,7 +3145,6 @@ app.get('/admin/me', async (request, reply) => {
     ok: true,
     role: 'admin',
     username: session?.username ?? 'admin',
-    csrfToken: session?.csrfToken ?? null,
     project: PROJECT_NAME,
     service: SERVICE_NAME,
   };
@@ -3558,14 +3194,6 @@ app.get('/admin/summary', async (request, reply) => {
       configured: config.freeTierPolicy,
     },
     apps: appStore.list().map(sanitizeAdminApp),
-    chatgpt: {
-      enabled: config.chatgpt.enabled,
-      profile: config.chatgpt.profile,
-      publicBaseUrl: chatGptOAuth?.issuer ?? null,
-      workerCount: chatGptRegistry?.list().length ?? 0,
-      usage: 'unavailable',
-      streaming: 'buffered',
-    },
     stats: interactions.summary(60),
   };
 });
@@ -3883,10 +3511,9 @@ app.post<{ Body: { textModels?: string[] } }>('/admin/provider/models-config', a
     return sendError(reply, 400, { message: 'textModels must be a non-empty ordered list', type: 'invalid_request_error', code: 'empty_model_list' });
   }
   applyModelConfig(list);
-  refreshProviderModelUniverse();
   mkdirSync(path.dirname(MODEL_CONFIG_PATH), { recursive: true });
   writeFileSync(MODEL_CONFIG_PATH, `${JSON.stringify({ textModels: config.freeTierPolicy.textModelIds }, null, 2)}\n`, 'utf8');
-  appStore.restrictAllowedModels(appPolicyModelUniverse());
+  appStore.restrictAllowedModels(config.modelIds);
   audit.write({ type: 'admin.models.config', requestId: request.id, route: request.url, statusCode: 200, latencyMs: Date.now() - getStartedAt(request) });
   return { ok: true, enabled: config.freeTierPolicy.textModelIds };
 });
@@ -4000,6 +3627,7 @@ app.post<{
     stateful?: boolean;
     maxTokens?: number;
     temperature?: number;
+    reasoning_effort?: string;
   };
 }>('/admin/test-chat', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
@@ -4023,12 +3651,9 @@ app.post<{
   }
 
   const model = normalizeModelId(body.model);
-  if (model.startsWith('chatgpt/') || chatGptRegistry?.recognizes(model) || dormantChatGptAliases.has(model)) {
-    const error = chatGptError('chatgpt_unsupported_surface', 'Use an authenticated /v1/chat/completions request to test a ChatGPT worker alias.');
-    applyErrorHeaders(reply, error);
-    return sendError(reply, error.options.statusCode ?? 400, { message: error.message, type: 'invalid_request_error', code: error.code });
-  }
-  const resolvedModel = resolveTextModelForApp(selectedApp, model);
+  let resolvedModel: ReturnType<typeof resolveTextModelForApp>;
+  try { resolvedModel = resolveTextModelForApp(selectedApp, model); }
+  catch (error) { const http = mapLlmErrorToHttp(error); return sendError(reply, http.statusCode, { message: http.message, type: http.type, code: http.code }); }
   if (!resolvedModel) {
     return sendError(reply, 403, {
       message: `No free-tier text model is enabled for app ${selectedApp.name}`,
@@ -4054,9 +3679,10 @@ app.post<{
       stateful: body.stateful === true,
       fingerprintFallback: createRequestFingerprint(messages),
     });
+    if (isCodexRequest(resolvedModel.model)) { options.codex = codexRequestPolicy(body, undefined, selectedApp); options.deadline = Date.now() + config.codex.timeoutMs; }
     const response = await llm.chat(messages, options);
     applyBackendHeaders(reply, withFallbackReason(response, resolvedModel.policyFallbackReason));
-    const usage = estimateUsage(messages, response.content);
+    const usage = responseUsage(messages, response.content, response);
     recordInteraction({
       request,
       route: request.url,
@@ -4125,48 +3751,6 @@ app.post<{
 
 app.get('/v1/models', async (request, reply) => handleModelsRequest(request, reply, 'openai'));
 app.get('/models', async (request, reply) => handleModelsRequest(request, reply, 'gemrouter'));
-app.get<{ Querystring: { model?: string } }>('/v1/chatgpt/capabilities', async (request, reply) => {
-  if (!ensureOpenAiSurfaceEnabled('openai', reply)) return reply;
-  const access = await ensureClientAccess(request, reply);
-  if (!access) return reply;
-  try {
-    if (!chatGptRegistry || !chatGptGateway) throw chatGptError('chatgpt_feature_disabled');
-    const model = String(request.query?.model ?? '').trim().toLowerCase().replace(/^models\//u, '');
-    if (!model) throw chatGptError('chatgpt_model_not_found', 'The model query parameter is required.');
-    const worker = chatGptRegistry.resolveAlias(model);
-    if (!worker) throw chatGptError('chatgpt_model_not_found');
-    const alias = model.startsWith('chatgpt/') ? model.slice('chatgpt/'.length) : model;
-    if (!appStore.isModelAllowed(access.app, alias) || !worker.allowedAppIds.includes(access.app.id)) {
-      throw chatGptError('chatgpt_model_not_allowed');
-    }
-    return {
-      object: 'chatgpt.gateway.capabilities',
-      model: alias,
-      backend: 'chatgpt',
-      provider: 'chatgpt-mcp',
-      worker: { id: worker.id, label: worker.label, domainLabel: worker.domainLabel ?? null },
-      declaration: {
-        model: worker.declaredModel,
-        reasoning: worker.declaredReasoning ?? null,
-        verification: 'operator_declared',
-      },
-      context: { mode: 'persistent_chat', epoch: worker.contextEpoch, isolatedPerRequest: false, resetSupported: false },
-      streaming: 'buffered',
-      usage: 'unavailable',
-      profile: config.chatgpt.profile,
-      responseFormats: { text: true, json_object: 'gateway_validated', native_structured_output: false },
-      tools: false,
-      media: false,
-      status: chatGptGateway.store.workerStatus(worker.id),
-    };
-  } catch (error) {
-    const http = mapLlmErrorToHttp(error);
-    applyErrorHeaders(reply, error);
-    return sendError(reply, http.statusCode, { message: http.message, type: http.type, code: http.code });
-  } finally {
-    access.release();
-  }
-});
 app.get('/v1/provider/runtime', async (request, reply) => {
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
@@ -4193,11 +3777,7 @@ app.get('/v1/provider/models', async (request, reply) => {
 // dashboard, no secrets or file contents.
 app.get('/v1/admin/backup/summary', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const contents = summarizeBackupContents({
-    rootDir: config.rootDir,
-    dataDir: config.dataDir,
-    excludedPaths: CHATGPT_BACKUP_EXCLUDED_PATHS,
-  });
+  const contents = summarizeBackupContents({ rootDir: config.rootDir, dataDir: config.dataDir, excludedPaths: PRIVATE_BACKUP_EXCLUSIONS });
   const accounts = config.geminiApi.keys;
   return {
     ok: true,
@@ -4215,15 +3795,12 @@ app.get('/v1/admin/backup/summary', async (request, reply) => {
   };
 });
 
-// Snapshot of legacy router state. OAuth tokens, MCP grants, live runs, claims and
-// ChatGPT payloads are deliberately excluded and must be paired again after restore.
+// Full-state snapshot: complete .env plus every file under data/. The response
+// contains every secret the router owns — admin session required, treat the
+// downloaded gemrouter.cfg like a private key.
 app.get('/v1/admin/backup/export', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const backup = buildBackup({
-    rootDir: config.rootDir,
-    dataDir: config.dataDir,
-    excludedPaths: CHATGPT_BACKUP_EXCLUDED_PATHS,
-  });
+  const backup = buildBackup({ rootDir: config.rootDir, dataDir: config.dataDir, excludedPaths: PRIVATE_BACKUP_EXCLUSIONS });
   audit.write({ type: 'backup_export', route: '/v1/admin/backup/export', details: { files: Object.keys(backup.files).length } });
   return reply
     .type('application/json; charset=utf-8')
@@ -4236,12 +3813,7 @@ app.get('/v1/admin/backup/export', async (request, reply) => {
 // imported configuration fully applied.
 app.post('/v1/admin/backup/import', { bodyLimit: 64 * 1024 * 1024 }, async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
-  const result = applyBackup({
-    rootDir: config.rootDir,
-    dataDir: config.dataDir,
-    payload: request.body,
-    excludedPaths: CHATGPT_BACKUP_EXCLUDED_PATHS,
-  });
+  const result = applyBackup({ rootDir: config.rootDir, dataDir: config.dataDir, excludedPaths: PRIVATE_BACKUP_EXCLUSIONS, payload: request.body });
   if (!result.ok) {
     return reply.code(400).send({ ok: false, error: result.error });
   }
@@ -4313,14 +3885,10 @@ app.get('/v1/provider/quota', async (request, reply) => {
   }
 });
 
-app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', {
-  bodyLimit: Math.max(1_048_576, config.chatgpt.maxRequestBytes + 65_536),
-}, async (request, reply) =>
+app.post<{ Body: ChatCompletionsRequest }>('/v1/chat/completions', async (request, reply) =>
   handleChatCompletionsRequest(request, reply, 'openai'),
 );
-app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', {
-  bodyLimit: Math.max(1_048_576, config.chatgpt.maxRequestBytes + 65_536),
-}, async (request, reply) =>
+app.post<{ Body: ChatCompletionsRequest }>('/chat/completions', async (request, reply) =>
   handleChatCompletionsRequest(request, reply, 'gemrouter'),
 );
 
@@ -4332,8 +3900,6 @@ async function handleEmbeddingsRequest(
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
-    const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-    if (unsupported) return unsupported;
     const model = normalizeModelId(String(request.body?.model ?? ''));
     if (!config.ollamaLocal.enabled || !ollamaLocalLlm.isEmbeddingModel(model)) {
       return sendError(reply, 404, {
@@ -4384,8 +3950,6 @@ async function handleVideoRequest(
   if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
     return sendError(reply, 403, { message: `Origin not allowed for app ${clientApp.name}`, type: 'permission_error', code: 'origin_not_allowed' });
   }
-  const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-  if (unsupported) return unsupported;
   const model = normalizeModelId(String(request.body?.model ?? ''));
   const prompt = String(request.body?.prompt ?? '').trim();
   if (!config.agnes.enabled || !agnesLlm.isVideoModel(model)) {
@@ -4466,8 +4030,6 @@ app.post<{ Body: { name?: string; model?: string } }>('/api/show', async (reques
   const access = await ensureClientAccess(request, reply);
   if (!access) return reply;
   try {
-    const unsupported = rejectUnsupportedChatGptSurface(request, reply);
-    if (unsupported) return unsupported;
     const requestedModel = normalizeModelId(String(request.body?.name ?? request.body?.model ?? '').trim() || undefined);
     if (!ensureModelAllowed(reply, access.app, requestedModel)) return reply;
     return buildOllamaShowResponse(requestedModel);
@@ -4501,6 +4063,9 @@ app.post<{
     name?: string;
     allowedOrigins?: string[];
     modelAccess?: string;
+    codexEnabled?: boolean;
+    codexReasoningEffort?: string;
+    codexFallbackEnabled?: boolean;
     allowedModels?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
@@ -4510,6 +4075,7 @@ app.post<{
 }>('/admin/apps', async (request, reply) => {
   if (!ensureAdminMutation(request, reply)) return reply;
   const body = request.body ?? {};
+  validateCodexAppPolicy(body);
   // Custom API key field, two modes:
   //  - a full key (e.g. "myapp_ab12…")  → stored verbatim
   //  - a bare prefix ending in "_" (e.g. "esempio_") → a fresh random suffix is appended,
@@ -4541,6 +4107,7 @@ app.post<{
     });
   }
   const created = appStore.create({
+    codexEnabled: body.codexEnabled, codexReasoningEffort: body.codexReasoningEffort, codexFallbackEnabled: body.codexFallbackEnabled,
     name: String(body.name ?? '').trim() || 'local-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
     modelAccess,
@@ -4578,6 +4145,9 @@ app.put<{
     name?: string;
     allowedOrigins?: string[];
     modelAccess?: string;
+    codexEnabled?: boolean;
+    codexReasoningEffort?: string;
+    codexFallbackEnabled?: boolean;
     allowedModels?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
@@ -4586,6 +4156,7 @@ app.put<{
 }>('/admin/apps/:id', async (request, reply) => {
   if (!ensureAdminMutation(request, reply)) return reply;
   const body = request.body ?? {};
+  validateCodexAppPolicy(body);
   if (body.modelAccess !== undefined && body.modelAccess !== 'all' && body.modelAccess !== 'custom') {
     return sendError(reply, 400, {
       message: 'modelAccess must be "all" or "custom"',
@@ -4611,6 +4182,7 @@ app.put<{
     });
   }
   const updated = appStore.update(request.params.id, {
+    codexEnabled: body.codexEnabled, codexReasoningEffort: body.codexReasoningEffort, codexFallbackEnabled: body.codexFallbackEnabled,
     name: typeof body.name === 'string' ? body.name : undefined,
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : undefined,
     modelAccess,
@@ -4683,7 +4255,6 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/revoke', async (request, r
       code: 'app_not_found',
     });
   }
-  const detachedWorkerIds = detachAppFromChatGptWorkers(current.id);
   const revoked = appStore.revoke(request.params.id);
   if (!revoked) {
     return sendError(reply, 404, {
@@ -4699,7 +4270,6 @@ app.post<{ Params: { id: string } }>('/admin/apps/:id/revoke', async (request, r
     route: request.url,
     statusCode: 200,
     latencyMs: Date.now() - getStartedAt(request),
-    details: { detachedWorkerIds },
   });
   return {
     ok: true,
@@ -4745,7 +4315,6 @@ app.delete<{ Params: { id: string } }>('/admin/apps/:id', async (request, reply)
   if (!current.revokedAt) {
     return sendError(reply, 409, { message: 'Revoke the app before removing it', type: 'invalid_request_error', code: 'app_must_be_revoked' });
   }
-  const detachedWorkerIds = detachAppFromChatGptWorkers(current.id);
   const removed = appStore.removeRevoked(current.id);
   if (!removed) {
     return sendError(reply, 409, { message: 'App removal conflicted with another change', type: 'invalid_request_error', code: 'app_removal_conflict' });
@@ -4757,7 +4326,6 @@ app.delete<{ Params: { id: string } }>('/admin/apps/:id', async (request, reply)
     route: request.url,
     statusCode: 200,
     latencyMs: Date.now() - getStartedAt(request),
-    details: { detachedWorkerIds },
   });
   return { ok: true, app: sanitizeAdminApp(removed) };
 });

@@ -8,4 +8,8 @@ profiles/
 coverage/
 *.log
 backups/
+# Retired experiment's ignored runtime assets; temporary service cleanup is separate.
+experiments/chatgpt-widget-wake/
 gemrouter.cfg
+# Real deployment-specific tunnel config stays local; publish only the template.
+ops/cloudflared/gemrouter.yml

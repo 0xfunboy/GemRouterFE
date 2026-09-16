@@ -17,22 +17,21 @@
     "start:app": "node dist/index.js",
     "smoke": "pnpm build && bash ./scripts/smoke.sh",
     "smoke:gemini-api": "pnpm build && SMOKE_BACKEND=gemini-api bash ./scripts/smoke.sh",
-    "smoke:chatgpt-mcp": "pnpm build && node --import tsx scripts/smoke-chatgpt-mcp.ts",
-    "smoke:chatgpt-mcp:live": "pnpm build && node --import tsx scripts/smoke-chatgpt-mcp.ts --live",
-    "smoke:chatgpt-ui": "pnpm build && node --import tsx scripts/smoke-chatgpt-ui.ts",
-    "smoke:chatgpt-control": "pnpm build && node --import tsx scripts/smoke-chatgpt-control.ts",
-    "onboard:chatgpt-control": "node --import tsx scripts/onboard-chatgpt-control.ts",
+    "smoke:codex": "node --import tsx scripts/smoke-codex.ts",
+    "smoke:codex:ui": "node --import tsx scripts/smoke-codex.ts --ui",
+    "smoke:codex:live": "node --import tsx scripts/smoke-codex.ts --live",
+    "codex:account": "node --import tsx scripts/codex-account.ts",
+    "check:privacy": "node scripts/check-push-privacy.mjs",
     "test": "node --import tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
     "dotenv": "^16.6.1",
     "fastify": "5.12.4",
-    "playwright-core": "1.61.1",
     "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
+    "playwright-core": "1.61.1",
     "tsx": "^4.23.13",
     "turbo": "^2.10.12",
     "typescript": "^5.9.3"

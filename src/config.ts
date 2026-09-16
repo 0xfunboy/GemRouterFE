@@ -20,7 +20,7 @@ import type { NvidiaModelConfig, NvidiaProviderConfig } from './llm/providers/nv
 import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
 import type { OllamaLocalConfig } from './llm/providers/ollama-local/client.js';
 import type { AgnesConfig } from './llm/providers/agnes/client.js';
-import type { ChatGptGatewayConfig } from './llm/providers/chatgpt/types.js';
+import { readCodexConfig, type CodexConfig } from './codex/config.js';
 
 export interface BootstrapAppConfig {
   name: string;
@@ -40,6 +40,7 @@ export interface DashboardAdminUser {
 }
 
 export interface RuntimeConfig {
+  codex: CodexConfig;
   host: string;
   port: number;
   rootDir: string;
@@ -59,7 +60,6 @@ export interface RuntimeConfig {
   ollama: OllamaRouterConfig;
   ollamaLocal: OllamaLocalConfig;
   agnes: AgnesConfig;
-  chatgpt: ChatGptGatewayConfig;
   llmRouting: {
     backendOrder: LLMBackendId[];
     /** Hard ceiling for the whole request across all backends/fallbacks. */
@@ -143,13 +143,6 @@ function readJsonValue<T>(env: Record<string, string | undefined>, fallback: T, 
   }
 }
 
-function readChatGptProfile(env: Record<string, string | undefined>): 'compatibility' | 'strict' {
-  const value = pick(env, 'GEMROUTER_CHATGPT_PROFILE')?.toLowerCase();
-  if (value === undefined || value === 'compatibility') return 'compatibility';
-  if (value === 'strict') return 'strict';
-  throw new Error('GEMROUTER_CHATGPT_PROFILE must be compatibility or strict.');
-}
-
 function readDashboardUsers(
   env: Record<string, string | undefined>,
   fallback: DashboardAdminUser[],
@@ -177,6 +170,7 @@ function normalizeBackendId(value: string): LLMBackendId | null {
   if (normalized === 'ollama') return 'ollama';
   if (normalized === 'gemini-api' || normalized === 'gemini' || normalized === 'ai-studio') return 'gemini-api';
   if (normalized === 'nvidia' || normalized === 'nvidia-api' || normalized === 'nim') return 'nvidia';
+  if (normalized === 'codex') return 'codex';
   return null;
 }
 
@@ -393,6 +387,7 @@ export function loadConfig(
   ),
 ): RuntimeConfig {
   const rootDir = path.resolve(pick(env, 'GEMROUTER_ROOT_DIR', 'BAIRBI_ROOT_DIR', 'BARIBI_ROOT_DIR') ?? process.cwd());
+  const codex = readCodexConfig(env);
   const dataDir = path.resolve(rootDir, pick(env, 'GEMROUTER_DATA_DIR', 'BAIRBI_DATA_DIR', 'BARIBI_DATA_DIR') ?? 'data');
   mkdirSync(dataDir, { recursive: true });
   const ollamaInventoryPath = path.resolve(
@@ -472,7 +467,7 @@ export function loadConfig(
   const agnesModelIds = agnesEnabled ? [...agnesImageModels, ...agnesVideoModels] : [];
 
   const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels, ...nvidiaModelIds, ...agnesModelIds])];
-  const modelIds = buildPublicModelIds(directModels);
+  const modelIds = buildPublicModelIds([...directModels, ...(codex.enabled ? codex.models : [])]);
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
       env,
@@ -502,6 +497,7 @@ export function loadConfig(
   const geminiApiKeys = readGeminiApiKeys(env, geminiApiDefaultTier, geminiApiQuotaGroupMode);
 
   return {
+    codex,
     host: pick(env, 'HOST', 'GEMROUTER_HOST', 'BAIRBI_HOST', 'BARIBI_HOST') ?? '0.0.0.0',
     port: readNumber(env, 4024, 'PORT', 'GEMROUTER_PORT', 'BAIRBI_PORT', 'BARIBI_PORT'),
     rootDir,
@@ -697,27 +693,8 @@ export function loadConfig(
       videoPollMs: readNumber(env, 12_000, 'GEMROUTER_AGNES_VIDEO_POLL_MS'),
       usageStorePath: path.resolve(rootDir, pick(env, 'GEMROUTER_AGNES_USAGE_PATH') ?? 'data/agnes-usage.json'),
     },
-    chatgpt: {
-      enabled: readBoolean(env, false, 'GEMROUTER_CHATGPT_ENABLED'),
-      publicBaseUrl: pick(env, 'GEMROUTER_CHATGPT_PUBLIC_BASE_URL'),
-      dataDir: path.resolve(
-        rootDir,
-        pick(env, 'GEMROUTER_CHATGPT_DATA_DIR') ?? 'data/chatgpt-gateway',
-      ),
-      profile: readChatGptProfile(env),
-      timeoutMs: readNumber(env, 300_000, 'GEMROUTER_CHATGPT_TIMEOUT_MS'),
-      queueTimeoutMs: readNumber(env, 60_000, 'GEMROUTER_CHATGPT_QUEUE_TIMEOUT_MS'),
-      longPollMs: readNumber(env, 20_000, 'GEMROUTER_CHATGPT_LONG_POLL_MS'),
-      staleAfterMs: readNumber(env, 120_000, 'GEMROUTER_CHATGPT_STALE_AFTER_MS'),
-      maxQueuePerWorker: readNumber(env, 4, 'GEMROUTER_CHATGPT_MAX_QUEUE_PER_WORKER'),
-      maxActiveJobs: readNumber(env, 32, 'GEMROUTER_CHATGPT_MAX_ACTIVE_JOBS'),
-      maxRequestBytes: readNumber(env, 262_144, 'GEMROUTER_CHATGPT_MAX_REQUEST_BYTES'),
-      maxResponseBytes: readNumber(env, 1_048_576, 'GEMROUTER_CHATGPT_MAX_RESPONSE_BYTES'),
-      idempotencyTtlSeconds: readNumber(env, 900, 'GEMROUTER_CHATGPT_IDEMPOTENCY_TTL_SECONDS'),
-      retentionHours: readNumber(env, 24, 'GEMROUTER_CHATGPT_RETENTION_HOURS'),
-    },
     llmRouting: {
-      backendOrder: effectiveBackendOrder,
+      backendOrder: [...effectiveBackendOrder.filter((id) => id !== 'codex'), ...(codex.enabled ? ['codex' as const] : [])],
       requestDeadlineMs: readNumber(env, 75_000, 'GEMROUTER_REQUEST_DEADLINE_MS'),
       // Empty value disables the downgrade (NVIDIA-only requests hard-fail again).
       nvidiaFallbackModel: (pick(env, 'GEMROUTER_NVIDIA_FALLBACK_MODEL') ?? 'gemini-3.5-flash').trim().toLowerCase() || undefined,

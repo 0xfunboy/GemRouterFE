@@ -1,5 +1,6 @@
 import { LLMHedgeCancelled, LLMProviderError } from './errors.js';
 import { isNvidiaTierAlias } from './providers/nvidia/naming.js';
+import { isCodexRequest } from '../codex/models.js';
 import type {
   LLMBackendId,
   LLMClient,
@@ -15,6 +16,7 @@ interface BackendClient extends LLMClient {
 }
 
 export interface LLMRouterConfig {
+  codexFallbackModels?: () => string[];
   backendOrder: LLMBackendId[];
   /** Models that must never silently spill into another backend. */
   strictModelIds?: string[];
@@ -53,7 +55,7 @@ function normalizeBackendError(backend: LLMBackendId, error: unknown): LLMProvid
   const message = error instanceof Error ? error.message : String(error);
   return new LLMProviderError('backend_unavailable', backend, message, {
     statusCode: 502,
-    fallbackEligible: backend !== 'chatgpt',
+    fallbackEligible: backend !== 'codex',
     cause: error,
   });
 }
@@ -186,6 +188,8 @@ function shouldFallback(
   if (config.strictModelIds?.includes(model)) return false;
   if (remainingBackends.length === 0) return false;
   if (error.options.fallbackEligible !== true) return false;
+  if (backend === 'codex') return error.code === 'codex_quota_depleted'
+    && Boolean(config.codexFallbackModels?.().some((id) => !opts?.allowedModelIds || opts.allowedModelIds.includes(id)));
   return backend === 'gemini-api' || backend === 'ollama' || backend === 'nvidia';
 }
 
@@ -204,9 +208,12 @@ function isNvidiaOnlyModel(config: LLMRouterConfig, rawModel: unknown): boolean 
 function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLMBackendId[] {
   const preference = opts?.backendPreference ?? 'auto';
   if (preference !== 'auto') return [preference];
-  // A persistent human-linked worker is an explicit opt-in, never an automatic
-  // fallback even if a programmatic caller accidentally includes it in order.
-  const rawOrder = [...new Set(config.backendOrder)].filter((backend) => backend !== 'chatgpt');
+  if (isCodexRequest(String(opts?.model ?? ''))) {
+    if (!config.backendOrder.includes('codex')) return ['codex'];
+    return config.backendOrder.includes('gemini-api') && config.codexFallbackModels?.().length
+      ? ['codex', 'gemini-api'] : ['codex'];
+  }
+  const rawOrder = [...new Set(config.backendOrder)].filter((backend) => backend !== 'codex');
   const model = String(opts?.model ?? '').trim().toLowerCase().replace(/^models\//, '');
   const nvidiaCanServe = config.nvidiaServableModelIds?.includes(model) === true;
   const isGeminiModel = /^(gemini|gemma)-/.test(model);
@@ -254,7 +261,7 @@ export function createLlmRouter(
     geminiApi: BackendClient;
     ollama?: BackendClient;
     nvidia?: BackendClient;
-    chatgpt?: BackendClient;
+    codex?: BackendClient;
   },
 ): LLMClient {
   const state: RouterState = {
@@ -268,7 +275,7 @@ export function createLlmRouter(
   function getBackendClient(backend: LLMBackendId): BackendClient | undefined {
     if (backend === 'ollama') return backends.ollama;
     if (backend === 'nvidia') return backends.nvidia;
-    if (backend === 'chatgpt') return backends.chatgpt;
+    if (backend === 'codex') return backends.codex;
     return backends.geminiApi;
   }
 
@@ -282,31 +289,32 @@ export function createLlmRouter(
     remainingMs: () => number;
     dispose: () => void;
   } {
-    const deadlineMs = opts?.requestDeadlineMs ?? config.requestDeadlineMs ?? 75_000;
+    const deadlineMs = config.requestDeadlineMs ?? 75_000;
     const deadline = opts?.deadline ?? Date.now() + deadlineMs;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('gemrouter_request_deadline')), Math.max(0, deadline - Date.now()));
     timer.unref?.();
-    const onUpstreamAbort = () => controller.abort(opts?.signal?.reason);
     if (opts?.signal) {
       if (opts.signal.aborted) controller.abort(opts.signal.reason);
-      else opts.signal.addEventListener('abort', onUpstreamAbort, { once: true });
+      else opts.signal.addEventListener('abort', () => controller.abort(opts.signal?.reason), { once: true });
     }
     return {
       opts: { ...opts, deadline, signal: controller.signal },
       isExpired: () => Date.now() >= deadline,
       remainingMs: () => Math.max(0, deadline - Date.now()),
-      dispose: () => {
-        clearTimeout(timer);
-        opts?.signal?.removeEventListener('abort', onUpstreamAbort);
-      },
+      dispose: () => clearTimeout(timer),
     };
   }
 
   // Non-nvidia backends can't serve a NVIDIA-only id: substitute the configured
   // Gemini fallback model for their attempt (the response keeps the real model used).
   function optsForBackend(backend: LLMBackendId, opts: LLMOptions): LLMOptions {
-    if (backend === 'nvidia' || backend === 'chatgpt' || !config.nvidiaFallbackModel) return opts;
+    if (backend === 'gemini-api' && isCodexRequest(String(opts.model ?? ''))) {
+      const candidates = config.codexFallbackModels?.().filter((id) => !opts.allowedModelIds || opts.allowedModelIds.includes(id)) ?? [];
+      if (!candidates.length) throw new LLMProviderError('codex_fallback_not_allowed', 'codex', 'No authorized Gemini fallback.', { statusCode: 429 });
+      return { ...opts, model: candidates[0], codex: undefined };
+    }
+    if (backend === 'codex' || backend === 'nvidia' || !config.nvidiaFallbackModel) return opts;
     if (!isNvidiaOnlyModel(config, opts.model)) return opts;
     return { ...opts, model: config.nvidiaFallbackModel };
   }
@@ -831,9 +839,6 @@ export function createLlmRouter(
       const nvidia = backends.nvidia?.health
         ? (backends.nvidia.health() as Record<string, unknown>)
         : backends.nvidia?.getDiagnostics?.() ?? null;
-      const chatgpt = backends.chatgpt?.health
-        ? (backends.chatgpt.health() as Record<string, unknown>)
-        : backends.chatgpt?.getDiagnostics?.() ?? null;
       return {
         provider: 'router',
         model: 'gemini-router',
@@ -853,7 +858,6 @@ export function createLlmRouter(
         geminiApi,
         ollama,
         nvidia,
-        chatgpt,
       };
     },
   };

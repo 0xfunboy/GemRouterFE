@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { isCodexRequest, CODEX_REASONING_EFFORTS } from '../codex/models.js';
 
 export type AppModelAccess = 'all' | 'custom';
 
@@ -12,6 +13,9 @@ export interface ApiAppRecord {
   allowedOrigins: string[];
   modelAccess: AppModelAccess;
   allowedModels: string[];
+  codexEnabled?: boolean;
+  codexReasoningEffort?: string;
+  codexFallbackEnabled?: boolean;
   sessionNamespace: string;
   rateLimitPerMinute: number;
   maxConcurrency: number;
@@ -21,6 +25,9 @@ export interface ApiAppRecord {
 }
 
 interface CreateAppInput {
+  codexEnabled?: boolean;
+  codexReasoningEffort?: string;
+  codexFallbackEnabled?: boolean;
   name: string;
   rawKey?: string;
   allowedOrigins: string[];
@@ -32,6 +39,9 @@ interface CreateAppInput {
 }
 
 interface UpdateAppInput {
+  codexEnabled?: boolean;
+  codexReasoningEffort?: string;
+  codexFallbackEnabled?: boolean;
   name?: string;
   allowedOrigins?: string[];
   modelAccess?: AppModelAccess;
@@ -156,6 +166,7 @@ export class AppStore {
   }
 
   create(input: CreateAppInput): { record: ApiAppRecord; rawKey: string } {
+    if (input.codexReasoningEffort !== undefined && !(CODEX_REASONING_EFFORTS as readonly string[]).includes(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
     const rawKey = input.rawKey?.trim() || `barb_${randomBytes(24).toString('base64url')}`;
     const timestamp = nowIso();
     const record: ApiAppRecord = {
@@ -166,6 +177,9 @@ export class AppStore {
       allowedOrigins: uniqueStrings(input.allowedOrigins),
       modelAccess: input.modelAccess === 'all' ? 'all' : 'custom',
       allowedModels: normalizedModelIds(input.allowedModels),
+      codexEnabled: input.codexEnabled === true,
+      codexReasoningEffort: input.codexReasoningEffort ?? 'high',
+      codexFallbackEnabled: input.codexFallbackEnabled !== false,
       sessionNamespace: sanitizeSegment(input.sessionNamespace),
       rateLimitPerMinute: Math.max(0, input.rateLimitPerMinute),
       maxConcurrency: Math.max(0, input.maxConcurrency),
@@ -250,6 +264,7 @@ export class AppStore {
   isModelAllowed(app: ApiAppRecord, modelId: string): boolean {
     const normalized = modelId.trim().toLowerCase();
     if (!normalized) return false;
+    if (isCodexRequest(normalized) && app.codexEnabled !== true) return false;
     if (app.modelAccess === 'all') return this.modelUniverse.has(normalized);
     return app.allowedModels.includes(normalized);
   }
@@ -339,6 +354,7 @@ export class AppStore {
   update(id: string, input: UpdateAppInput): ApiAppRecord | null {
     const current = this.findById(id);
     if (!current || current.revokedAt) return null;
+    if (input.codexReasoningEffort !== undefined && !(CODEX_REASONING_EFFORTS as readonly string[]).includes(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
     if (typeof input.name === 'string' && input.name.trim()) {
       current.name = input.name.trim();
     }
@@ -347,6 +363,11 @@ export class AppStore {
     }
     if (input.modelAccess === 'all' || input.modelAccess === 'custom') {
       current.modelAccess = input.modelAccess;
+    }
+    if (typeof input.codexEnabled === 'boolean') current.codexEnabled = input.codexEnabled;
+    if (typeof input.codexFallbackEnabled === 'boolean') current.codexFallbackEnabled = input.codexFallbackEnabled;
+    if (input.codexReasoningEffort !== undefined) {
+      current.codexReasoningEffort = input.codexReasoningEffort;
     }
     if (Array.isArray(input.allowedModels)) {
       current.allowedModels = normalizedModelIds(input.allowedModels);
@@ -384,6 +405,9 @@ export class AppStore {
         apps: Array.isArray(parsed.apps)
           ? parsed.apps.map((app) => ({
             ...app,
+            codexEnabled: app.codexEnabled === true,
+            codexFallbackEnabled: app.codexFallbackEnabled !== false,
+            codexReasoningEffort: (CODEX_REASONING_EFFORTS as readonly unknown[]).includes(app.codexReasoningEffort) ? app.codexReasoningEffort : 'high',
             modelAccess: app.modelAccess === 'all' ? 'all' : 'custom',
             allowedOrigins: uniqueStrings(Array.isArray(app.allowedOrigins) ? app.allowedOrigins : []),
             allowedModels: normalizedModelIds(Array.isArray(app.allowedModels) ? app.allowedModels : []),

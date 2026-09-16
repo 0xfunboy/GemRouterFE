@@ -242,7 +242,7 @@ export function buildOllamaShowResponse(model: string): Record<string, unknown> 
 export function buildOllamaChatResponse(input: {
   model: string;
   text: string;
-  usage: UsageSummary;
+  usage?: UsageSummary;
 }): Record<string, unknown> {
   return {
     model: input.model,
@@ -255,9 +255,9 @@ export function buildOllamaChatResponse(input: {
     done_reason: 'stop',
     total_duration: durationNanos(),
     load_duration: durationNanos(),
-    prompt_eval_count: input.usage.prompt_tokens,
+    prompt_eval_count: input.usage?.prompt_tokens ?? null,
     prompt_eval_duration: durationNanos(),
-    eval_count: input.usage.completion_tokens,
+    eval_count: input.usage?.completion_tokens ?? null,
     eval_duration: durationNanos(),
   };
 }
@@ -279,7 +279,7 @@ export function buildOllamaChatChunk(input: {
 
 export function buildOllamaChatDone(input: {
   model: string;
-  usage: UsageSummary;
+  usage?: UsageSummary;
 }): Record<string, unknown> {
   return {
     model: input.model,
@@ -288,9 +288,9 @@ export function buildOllamaChatDone(input: {
     done_reason: 'stop',
     total_duration: durationNanos(),
     load_duration: durationNanos(),
-    prompt_eval_count: input.usage.prompt_tokens,
+    prompt_eval_count: input.usage?.prompt_tokens ?? null,
     prompt_eval_duration: durationNanos(),
-    eval_count: input.usage.completion_tokens,
+    eval_count: input.usage?.completion_tokens ?? null,
     eval_duration: durationNanos(),
   };
 }
@@ -298,7 +298,7 @@ export function buildOllamaChatDone(input: {
 export function buildOllamaGenerateResponse(input: {
   model: string;
   text: string;
-  usage: UsageSummary;
+  usage?: UsageSummary;
 }): Record<string, unknown> {
   return {
     model: input.model,
@@ -309,9 +309,9 @@ export function buildOllamaGenerateResponse(input: {
     context: [],
     total_duration: durationNanos(),
     load_duration: durationNanos(),
-    prompt_eval_count: input.usage.prompt_tokens,
+    prompt_eval_count: input.usage?.prompt_tokens ?? null,
     prompt_eval_duration: durationNanos(),
-    eval_count: input.usage.completion_tokens,
+    eval_count: input.usage?.completion_tokens ?? null,
     eval_duration: durationNanos(),
   };
 }
@@ -330,7 +330,7 @@ export function buildOllamaGenerateChunk(input: {
 
 export function buildOllamaGenerateDone(input: {
   model: string;
-  usage: UsageSummary;
+  usage?: UsageSummary;
 }): Record<string, unknown> {
   return {
     model: input.model,
@@ -341,9 +341,9 @@ export function buildOllamaGenerateDone(input: {
     context: [],
     total_duration: durationNanos(),
     load_duration: durationNanos(),
-    prompt_eval_count: input.usage.prompt_tokens,
+    prompt_eval_count: input.usage?.prompt_tokens ?? null,
     prompt_eval_duration: durationNanos(),
-    eval_count: input.usage.completion_tokens,
+    eval_count: input.usage?.completion_tokens ?? null,
     eval_duration: durationNanos(),
   };
 }
