@@ -936,6 +936,9 @@ export function renderAppShell(input: {
       .quota-meter.bad > span { background: var(--bad); }
       .codex-quota-table .quota-meter { width: 100%; min-width: 76px; max-width: 180px; }
       .codex-account-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+      .codex-login-link { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 16px; border: 1px solid var(--accent); background: var(--surface-muted); color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+      .codex-login-link:hover { background: var(--surface); }
+      .codex-login-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
       .codex-account-controls > label { min-width: 220px; flex: 1; }
       #codex-account-panel h4 { margin: 20px 0 12px; }
       #codex-account-login, .codex-usage-details { margin-top: 16px; }

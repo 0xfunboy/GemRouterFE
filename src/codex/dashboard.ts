@@ -2,7 +2,7 @@
 export const codexQuotaHtml = `
 <section class="panel section" id="codex-quota-section" lang="en">
   <div class="section-head"><div><h3 class="section-title">Codex Token Quota</h3>
-    <p class="section-copy">Long-window account usage. Shared with other Codex activity; remaining tokens and requests are not exposed.</p></div>
+    <p class="section-copy">Reported account quota windows, including 5-hour usage when above zero. Shared with other Codex activity; remaining tokens and requests are not exposed.</p></div>
     <div class="meta-row" id="codex-quota-pills"></div></div>
   <div class="table-wrap"><table class="table responsive-table quota-table codex-quota-table">
     <thead><tr><th>Account / quota</th><th>Remaining</th><th>Next reset</th><th>Used / total</th><th>Usage</th></tr></thead>
@@ -35,7 +35,7 @@ export const codexAccountHtml = `
     </div>
     <div id="codex-account-login" class="mono-box hidden" role="status">
       <p>Open the official link in your own browser. Use the account you want to connect and enter the code there, never in a chat.</p>
-      <a id="codex-account-login-url" target="_blank" rel="noopener noreferrer">Open official login page</a>
+      <a id="codex-account-login-url" class="codex-login-link" target="_blank" rel="noopener noreferrer">Open official login page ↗</a>
       <p>Temporary code: <code id="codex-account-login-code"></code></p><p id="codex-account-login-expiry"></p>
     </div>
     <div id="codex-account-provider" aria-live="polite"></div>
@@ -53,6 +53,22 @@ export const codexAccountScript = String.raw`
       const codexText = function(id, value) { document.getElementById('codex-account-' + id).textContent = value; };
       const codexNumber = function(value) { return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('en-US') : 'n/a'; };
       const codexDate = function(value) { return value != null && Number.isFinite(new Date(value).getTime()) ? new Date(value).toLocaleString('en-GB') : 'not reported'; };
+      function codexCountdown(resetAt) {
+        const remaining = resetAt - Date.now();
+        if (remaining <= 0) return 'Reset due · awaiting quota refresh';
+        const minutes = Math.ceil(remaining / 60000), hours = Math.floor(minutes / 60);
+        return hours + 'h ' + (minutes % 60) + ' min';
+      }
+      function codexReset(seconds) {
+        if (typeof seconds !== 'number' || !Number.isFinite(seconds) || !Number.isFinite(new Date(seconds * 1000).getTime())) return 'not reported';
+        const resetAt = seconds * 1000;
+        return escapeHtml(codexDate(resetAt)) + '<div class="footer-note" data-codex-reset-at="' + resetAt + '">' + codexCountdown(resetAt) + '</div>';
+      }
+      setInterval(function() {
+        document.querySelectorAll('[data-codex-reset-at]').forEach(function(node) {
+          node.textContent = codexCountdown(Number(node.dataset.codexResetAt));
+        });
+      }, 1000);
       let codexLoginTimer = null, codexExpiryTimer = null, codexUsageTimer = null, codexBusy = false, codexEpoch = 0, codexSnapshot = null;
       function codexMeter(value) {
         if (typeof value !== 'number' || !Number.isFinite(value)) return '<span class="muted">Not reported</span>';
@@ -60,13 +76,15 @@ export const codexAccountScript = String.raw`
         return '<div class="quota-meter ' + (bounded >= 100 ? 'bad' : bounded > 75 ? 'warn' : '') + '" role="progressbar" aria-label="Quota used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + bounded + '"><span style="width:' + bounded + '%"></span></div>';
       }
       function codexQuotaRows(accounts) {
-        return accounts.map(function(account) { return account.quotas.map(function(quota) {
+        return accounts.map(function(account) {
+          if (!account.quotas.length) return '<tr><td data-label="Account / quota"><strong>' + escapeHtml(account.alias) + '</strong></td><td colspan="4" class="muted">' + (!account.authenticated ? 'Not connected' : account.stale ? 'Quota unavailable / stale' : 'No non-zero 5-hour or other quota windows reported') + '</td></tr>';
+          return account.quotas.map(function(quota) {
           const w = quota.window, used = w && w.usedPercent, known = typeof used === 'number';
           return '<tr><td data-label="Account / quota"><strong>' + escapeHtml(account.alias) + '</strong> <span class="chip">' + escapeHtml(quota.limitId) + '</span>'
             + '<div class="footer-note">' + (account.active ? 'Selected · ' : '') + (!account.authenticated ? 'Not connected' : account.stale ? 'Stale / unavailable' : 'Updated ' + escapeHtml(codexDate(account.observedAt))) + '</div></td>'
             + '<td data-label="Remaining">' + (known ? codexNumber(Math.max(0, 100 - used)) + '%' : 'n/a') + '</td>'
-            + '<td data-label="Next reset">' + escapeHtml(codexDate(w && w.resetsAt != null ? w.resetsAt * 1000 : null)) + '</td>'
-            + '<td data-label="Used / total">' + (known ? codexNumber(used) + '% / 100%' : 'n/a') + '<div class="footer-note">' + (w && w.windowDurationMins != null ? codexNumber(w.windowDurationMins / 60) + ' hour window' : 'Window not reported') + '</div></td>'
+            + '<td data-label="Next reset">' + codexReset(w && w.resetsAt) + '</td>'
+            + '<td data-label="Used / total">' + (known ? codexNumber(used) + '% / 100%' : 'n/a') + '<div class="footer-note">' + (w && w.windowDurationMins != null ? w.windowDurationMins === 10080 ? 'Weekly window' : codexNumber(w.windowDurationMins / 60) + ' hour window' : 'Window not reported') + '</div></td>'
             + '<td data-label="Usage">' + codexMeter(used) + '</td></tr>';
         }).join(''); }).join('');
       }
@@ -132,7 +150,7 @@ export const codexAccountScript = String.raw`
         let html = '<h4>Selected account quota windows</h4><div class="table-wrap"><table class="table responsive-table"><thead><tr><th>Quota bucket</th><th>Window</th><th>Remaining</th><th>Next reset</th><th>Usage</th></tr></thead><tbody>';
         (provider.quota && provider.quota.buckets || []).forEach(function(bucket) { ['primary','secondary'].forEach(function(key) {
           const w = bucket[key]; if (!w) return;
-          html += '<tr><td data-label="Quota bucket">' + escapeHtml(bucket.limitId) + '</td><td data-label="Window">' + n(w.windowDurationMins) + ' minutes</td><td data-label="Remaining">' + (typeof w.usedPercent === 'number' ? n(Math.max(0,100-w.usedPercent)) + '%' : 'n/a') + '</td><td data-label="Next reset">' + escapeHtml(codexDate(w.resetsAt != null ? w.resetsAt*1000 : null)) + '</td><td data-label="Usage">' + codexMeter(w.usedPercent) + '</td></tr>';
+          html += '<tr><td data-label="Quota bucket">' + escapeHtml(bucket.limitId) + '</td><td data-label="Window">' + n(w.windowDurationMins) + ' minutes</td><td data-label="Remaining">' + (typeof w.usedPercent === 'number' ? n(Math.max(0,100-w.usedPercent)) + '%' : 'n/a') + '</td><td data-label="Next reset">' + codexReset(w.resetsAt) + '</td><td data-label="Usage">' + codexMeter(w.usedPercent) + '</td></tr>';
         }); });
         html += '</tbody></table></div><p class="footer-note">' + (provider.quotaStale ? 'Quota stale or unavailable. ' : '') + 'Buckets are service-reported quota identifiers, not selectable models. codex_bengalfox is shown separately; no model mapping is assumed.</p>';
         html += '<h4>GemRouter → Codex requests · this account</h4><div class="meta-row">'

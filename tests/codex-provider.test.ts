@@ -13,6 +13,7 @@ import type { LLMClient, LLMOptions } from '../src/llm/types.js';
 import { AppStore } from '../src/store/appStore.js';
 import { codexRequestPolicy } from '../src/codex/request.js';
 import { responseUsage, buildResponsesApiResponse } from '../src/lib/openai.js';
+import { buildGeminiModelAttemptPlan } from '../src/llm/providers/gemini-api/client.js';
 
 const config = readCodexConfig({ GEMROUTER_CODEX_ENABLED: 'true' });
 const account = { enabled: true, running: true, authenticated: true, modelAvailable: true, reasonCode: null } as CodexAccountState;
@@ -58,13 +59,39 @@ test('quota preflight and upstream quota errors use only authorized Gemini fallb
   }
 });
 test('auth, rate limits, failures, and arbitrary error text cannot trigger quota fallback', async () => {
-  for (const error of ['codex_auth_required', 'codex_rate_limited', 'codex_timeout', 'codex_inference_failed']) {
+  for (const error of ['codex_auth_required', 'codex_model_unavailable', 'codex_restrictions_unverified', 'codex_rate_limited', 'codex_timeout', 'codex_inference_failed']) {
     const f = fixture({ error }); let spill = false;
     const router = createLlmRouter({ backendOrder: ['gemini-api', 'codex'], codexFallbackModels: () => ['gemini-3.8-flash'] }, { codex: f.provider, geminiApi: { provider: 'gemini-api', model: '', chat: async () => { spill = true; throw Error('unexpected'); } } });
     await assert.rejects(router.chat(messages, opts), { code: error }); assert.equal(spill, false);
   }
   const f = fixture(); f.runtime.generate = async () => { throw Error('quota depleted'); };
   await assert.rejects(f.provider.chat(messages, opts), (e: LLMProviderError) => e.options.fallbackEligible === false);
+});
+test('exact Sol uses app-default high and quota-only fallback preserves the four authorized Flash models', async () => {
+  const f = fixture();
+  f.runtime.models = async () => [{ id: 'sol', model: 'gpt-5.6-sol', displayName: 'Sol', supportedReasoningEfforts: ['low', 'high'] }];
+  const originalGenerate = f.runtime.generate;
+  f.runtime.generate = async (input) => {
+    assert.equal(input.model, 'gpt-5.6-sol'); assert.equal(input.reasoningEffort, 'high');
+    return originalGenerate(input);
+  };
+  const fallback = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'];
+  const app = { codexEnabled: true, codexReasoningEffort: 'high', codexFallbackEnabled: true } as Parameters<typeof codexRequestPolicy>[2];
+  const request = { model: 'gpt-5.6-sol', allowedModelIds: ['gpt-5.6-sol', ...fallback], codex: codexRequestPolicy({}, undefined, app) };
+  let geminiCalls = 0;
+  const router = createLlmRouter({ backendOrder: ['gemini-api', 'nvidia', 'codex'], codexFallbackModels: () => [...fallback, 'gemini-3.5-flash-lite'] }, {
+    codex: f.provider,
+    geminiApi: { provider: 'gemini-api', model: '', chat: async (_messages, options) => {
+      geminiCalls++;
+      assert.deepEqual(buildGeminiModelAttemptPlan({ requestedModelId: options!.model!, allowedModelIds: options!.allowedModelIds, preferredFallbackModelIds: fallback }), fallback);
+      return { content: 'GEMINI', model: options!.model, provider: 'gemini-api' };
+    } },
+    nvidia: { provider: 'nvidia', model: '', chat: async () => { throw Error('NVIDIA must not serve this request'); } },
+  });
+  assert.equal((await router.chat(messages, request)).model, 'gpt-5.6-sol'); assert.equal(geminiCalls, 0);
+  f.runtime.generate = async () => { throw new CodexRuntimeError('codex_quota_depleted'); };
+  const response = await router.chat(messages, request);
+  assert.equal(response.model, fallback[0]); assert.equal(response.fallbackReason, 'codex_quota_depleted'); assert.equal(geminiCalls, 1);
 });
 test('Gemini traffic never consumes Codex quota even when Gemini fails', async () => {
   const f = fixture(); const router = createLlmRouter({ backendOrder: ['gemini-api', 'codex'] }, { codex: f.provider, geminiApi: { provider: 'gemini-api', model: '', chat: async () => { throw new LLMProviderError('backend_unavailable', 'gemini-api', 'offline', { fallbackEligible: true }); } } });

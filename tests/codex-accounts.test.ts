@@ -6,19 +6,40 @@ import { CodexAccounts, safeAccount } from '../src/codex/accounts.js';
 
 import { setupAccounts } from './helpers/codex-accounts-fixture.js';
 
-test('account aliases, public quota and all snapshots omit email; longest window and unknown stay accurate', async (t) => {
+test('account aliases and snapshots omit email; weekly and used short windows are public', async (t) => {
   const { pool, states } = await setupAccounts(t);
   assert.equal(safeAccount(states[0]).alias, 'Account 1 FX');
   assert(!('email' in pool.snapshot().account));
   const publicData = pool.publicQuota();
   assert.equal(publicData.accounts.length, 1);
-  assert.equal(publicData.accounts[0].quotas.length, 2);
+  assert.equal(publicData.accounts[0].quotas.length, 3);
   assert.equal(publicData.accounts[0].quotas[0].window?.usedPercent, 69);
   assert.equal(publicData.accounts[0].quotas[0].window?.windowDurationMins, 10080);
+  assert.equal(publicData.accounts[0].quotas[1].window?.windowDurationMins, 300);
+  assert.equal(publicData.accounts[0].quotas[1].window?.usedPercent, 25);
   assert(!JSON.stringify([pool.snapshot(),publicData]).includes('@'));
   assert(!JSON.stringify(publicData).includes('planType'));
   pool.entry().provider.invalidate();
-  assert.equal(pool.publicQuota().accounts[0].quotas[0].window, null);
+  assert.deepEqual(pool.publicQuota().accounts[0].quotas, []);
+});
+
+test('absent buckets are omitted and 5h windows appear for any positive or unknown use, not zero', async (t) => {
+  const { pool } = await setupAccounts(t);
+  pool.add();
+  for (const usedPercent of [0, 0.1, 1, 100, null]) {
+    pool.entry('account-2').runtime.quota = async () => [{ limitId: 'codex',
+      primary: { usedPercent, windowDurationMins: 300, resetsAt: 1900000000 },
+      secondary: { usedPercent: 0, windowDurationMins: 10080, resetsAt: 1900001000 } }];
+    await pool.refresh();
+    const quotas = pool.publicQuota().accounts[1].quotas;
+    assert(quotas.every(q => q.limitId === 'codex'));
+    assert.equal(quotas.length, usedPercent === 0 ? 1 : 2);
+    assert.equal(quotas[0].window?.windowDurationMins, 10080);
+    if (usedPercent !== 0) assert.equal(quotas[1].window?.usedPercent, usedPercent);
+  }
+  pool.entry('account-2').runtime.quota = async () => [{ limitId: 'codex', primary: null, secondary: null }];
+  await pool.refresh();
+  assert.deepEqual(pool.publicQuota().accounts[1].quotas, [{ limitId: 'codex', window: null }]);
 });
 
 test('two isolated profiles, persistent manual selection, private registry and independent counters', async (t) => {

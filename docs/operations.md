@@ -57,8 +57,9 @@ persist under `data/` and reload in-process:
 - **Codex Backend Routing** - reuse the original login or add a second isolated
   account; manually select the persistent routing account without relogin. Inspect
   quota windows and per-account request tokens, and enable GPT models/thinking separately for each app.
-  The public **Codex Token Quota** card exposes only aliases and long-window
-  percentages/resets, not account emails. Optional account activity reads run in
+  The public **Codex Token Quota** card exposes only aliases and reported quota
+  windows, including non-zero 5-hour usage, percentages and reset countdowns,
+  not account emails or empty rows for absent buckets. Optional account activity reads run in
   the background with bounded timeouts rather than holding an HTTP request open.
   Quota depletion can fall back to that app's authorized Gemini models. See
   [configuration and limits](codex-account.md).

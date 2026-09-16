@@ -94,15 +94,31 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
         await page.getByRole('button', { name: 'Verify account', exact: true }).click();
         await page.getByText('Done. No inference started.', { exact:true }).waitFor();
         assert.match(await page.locator('#codex-account-provider').innerText(), /gpt-6-astra/);
-        assert.equal(await page.locator('#codex-quota-rows tr').count(),2);
+        assert.equal(await page.locator('#codex-quota-rows tr').count(),3);
+        assert.match(await page.locator('#codex-quota-rows').innerText(), /5 hour window/);
+        assert.match(await page.locator('#codex-quota-rows').innerText(), /Weekly window/);
+        assert.match(await page.locator('#codex-quota-rows [data-codex-reset-at]').first().innerText(), /\d+h \d+ min/);
+        // Countdown ticks independently of quota HTTP refresh and never fabricates a reset.
+        await page.locator('#codex-quota-rows [data-codex-reset-at]').first().evaluate((node) => {
+          (node as HTMLElement).dataset.codexResetAt = String(Date.now() + 197 * 60_000);
+        });
+        await page.waitForFunction(() => document.querySelector('#codex-quota-rows [data-codex-reset-at]')?.textContent === '3h 17 min');
+        await page.locator('#codex-quota-rows [data-codex-reset-at]').first().evaluate((node) => {
+          (node as HTMLElement).dataset.codexResetAt = '1';
+        });
+        await page.waitForFunction(() => document.querySelector('#codex-quota-rows [data-codex-reset-at]')?.textContent?.includes('Reset due'));
         assert.equal((await page.locator('#codex-account-section').innerText()).includes('@'),false);
         await page.getByRole('button',{name:'Read account usage',exact:true}).click();
         await page.waitForFunction(()=>document.getElementById('codex-account-usage')?.textContent?.includes('Lifetime tokens: 1,000'));
         await page.getByRole('button',{name:'Add account',exact:true}).click();
         await page.locator('#codex-account-login-code').getByText('FAKE-CODE').waitFor();
+        const loginLink = page.getByRole('link', { name: 'Open official login page' });
+        assert.equal(await loginLink.getAttribute('href'), 'https://auth.openai.com/codex/device');
+        assert.equal(await loginLink.evaluate((node) => getComputedStyle(node).textDecorationLine), 'underline');
+        assert((await loginLink.boundingBox())!.height >= 44);
         await page.getByText('Login: completed',{exact:true}).waitFor();
         await page.waitForFunction(()=>document.getElementById('codex-account-state')?.textContent?.includes('Account 2 FX · Connected'));
-        assert.equal(await page.locator('#codex-quota-rows tr').count(),4);
+        assert.equal(await page.locator('#codex-quota-rows tr').count(),6);
         await page.getByRole('button',{name:'Select account for routing',exact:true}).click();
         await page.getByText('Account selected for new requests. No login needed.',{exact:true}).waitFor();
         assert.equal((await (await call('/admin/codex/account',adminKey)).json() as any).selectedAccountId,'account-2');
@@ -114,7 +130,7 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
         if (process.env.GEMROUTER_TEST_SCREENSHOT) await page.screenshot({path:process.env.GEMROUTER_TEST_SCREENSHOT,fullPage:true});
         const guest = await browser.newPage({viewport:{width:390,height:844}});
         await guest.goto(origin); await guest.locator('#codex-quota-rows tr').first().waitFor();
-        await guest.waitForFunction(()=>document.querySelectorAll('#codex-quota-rows tr').length===4);
+        await guest.waitForFunction(()=>document.querySelectorAll('#codex-quota-rows tr').length===6);
         assert.equal(await guest.locator('#codex-quota-section').isVisible(),true);
         assert.equal(await guest.locator('#codex-account-section').isVisible(),false);
         assert.equal((await guest.locator('body').innerText()).includes('fixture@example.test'),false);

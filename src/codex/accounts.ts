@@ -8,7 +8,7 @@ import { CodexRuntime, CodexRuntimeError, validatePrivateProfile, type CodexAcco
 import { CodexProvider } from './provider.js';
 import { CodexMetrics } from './metrics.js';
 import type { CodexConfig } from './config.js';
-import type { CodexUsageSnapshot } from './usage.js';
+import type { CodexUsageSnapshot, QuotaWindow } from './usage.js';
 
 const ids = ['account-1', 'account-2'] as const;
 type AccountId = typeof ids[number];
@@ -114,12 +114,16 @@ export class CodexAccounts implements LLMClient {
       const state = safeAccount(entry.runtime.cachedStatus(), entry.id), d = entry.provider.getDiagnostics();
       return { alias: state.alias, authenticated: state.authenticated, active: this.registry.selected === entry.id,
         stale: d.quotaStale, observedAt: d.quota?.observedAt ?? null,
-        // Exactly two long-window rows per account. Unknown is not zero/100% remaining.
-        quotas: ['codex', 'codex_bengalfox'].map((limitId) => {
+        // Only service-reported buckets; preserve every window, including unknown usage.
+        // A zero-use 5h window may be hidden, but any positive use must be visible.
+        quotas: ['codex', 'codex_bengalfox'].flatMap<{ limitId: string; window: QuotaWindow | null }>((limitId) => {
           const bucket = d.quota?.buckets.find((b) => b.limitId === limitId);
-          const windows = [bucket?.primary, bucket?.secondary].filter((w) => w && w.windowDurationMins != null);
-          windows.sort((a, b) => b!.windowDurationMins! - a!.windowDurationMins!);
-          return { limitId, window: windows[0] ?? null };
+          if (!bucket) return [];
+          const windows = [bucket.primary, bucket.secondary].filter((w) => w != null);
+          windows.sort((a, b) => (b.windowDurationMins ?? 0) - (a.windowDurationMins ?? 0));
+          if (!windows.length) return [{ limitId, window: null }];
+          return windows.filter((w) => w.windowDurationMins !== 300 || w.usedPercent !== 0)
+            .map((window) => ({ limitId, window }));
         }) };
     }) };
   }

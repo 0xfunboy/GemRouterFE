@@ -1,5 +1,53 @@
 # Codex provider verification — 2026-09-16
 
+## Quota-window and exact-routing follow-up
+
+The public quota card now includes each reported weekly window and every 5-hour
+window with positive or unknown usage. Exactly zero-use 5-hour windows are hidden.
+Absent quota buckets do not produce empty rows. Reset dates include a live
+hours/minutes countdown; reaching zero does not fabricate renewed capacity.
+The official device-login link has a visible, underlined button-sized treatment
+and keyboard-focus outline. Routing implementation and existing app policy were
+not changed for this follow-up.
+
+Automated: **116/116 tests**, TypeScript checking and isolated HTTP/browser smoke
+passed. Regression coverage includes 0%, fractional positive usage, 1%, 100%,
+unknown usage, absent buckets, weekly preservation, ticking/expired countdowns,
+login-link affordance, exact Sol with app-default high, the authorized four-model
+Gemini attempt plan, and no fallback for model/auth/rate-limit/timeout errors.
+Browser smoke uses fixtures, not real Codex consumption.
+
+Live: both real account slots were authenticated, with Account 2 selected. The
+existing target app was inspected without reading or rotating its key: Codex
+enabled, default thinking high, quota-only fallback enabled, exact four Flash
+fallbacks authorized. Its configured Gemini attempt plan resolves to
+`gemini-3.8-flash → gemini-3.7-flash → gemini-3.6-flash → gemini-3.5-flash`.
+
+A temporary app copying that policy made one real production HTTP inference
+request for **gpt-5.6-sol**, with no thinking parameter. HTTP **200**, backend
+**codex**, exact model **gpt-5.6-sol**, output **SOL_ROUTING_OK** in **3,157 ms**.
+Measured usage: **2,553 input + 8 output = 2,561 tokens**; the selected account's
+completion/token counters increased accordingly. Cached/reasoning subcounts
+were zero; zero reported reasoning tokens do not prove the effort was omitted.
+Default high and its dispatch are covered by policy inspection and regression
+tests. The temporary app was revoked and deleted; the existing app was unchanged.
+
+This is a same-policy production probe, **not a request from the remote AIR3
+machine using its existing key**. Real quota exhaustion was not induced: that
+branch and the permitted fallback order are tested with controlled fixtures.
+It does not demonstrate a live completion from every Gemini fallback model.
+
+Rollout: the existing service restarted gracefully at **16:26:44 UTC** after a
+successful build and an idle-queue check for both Codex accounts. A private build
+rollback copy was retained outside Git. No network change or second production
+instance was introduced. Both logins and Account 2 selection survived. Public
+HTTPS/browser verification at **16:26:54 UTC** saw three actual weekly quota rows
+with countdowns, no absent Account 2 bucket and no JavaScript errors. Both reported
+5-hour windows were still exactly 0%, so hiding those rows was expected. Their
+automatic appearance above zero is covered by regression tests, not claimed as
+an observed live quota increase. No other historical commits were rewritten.
+
+
 ## Follow-up: multi-account dashboard (checkout verification)
 
 The Codex controls now use the same panel/chip/table/meter CSS as the existing

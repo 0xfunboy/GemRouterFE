@@ -57,9 +57,13 @@ slot with its device-login button; no third slot is provisioned.
 
 **Codex Token Quota** appears between Gemini RPD Capacity and NVIDIA NIM Models,
 including before admin login. `/dashboard/codex-quota` returns only cached aliases,
-connection/selection flags, observation freshness and two long-window quota rows
-per slot: `codex` and `codex_bengalfox`. Each row uses the longest reported window,
-with used/remaining percentage and next reset time. Missing data stays unknown,
+connection/selection flags, observation freshness and service-reported windows
+for `codex` and `codex_bengalfox`. Absent buckets are omitted, not shown as empty
+quota rows. Weekly windows stay visible; a 5-hour window is hidden only when its
+reported usage is exactly zero and appears for any positive or unknown usage.
+Each row shows used/remaining percentage, reset date and a live hours/minutes
+countdown. A reached reset says it is awaiting refresh; the browser never invents
+renewed capacity. Missing data stays unknown,
 not zero usage or 100% capacity. Guest requests never trigger upstream reads.
 Emails, plan, credentials, profile paths, token activity and inference counters
 are excluded from this public projection.
