@@ -11,20 +11,77 @@ Source implementation is not automatically deployed to gemrouter.example.com.
 2. Reuse the existing private parent directory, by default
    `/home/OPERATOR/.local/share/gemrouter-personal-control`; authentication stays
    in its `codex/` child. Never copy credentials into the checkout or environment.
-3. Expand **Codex · login, token e quota** in the reserved dashboard and select
-   **Verifica account**. An existing valid login needs no new authorization.
-4. If needed, select **Accedi con codice dispositivo**, open the official link
+3. Expand **Codex Backend Routing**, below **Backend Routing**, in the reserved
+   dashboard and select **Verify account**. An existing valid login needs no new authorization.
+4. If needed, select **Connect with device code**, open the official link
    in your normal browser and enter the temporary code there, never in chat.
    No server browser, VNC or desktop is needed.
-5. Edit the client app: enable **Abilita l’uso della quota del mio account Codex**,
+5. Edit the client app: enable **Allow the selected Codex routing account for this app**,
    authorize the GPT model IDs and choose default thinking. “All models” alone
    does **not** enable Codex. Existing apps default to disabled.
-6. Enable **Quota esaurita → fallback Gemini autorizzato** if desired. Authorize
+6. Enable **Quota depleted → authorized Gemini fallback** if desired. Authorize
    at least one Gemini too; the existing routed-model order sets its priority.
 
 The account panel is collapsed by default. Temporary login codes are cleared on
 expiry, cancellation and dashboard logout. Account routes require admin auth;
 browser mutations require CSRF and same-origin checks. Responses are no-store.
+
+### Two accounts and private aliases
+
+**Add account** provisions a second independent profile and starts device login.
+Complete the official login yourself with the second account. The **Account to
+manage** selector only changes the inspected account. **Select account for routing**
+changes the persisted default for new requests from all Codex-enabled apps; it
+does not relogin, copy tokens or move queued/in-flight requests. A disconnected or
+unverified account cannot be selected. There is no automatic account rotation.
+The existing per-app opt-in/model allowlist/thinking/fallback policy still applies.
+
+The original `codex/` profile is kept in place. The second uses
+`codex-account-2/` under the same private parent. Each has its own official runtime
+and file-backed login, within an owner-only directory (0700). `accounts.json`
+stores only fixed slot IDs and selection, is atomically written as 0600, and
+rejects symlinks, invalid permissions and corrupt data. The private parent and
+both profiles are excluded from repository and app backups. No credentials are
+returned to the dashboard or persisted in its browser storage.
+
+Account aliases use the slot number and first two ASCII consonants of the email's
+local part (for example, `Account 1 FX` for a synthetic fixture), never the email.
+HTTP responses omit the email entirely, including authenticated admin responses.
+This is a shortened label, not an anonymity guarantee. Only connected accounts
+count in the `Accounts N/2` badge; unfilled slots are not reported as authenticated.
+Disconnect acts only on the inspected profile and clears its cached usage. It is
+refused while that account has queued/in-flight inference. Reconnect a disconnected
+slot with its device-login button; no third slot is provisioned.
+
+### Public quota and optional account activity
+
+**Codex Token Quota** appears between Gemini RPD Capacity and NVIDIA NIM Models,
+including before admin login. `/dashboard/codex-quota` returns only cached aliases,
+connection/selection flags, observation freshness and two long-window quota rows
+per slot: `codex` and `codex_bengalfox`. Each row uses the longest reported window,
+with used/remaining percentage and next reset time. Missing data stays unknown,
+not zero usage or 100% capacity. Guest requests never trigger upstream reads.
+Emails, plan, credentials, profile paths, token activity and inference counters
+are excluded from this public projection.
+
+`codex_bengalfox` is a service-reported quota bucket, **not a model ID**. This UI
+does not infer which model consumes it or make it a selectable model. Standard
+GPT models retain their existing `codex` quota check. See the official
+[app-server quota and activity contracts](https://learn.chatgpt.com/docs/app-server).
+
+**Read account usage** starts an optional background read with HTTP 202. An
+authenticated GET polls its result; the HTTP request never waits for the upstream
+account-activity call. The job is single-flight per account, times out after
+20 seconds and drops late results. Individual activity/quota RPCs have an 8-second
+timeout. Errors are safe codes, never upstream HTML or raw error bodies. Quota
+bars, provider availability and local request/token counters are independent of
+this optional historical activity endpoint. It cannot provide remaining token or
+request counts when the upstream service does not expose them.
+
+Request/token metrics are persisted separately for each account; Account 1 keeps
+the existing `codex-metrics.json`, Account 2 uses `codex-account-2-metrics.json`.
+The compatibility CLI below still addresses the original profile, not the
+dashboard-selected slot. Use the dashboard to manage the second account.
 
 Read-only account CLI (does not load production .env or open its database):
 

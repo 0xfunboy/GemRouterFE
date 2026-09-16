@@ -12,24 +12,31 @@ export class CodexProvider implements LLMClient {
   private catalog: CodexModel[] = [];
   private quotaSnapshot: { observedAt: number; buckets: QuotaBucket[] } | null = null;
   private lastRefreshAt = 0; private refreshPending: Promise<void> | null = null;
+  private snapshotEpoch = 0;
   private lastError: string | null = null;
   private quotaRejectedUntil = 0;
   private active = false; private waiting: Array<() => void> = [];
   constructor(readonly config: CodexConfig, private readonly runtime: InferenceRuntime, readonly metrics = new CodexMetrics()) {}
-  invalidate(): void { this.catalog = []; this.quotaSnapshot = null; this.lastRefreshAt = 0; this.quotaRejectedUntil = 0; }
+  invalidate(): void { this.snapshotEpoch++; this.catalog = []; this.quotaSnapshot = null; this.lastRefreshAt = 0; this.quotaRejectedUntil = 0; }
 
   async refresh(): Promise<void> {
     if (!this.config.enabled) return;
     if (this.refreshPending) return this.refreshPending;
+    const epoch = this.snapshotEpoch;
     this.refreshPending = (async () => {
       try {
         const status = await this.runtime.status();
-        if (!status.authenticated) { this.invalidate(); throw new CodexRuntimeError(status.reasonCode ?? 'codex_auth_required'); }
-        this.catalog = (await this.runtime.models()).filter((m) => this.config.models.includes(m.model));
-        this.quotaSnapshot = { observedAt: Date.now(), buckets: await this.runtime.quota() };
+        if (epoch !== this.snapshotEpoch) return;
+        if (!status.authenticated) { this.invalidate(); this.lastError = status.reasonCode ?? 'codex_auth_required'; return; }
+        const catalog = (await this.runtime.models()).filter((m) => this.config.models.includes(m.model));
+        if (epoch !== this.snapshotEpoch) return;
+        this.catalog = catalog;
+        const buckets = await this.runtime.quota();
+        if (epoch !== this.snapshotEpoch) return;
+        this.quotaSnapshot = { observedAt: Date.now(), buckets };
         this.lastError = null;
-      } catch (error) { this.lastError = error instanceof CodexRuntimeError ? error.code : 'codex_refresh_failed'; }
-      finally { this.lastRefreshAt = Date.now(); }
+      } catch (error) { if (epoch === this.snapshotEpoch) this.lastError = error instanceof CodexRuntimeError ? error.code : 'codex_refresh_failed'; }
+      finally { if (epoch === this.snapshotEpoch) this.lastRefreshAt = Date.now(); }
     })().finally(() => { this.refreshPending = null; });
     return this.refreshPending;
   }

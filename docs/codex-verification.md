@@ -1,5 +1,49 @@
 # Codex provider verification — 2026-09-16
 
+## Follow-up: multi-account dashboard (checkout verification)
+
+The Codex controls now use the same panel/chip/table/meter CSS as the existing
+dashboard. **Codex Backend Routing** sits immediately below Backend Routing,
+collapsed with **Expand**. All Codex controls and app options are in English.
+**Codex Token Quota** is visible before login, between Gemini RPD Capacity and
+NVIDIA NIM Models, with two long-window rows per account. Badges show the real
+connected account count, not a fabricated 2/2.
+
+Two separately stored official Codex profiles can be managed through **Add account**,
+the account dropdown, and **Select account for routing**. The original profile is
+preserved. Selection persists independently of credentials; new requests use the
+selected account, old requests stay pinned. Emails are removed from HTTP DTOs,
+not merely hidden with CSS. Aliases use only slot number and two consonants.
+
+Additional automated coverage: isolated profile paths, private registry permissions,
+corrupt/symlink rejection, selection persistence, per-account counters, queued and
+in-flight pinning, logout isolation, CSRF/admin checks, secret-free projections,
+asynchronous usage single-flight/timeout/late-response handling, and invalidation
+of a quota refresh completing after logout.
+
+The isolated browser smoke verifies expanded/collapsed controls, a mock device
+login for Account 2 alongside an already-connected fixture Account 1, switching
+to Account 2 and back without relogin, background usage reads,
+two quota rows per account and the unauthenticated mobile view. There are no page
+JavaScript errors. These fixtures **do not demonstrate two real accounts**.
+The follow-up suite passes **114/114 tests**, TypeScript checking and isolated
+HTTP/browser smoke. The earlier 105-test result below is the original release.
+A build to a separate temporary output directory also passed, without replacing
+the running production build. A scoped scan of the 16 changed/new files found no
+private account identifiers, personal email addresses, private keys, JWTs or
+common service-token patterns. No commit or push is claimed for this follow-up.
+
+Read-only production diagnostic of the existing (pre-change) usage endpoint:
+HTTP 200 in **1,312 ms**, both account activity and quota available. The reported
+Cloudflare error was not reproduced in this observation; no persistent upstream
+failure is asserted. The replacement usage endpoint responds immediately with
+202, is polled separately, and reports safe timeout/unavailable codes. Optional
+historical activity does not gate quota display or inference.
+
+No new live inference, second real login, production deployment or restart is
+claimed for this follow-up. The rollout recorded below belongs to the earlier
+single-account release. Publishing/restarting this follow-up requires authorization.
+
 ## Implementation
 
 Branch: `feat/codex-provider`. Former widget, native MCP and personal-chat/browser

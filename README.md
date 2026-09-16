@@ -16,7 +16,8 @@ to a local Ollama for embeddings and vision.
 The optional **Codex provider** uses your authenticated account for text inference:
 `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-6-astra`, with model-specific thinking.
 Enable it per app; on exhausted quota it can fall back to that app's authorized Gemini chain.
-The dashboard shows actual request token usage and account quota windows. No MCP,
+The dashboard supports two isolated saved logins and manual account selection,
+with private aliases, public quota bars and per-account measured request tokens. No MCP,
 personal-chat wake, browser controller or coding tools. See [Codex](docs/codex-account.md).
 
 It is designed to squeeze the maximum useful throughput out of **free-tier** Gemini accounts:

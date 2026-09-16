@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { codexAccountHtml, codexAccountScript } from './codex/dashboard.js';
+import { codexAccountHtml, codexAccountScript, codexQuotaHtml } from './codex/dashboard.js';
 
 const UI_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -934,6 +934,12 @@ export function renderAppShell(input: {
       }
       .quota-meter.warn > span { background: var(--warn); }
       .quota-meter.bad > span { background: var(--bad); }
+      .codex-quota-table .quota-meter { width: 100%; min-width: 76px; max-width: 180px; }
+      .codex-account-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+      .codex-account-controls > label { min-width: 220px; flex: 1; }
+      #codex-account-panel h4 { margin: 20px 0 12px; }
+      #codex-account-login, .codex-usage-details { margin-top: 16px; }
+      #codex-account-usage { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 10px; }
       .interactions-table {
         min-width: 0;
         table-layout: fixed;
@@ -1515,6 +1521,8 @@ export function renderAppShell(input: {
         </div>
       </section>
 
+      ${codexQuotaHtml}
+
       <section class="panel section" id="nvidia-section" style="display:none">
         <div class="section-head">
           <div>
@@ -1603,7 +1611,6 @@ export function renderAppShell(input: {
       </section>
 
       <section id="admin-dashboard" class="hidden">
-        ${codexAccountHtml}
         <div class="role-banner panel">
           <div>
             <strong id="admin-banner-title">Operator console active</strong>
@@ -1619,7 +1626,7 @@ export function renderAppShell(input: {
           <div class="section-head">
             <div>
               <h3 class="section-title">Backend Routing</h3>
-              <p class="section-copy">Gemini API, NVIDIA e Codex: instradamento per modello e autorizzazioni dell’app. Su quota Codex esaurita: fallback alla catena Gemini configurata.</p>
+              <p class="section-copy">Gemini API, NVIDIA and Codex: routing by model and app permissions. When Codex quota is depleted, use the configured Gemini fallback chain.</p>
             </div>
             <div class="section-head-actions">
               <div id="backend-pills" class="meta-row"></div>
@@ -1634,6 +1641,8 @@ export function renderAppShell(input: {
             <div id="backend-hint" class="footer-note" style="margin-top:10px"></div>
           </div>
         </section>
+
+        ${codexAccountHtml}
 
         <section class="panel section">
           <div class="section-head">
@@ -1917,11 +1926,11 @@ export function renderAppShell(input: {
                   <input type="text" name="sessionNamespace" placeholder="client-app" />
                 </label>
                 <fieldset>
-                  <legend>Codex per questa app</legend>
-                  <label class="model-access-option"><input type="checkbox" name="codexEnabled" /><span>Abilita l’uso della quota del mio account Codex</span></label>
-                  <label>Thinking predefinito<select name="codexReasoningEffort"><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option><option>ultra</option></select></label>
-                  <label class="model-access-option"><input type="checkbox" name="codexFallbackEnabled" checked /><span>Quota esaurita → fallback Gemini autorizzato</span></label>
-                  <p class="footer-note">Autorizza anche i modelli GPT nell’elenco sopra. La richiesta può scegliere il thinking con reasoning_effort; i livelli ammessi sono nel pannello Codex. Autorizza almeno un Gemini per il fallback.</p>
+                  <legend>Codex for this app</legend>
+                  <label class="model-access-option"><input type="checkbox" name="codexEnabled" /><span>Allow the selected Codex routing account for this app</span></label>
+                  <label>Default thinking<select name="codexReasoningEffort"><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option><option>ultra</option></select></label>
+                  <label class="model-access-option"><input type="checkbox" name="codexFallbackEnabled" checked /><span>Quota depleted → authorized Gemini fallback</span></label>
+                  <p class="footer-note">Also allow the GPT models in the list above. Requests can select thinking with reasoning_effort; available levels appear in Codex Backend Routing. Allow at least one Gemini model for fallback.</p>
                 </fieldset>
                 <label>
                   <span class="field-inline">Custom API key <span class="field-help" title="Optional. Empty = auto-generate. Ending in '_' (e.g. esempio_) = brand prefix, a random suffix is appended. A full value is stored verbatim.">?</span></span>
@@ -3916,6 +3925,7 @@ export function renderAppShell(input: {
           renderPublicPills(data);
           renderPublicStats(data);
           renderPublicRpd(data);
+          await loadCodexQuota();
           renderNvidiaModels(data);
           renderOllamaLocalRpd(data);
           renderAgnes(data);

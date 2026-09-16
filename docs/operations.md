@@ -54,8 +54,12 @@ persist under `data/` and reload in-process:
 - **Routed Models** - choose which Gemini models the router offers and their order
   (first = default, rest = fallback chain).
 - **Outbound Proxy** - manage the proxy pool (off by default, not yet applied to upstreams).
-- **Codex** - reuse the dedicated account login, inspect actual quota windows and
-  measured request tokens, and enable GPT models/thinking separately for each app.
+- **Codex Backend Routing** - reuse the original login or add a second isolated
+  account; manually select the persistent routing account without relogin. Inspect
+  quota windows and per-account request tokens, and enable GPT models/thinking separately for each app.
+  The public **Codex Token Quota** card exposes only aliases and long-window
+  percentages/resets, not account emails. Optional account activity reads run in
+  the background with bounded timeouts rather than holding an HTTP request open.
   Quota depletion can fall back to that app's authorized Gemini models. See
   [configuration and limits](codex-account.md).
 - **Apps and API Keys** - create/rotate/revoke client apps and choose either a custom

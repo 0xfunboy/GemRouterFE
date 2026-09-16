@@ -7,9 +7,7 @@ import path from 'node:path';
 import Fastify, { LogController, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { loadConfig } from './config.js';
-import { CodexRuntime } from './codex/runtime.js';
-import { CodexProvider } from './codex/provider.js';
-import { CodexMetrics } from './codex/metrics.js';
+import { CodexAccounts } from './codex/accounts.js';
 import { registerCodexAccountRoutes } from './codex/routes.js';
 import { CODEX_REASONING_EFFORTS, isCodexRequest } from './codex/models.js';
 import { codexRequestPolicy } from './codex/request.js';
@@ -130,8 +128,7 @@ const nvidiaLlm = createNvidiaClient(config.nvidia);
 const ollamaLlm = createOllamaRouterClient(config.ollama);
 const ollamaLocalLlm = createOllamaLocalClient(config.ollamaLocal);
 const agnesLlm = createAgnesClient(config.agnes);
-const codexRuntime = new CodexRuntime({ ...config.codex, excludedDirectories: [config.rootDir, config.dataDir] });
-const codexLlm = new CodexProvider(config.codex, codexRuntime, new CodexMetrics(path.join(config.dataDir, 'codex-metrics.json')));
+const codexLlm = new CodexAccounts(config.codex, config.dataDir, [config.rootDir, config.dataDir]);
 const llm = createLlmRouter({
   ...config.llmRouting,
   strictModelIds: config.geminiApi.strictModelIds,
@@ -171,19 +168,20 @@ const app = Fastify({
   logController: new LogController({ disableRequestLogging: true }),
 });
 
-registerCodexAccountRoutes(app, codexRuntime, {
+registerCodexAccountRoutes(app, codexLlm, {
   ensureAdmin, ensureAdminMutation,
   adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
   audit: (event) => audit.write(event),
-}, codexLlm);
+});
 let codexRefreshTimer: ReturnType<typeof setInterval> | undefined;
 app.addHook('onReady', async () => {
   if (!config.codex.enabled) return;
+  await codexLlm.initialize();
   await codexLlm.refresh();
   codexRefreshTimer = setInterval(() => { void codexLlm.refresh(); }, config.codex.quotaRefreshMs);
   codexRefreshTimer.unref();
 });
-app.addHook('onClose', async () => { clearInterval(codexRefreshTimer); await codexRuntime.close(); });
+app.addHook('onClose', async () => { clearInterval(codexRefreshTimer); await codexLlm.close(); });
 app.addHook('onRequest', async (request, reply) => {
   const pathname = request.url.split('?')[0];
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)

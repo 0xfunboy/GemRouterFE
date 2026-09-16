@@ -100,8 +100,12 @@ export class CodexRuntime {
   }
 
   get readyCached(): boolean {
+    return this.connectedCached && this.state.modelAvailable;
+  }
+
+  get connectedCached(): boolean {
     return this.options.enabled && !this.closed && this.login?.state.status !== 'pending'
-      && this.state.running && this.state.authenticated && this.state.modelAvailable;
+      && this.state.running && this.state.authenticated;
   }
 
   cachedStatus(): CodexAccountState { return { ...this.state }; }
@@ -125,7 +129,7 @@ export class CodexRuntime {
     await this.readAccount();
     if (!this.state.authenticated) throw new CodexRuntimeError('codex_auth_required');
     const [usage, quota] = await Promise.allSettled([
-      this.rpc('account/usage/read', {}), this.rpc('account/rateLimits/read', {}),
+      this.rpc('account/usage/read', {}, 8_000), this.rpc('account/rateLimits/read', {}, 8_000),
     ]);
     return { observedAt: new Date(this.now()).toISOString(), scope: 'account',
       usage: usage.status === 'fulfilled' ? normalizeAccountUsage(usage.value) : null,
@@ -409,14 +413,14 @@ export class CodexRuntime {
     });
   }
 
-  private rpc(method: string, params: Json): Promise<Json> {
+  private rpc(method: string, params: Json, timeoutMs = this.options.rpcTimeoutMs ?? 15_000): Promise<Json> {
     if (!this.child) return Promise.reject(new CodexRuntimeError('codex_unreachable'));
     const id = this.nextId++;
     return new Promise((resolveRpc, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new CodexRuntimeError('codex_timeout'));
-      }, this.options.rpcTimeoutMs ?? 15_000);
+      }, timeoutMs);
       this.pending.set(id, { resolve: resolveRpc, reject, timer });
       try { this.send({ id, method, params }); }
       catch { clearTimeout(timer); this.pending.delete(id); reject(new CodexRuntimeError('codex_unreachable')); }
@@ -603,7 +607,7 @@ async function resolveRuntimeExecutable(command: string): Promise<string> {
   throw new CodexRuntimeError('codex_executable_not_found');
 }
 
-async function validatePrivateProfile(directory: string, excluded: string[]): Promise<void> {
+export async function validatePrivateProfile(directory: string, excluded: string[]): Promise<void> {
   if (!isAbsolute(directory) || resolve(directory) !== directory || directory === parse(directory).root
     || directory === homedir() || directory.split(sep).includes('.codex')) throw new CodexRuntimeError('codex_private_profile_required');
   for (const forbidden of [join(homedir(), '.codex'), ...excluded]) {

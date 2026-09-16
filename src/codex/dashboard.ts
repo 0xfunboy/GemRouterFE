@@ -1,32 +1,83 @@
-/** Static admin shell: no embedded identity or login secrets. */
+/** Static shells: no embedded identity, profile paths or login secrets. */
+export const codexQuotaHtml = `
+<section class="panel section" id="codex-quota-section" lang="en">
+  <div class="section-head"><div><h3 class="section-title">Codex Token Quota</h3>
+    <p class="section-copy">Long-window account usage. Shared with other Codex activity; remaining tokens and requests are not exposed.</p></div>
+    <div class="meta-row" id="codex-quota-pills"></div></div>
+  <div class="table-wrap"><table class="table responsive-table quota-table codex-quota-table">
+    <thead><tr><th>Account / quota</th><th>Remaining</th><th>Next reset</th><th>Used / total</th><th>Usage</th></tr></thead>
+    <tbody id="codex-quota-rows"><tr><td colspan="5" class="muted">Loading account quota…</td></tr></tbody>
+  </table></div>
+</section>`;
+
 export const codexAccountHtml = `
-<section class="panel section" id="codex-account-section" lang="it">
-  <details id="codex-account-panel"><summary>Codex · login, token e quota</summary>
-    <p class="section-copy">Inferenza testuale con il tuo account Codex. Nessun MCP, browser sul server o strumento di coding. Abilita Codex nelle singole app e scegli modello e thinking.</p>
-    <p id="codex-account-state" role="status" aria-live="polite">Premi Verifica account.</p>
-    <div class="button-row">
-      <button type="button" class="secondary" data-codex-action="refresh">Verifica account</button>
-      <button type="button" class="secondary" data-codex-action="login">Accedi con codice dispositivo</button>
-      <button type="button" class="secondary" data-codex-action="login/cancel">Annulla login</button>
-      <button type="button" class="secondary" data-codex-action="usage">Leggi token e quota</button>
-      <button type="button" class="danger" data-codex-action="logout">Scollega solo Codex</button>
+<section class="panel section" id="codex-account-section" lang="en">
+  <div class="section-head"><div><h3 class="section-title">Codex Backend Routing</h3>
+    <p class="section-copy">Account-based text inference. Enable Codex per app, then choose a model and thinking level.</p></div>
+    <div class="section-head-actions"><div class="meta-row" id="codex-account-pills"></div>
+      <button type="button" class="secondary section-toggle" data-section-toggle="codex-account-panel" aria-controls="codex-account-panel" aria-expanded="false">
+        <span class="section-toggle-label">Expand</span><span class="section-toggle-arrow" aria-hidden="true">▸</span>
+      </button></div></div>
+  <div id="codex-account-panel" class="section-body hidden">
+    <div class="codex-account-controls">
+      <label>Account to manage<select id="codex-account-select" aria-label="Account to manage"></select></label>
+      <div class="button-row"><button type="button" class="secondary" data-codex-action="add">Add account</button>
+        <button type="button" data-codex-action="select">Select account for routing</button></div>
     </div>
-    <div id="codex-account-login" class="hidden" role="status">
-      <p>Apri il link nel tuo browser abituale e inserisci il codice. Non incollarlo in una chat.</p>
-      <a id="codex-account-login-url" target="_blank" rel="noopener noreferrer">Pagina ufficiale di accesso</a>
-      <p>Codice temporaneo: <code id="codex-account-login-code"></code></p>
-      <p id="codex-account-login-expiry"></p>
+    <p id="codex-account-state" role="status" aria-live="polite">Loading account status…</p>
+    <p class="footer-note">Selecting an account applies to new requests from all Codex-enabled apps. In-flight requests keep their original account. Both logins are stored separately; no login is needed when switching connected accounts.</p>
+    <div class="button-row">
+      <button type="button" class="secondary" data-codex-action="refresh">Verify account</button>
+      <button type="button" class="secondary" data-codex-action="login">Connect with device code</button>
+      <button type="button" class="secondary" data-codex-action="login/cancel">Cancel login</button>
+      <button type="button" class="secondary" data-codex-action="usage">Read account usage</button>
+      <button type="button" class="warn" data-codex-action="logout">Disconnect this account</button>
+    </div>
+    <div id="codex-account-login" class="mono-box hidden" role="status">
+      <p>Open the official link in your own browser. Use the account you want to connect and enter the code there, never in a chat.</p>
+      <a id="codex-account-login-url" target="_blank" rel="noopener noreferrer">Open official login page</a>
+      <p>Temporary code: <code id="codex-account-login-code"></code></p><p id="codex-account-login-expiry"></p>
     </div>
     <div id="codex-account-provider" aria-live="polite"></div>
-    <p class="footer-note">Quota condivisa con gli altri utilizzi dell’account. Residuo in token/richieste: non esposto dal servizio. I token GemRouter includono il contesto interno Codex. Cache e reasoning sono sottoinsiemi: non vanno sommati di nuovo.</p>
-    <details><summary>Consumi dell’intero account (lettura manuale)</summary><pre id="codex-account-usage" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
+    <p class="footer-note">On quota exhaustion only, fallback uses the first authorized Gemini model in the configured order. Login errors and unavailable models do not trigger fallback. Account switching is manual, not an automatic quota-rotation policy.</p>
+    <p class="footer-note">GemRouter token counts include the Codex internal context. Cached input and reasoning tokens are subsets, not extra tokens. Streaming is buffered.</p>
+    <details class="codex-usage-details"><summary>Whole-account token activity · optional, not the remaining quota</summary>
+      <div id="codex-account-usage" class="mono-box">Use “Read account usage” to fetch account-wide activity without blocking this page.</div></details>
     <p id="codex-account-message" role="status" aria-live="polite"></p>
-  </details>
+  </div>
 </section>`;
+
 export const codexAccountScript = String.raw`
       const codexPanel = document.getElementById('codex-account-panel');
+      const codexSelect = document.getElementById('codex-account-select');
       const codexText = function(id, value) { document.getElementById('codex-account-' + id).textContent = value; };
-      let codexLoginTimer = null, codexExpiryTimer = null, codexBusy = false, codexEpoch = 0;
+      const codexNumber = function(value) { return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('en-US') : 'n/a'; };
+      const codexDate = function(value) { return value != null && Number.isFinite(new Date(value).getTime()) ? new Date(value).toLocaleString('en-GB') : 'not reported'; };
+      let codexLoginTimer = null, codexExpiryTimer = null, codexUsageTimer = null, codexBusy = false, codexEpoch = 0, codexSnapshot = null;
+      function codexMeter(value) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return '<span class="muted">Not reported</span>';
+        const bounded = Math.max(0, Math.min(100, value));
+        return '<div class="quota-meter ' + (bounded >= 100 ? 'bad' : bounded > 75 ? 'warn' : '') + '" role="progressbar" aria-label="Quota used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + bounded + '"><span style="width:' + bounded + '%"></span></div>';
+      }
+      function codexQuotaRows(accounts) {
+        return accounts.map(function(account) { return account.quotas.map(function(quota) {
+          const w = quota.window, used = w && w.usedPercent, known = typeof used === 'number';
+          return '<tr><td data-label="Account / quota"><strong>' + escapeHtml(account.alias) + '</strong> <span class="chip">' + escapeHtml(quota.limitId) + '</span>'
+            + '<div class="footer-note">' + (account.active ? 'Selected · ' : '') + (!account.authenticated ? 'Not connected' : account.stale ? 'Stale / unavailable' : 'Updated ' + escapeHtml(codexDate(account.observedAt))) + '</div></td>'
+            + '<td data-label="Remaining">' + (known ? codexNumber(Math.max(0, 100 - used)) + '%' : 'n/a') + '</td>'
+            + '<td data-label="Next reset">' + escapeHtml(codexDate(w && w.resetsAt != null ? w.resetsAt * 1000 : null)) + '</td>'
+            + '<td data-label="Used / total">' + (known ? codexNumber(used) + '% / 100%' : 'n/a') + '<div class="footer-note">' + (w && w.windowDurationMins != null ? codexNumber(w.windowDurationMins / 60) + ' hour window' : 'Window not reported') + '</div></td>'
+            + '<td data-label="Usage">' + codexMeter(used) + '</td></tr>';
+        }).join(''); }).join('');
+      }
+      async function loadCodexQuota() {
+        try {
+          const data = await request('/dashboard/codex-quota');
+          document.getElementById('codex-quota-rows').innerHTML = codexQuotaRows(data.accounts || []);
+          document.getElementById('codex-quota-pills').innerHTML = '<span class="chip">Accounts ' + (data.accounts || []).filter(function(a) { return a.authenticated; }).length + '/2</span>'
+            + '<span class="chip ' + (data.enabled ? 'good' : 'warn') + '">' + (data.enabled ? 'Codex enabled' : 'Codex disabled') + '</span>';
+        } catch { document.getElementById('codex-quota-rows').innerHTML = '<tr><td colspan="5" class="muted">Quota unavailable. Next automatic refresh will retry.</td></tr>'; }
+      }
       function clearCodexLogin() {
         clearTimeout(codexLoginTimer); clearTimeout(codexExpiryTimer);
         codexLoginTimer = codexExpiryTimer = null;
@@ -35,90 +86,122 @@ export const codexAccountScript = String.raw`
         document.getElementById('codex-account-login').classList.add('hidden');
       }
       function clearCodexAccount() {
-        codexEpoch++; clearCodexLogin();
-        ['state', 'usage', 'message', 'provider'].forEach(function(id) { codexText(id, ''); });
+        codexEpoch++; clearCodexLogin(); clearTimeout(codexUsageTimer); codexSnapshot = null; codexSelect.innerHTML = '';
+        ['state', 'usage', 'message', 'provider', 'pills'].forEach(function(id) { codexText(id, ''); });
       }
-      function renderCodexAccount(account) {
-        codexText('state', !account.enabled ? 'Disabilitato sul server: abilita GEMROUTER_CODEX_ENABLED. CLI disponibile.'
-          : (account.authenticated ? 'Codex autenticato: ' + (account.email || 'account verificato') + ' · piano ' + (account.planType || 'non disponibile') : 'Account non autenticato/verificato')
-          + ' · modello ' + account.requestedModel + ': ' + (account.modelAvailable ? 'nel catalogo' : 'non verificato/disponibile')
-          + (account.reasonCode ? ' · ' + account.reasonCode : ''));
+      function codexButtons() {
+        const a = codexSnapshot && codexSnapshot.account;
+        codexPanel.querySelectorAll('[data-codex-action]').forEach(function(button) {
+          const action = button.dataset.codexAction;
+          button.disabled = codexBusy || !a || !a.enabled
+            || (action === 'add' && codexSnapshot.accounts.length >= 2)
+            || (action === 'select' && (!a.inferenceAvailable || a.id === codexSnapshot.selectedAccountId))
+            || (action === 'login' && a.authenticated) || (['logout','usage'].includes(action) && !a.authenticated);
+        });
+        codexSelect.disabled = codexBusy;
+      }
+      function renderCodexAccount(data) {
+        codexSnapshot = data;
+        codexSelect.innerHTML = data.accounts.map(function(a) { return '<option value="' + escapeHtml(a.id) + '">' + escapeHtml(a.alias) + (a.id === data.selectedAccountId ? ' · selected' : '') + '</option>'; }).join('');
+        codexSelect.value = data.account.id;
+        const a = data.account, connected = data.accounts.filter(function(a) { return a.authenticated; }).length;
+        codexText('state', !a.enabled ? 'Codex is disabled on this server.' : a.alias + ' · ' + (a.authenticated ? 'Connected · plan ' + (a.planType || 'not reported') : 'Not connected') + (a.reasonCode ? ' · ' + a.reasonCode : ''));
+        document.getElementById('codex-account-pills').innerHTML = '<span class="chip ' + (connected ? 'good' : 'warn') + '">Codex OAuth ' + (connected ? 'available' : 'not connected') + '</span><span class="chip">Accounts ' + connected + '/2</span>'
+          + '<span class="chip">' + escapeHtml((data.accounts.find(function(a) { return a.id === data.selectedAccountId; }) || {}).alias || 'No selection') + '</span>';
+        renderCodexProvider(data.provider); renderCodexUsage(data.usage); codexButtons();
       }
       async function loadCodexAccount() {
         if (!state.authenticated) return clearCodexAccount();
-        const epoch = codexEpoch;
+        const epoch = codexEpoch, id = codexSelect.value;
         try {
-          const data = await request('/admin/codex/account');
-          if (state.authenticated && epoch === codexEpoch) { renderCodexAccount(data.account); renderCodexProvider(data.provider); }
+          const data = await request('/admin/codex/account' + (id ? '?accountId=' + encodeURIComponent(id) : ''));
+          if (state.authenticated && epoch === codexEpoch) renderCodexAccount(data);
         } catch (error) { if (state.authenticated && epoch === codexEpoch) codexText('message', error.message); }
+      }
+      function renderCodexUsage(read) {
+        if (!read || read.status === 'idle') { codexText('usage', 'Use “Read account usage” to fetch optional whole-account activity.'); return; }
+        if (read.status === 'pending') { codexText('usage', 'Reading account activity in the background… Quota and inference remain independent.'); return; }
+        const result = read.result, summary = result && result.usage && result.usage.summary;
+        codexText('usage', (summary ? 'Lifetime tokens: ' + codexNumber(summary.lifetimeTokens) + ' · peak daily tokens: ' + codexNumber(summary.peakDailyTokens) + '\nObserved: ' + codexDate(result.observedAt) : 'Whole-account token activity is not available.')
+          + ((read.error || result && result.usageError) ? '\nReason: ' + (read.error || result.usageError) + '. Quota bars and GemRouter request counters still work independently.' : ''));
       }
       function renderCodexProvider(provider) {
         const target = document.getElementById('codex-account-provider');
-        if (!provider) { target.textContent = 'Provider non configurato.'; return; }
-        const number = function(value) { return typeof value === 'number' ? value.toLocaleString() : 'n/d'; };
-        const totals = provider.metrics && provider.metrics.totals || {};
-        const quota = provider.quota;
-        let html = '<h4>Quota account</h4><p class="footer-note">' + (quota ? 'Rilevata: ' + escapeHtml(new Date(quota.observedAt).toLocaleString()) : 'Quota non disponibile') + (provider.quotaStale ? ' · dato assente o non aggiornato' : '') + '</p>';
-        (quota && quota.buckets || []).forEach(function(bucket) {
-          html += '<div class="panel section"><strong>' + escapeHtml(bucket.limitId) + '</strong>';
-          ['primary', 'secondary'].forEach(function(key) {
-            const w = bucket[key]; if (!w) return;
-            const known = typeof w.usedPercent === 'number';
-            html += '<p>Finestra ' + escapeHtml(number(w.windowDurationMins)) + ' minuti · usata ' + (known ? escapeHtml(number(w.usedPercent)) + '%' : 'n/d')
-              + ' · residua ' + (known ? escapeHtml(number(Math.max(0, 100 - w.usedPercent))) + '%' : 'n/d')
-              + ' · reset ' + (w.resetsAt != null ? escapeHtml(new Date(w.resetsAt * 1000).toLocaleString()) : 'n/d') + '</p>';
-            if (known) html += '<progress max="100" value="' + Math.min(100, w.usedPercent) + '" aria-label="Quota usata"></progress>';
-          }); html += '</div>';
-        });
-        html += '<h4>Richieste GemRouter → Codex</h4><p>Ricevute: ' + number(totals.received) + ' · completate: ' + number(totals.succeeded)
-          + ' · quota esaurita: ' + number(totals.quotaBlocked) + ' · errori: ' + number(totals.failed) + ' · annullate: ' + number(totals.cancelled)
-          + ' · in corso: ' + number(provider.inflight) + ' · in coda: ' + number(provider.queued) + '</p>'
-          + '<p>Token misurati: <strong>' + number(totals.totalTokens) + '</strong> · input: ' + number(totals.inputTokens) + ' · output: ' + number(totals.outputTokens)
-          + ' · input cached: ' + number(totals.cachedInputTokens) + ' · reasoning: ' + number(totals.reasoningOutputTokens) + '</p>'
-          + '<p class="footer-note">Richieste con usage: ' + number(totals.usageReportedRequests) + ' · usage non disponibile: ' + number(totals.usageUnknownRequests)
-          + ' · contatori dal ' + escapeHtml(provider.metrics && provider.metrics.since || 'n/d') + '. Stream: risposta bufferizzata.</p>';
+        if (!provider) { target.textContent = 'Provider not configured.'; return; }
+        const n = codexNumber, totals = provider.metrics && provider.metrics.totals || {};
+        let html = '<h4>Selected account quota windows</h4><div class="table-wrap"><table class="table responsive-table"><thead><tr><th>Quota bucket</th><th>Window</th><th>Remaining</th><th>Next reset</th><th>Usage</th></tr></thead><tbody>';
+        (provider.quota && provider.quota.buckets || []).forEach(function(bucket) { ['primary','secondary'].forEach(function(key) {
+          const w = bucket[key]; if (!w) return;
+          html += '<tr><td data-label="Quota bucket">' + escapeHtml(bucket.limitId) + '</td><td data-label="Window">' + n(w.windowDurationMins) + ' minutes</td><td data-label="Remaining">' + (typeof w.usedPercent === 'number' ? n(Math.max(0,100-w.usedPercent)) + '%' : 'n/a') + '</td><td data-label="Next reset">' + escapeHtml(codexDate(w.resetsAt != null ? w.resetsAt*1000 : null)) + '</td><td data-label="Usage">' + codexMeter(w.usedPercent) + '</td></tr>';
+        }); });
+        html += '</tbody></table></div><p class="footer-note">' + (provider.quotaStale ? 'Quota stale or unavailable. ' : '') + 'Buckets are service-reported quota identifiers, not selectable models. codex_bengalfox is shown separately; no model mapping is assumed.</p>';
+        html += '<h4>GemRouter → Codex requests · this account</h4><div class="meta-row">'
+          + [['Received',totals.received],['Completed',totals.succeeded],['Quota depleted',totals.quotaBlocked],['Errors',totals.failed],['Cancelled',totals.cancelled],['In progress',provider.inflight],['Queued',provider.queued]].map(function(pair) { return '<span class="chip">' + pair[0] + ' ' + n(pair[1]) + '</span>'; }).join('') + '</div>'
+          + '<p>Measured tokens: <strong>' + n(totals.totalTokens) + '</strong> · input ' + n(totals.inputTokens) + ' · output ' + n(totals.outputTokens) + ' · cached input ' + n(totals.cachedInputTokens) + ' · reasoning ' + n(totals.reasoningOutputTokens) + '</p>'
+          + '<p class="footer-note">Requests with usage: ' + n(totals.usageReportedRequests) + ' · usage unavailable: ' + n(totals.usageUnknownRequests) + ' · counted since ' + escapeHtml(codexDate(provider.metrics && provider.metrics.since)) + '</p>';
         if (provider.lastError || provider.metrics && provider.metrics.storageError) html += '<p role="status">' + escapeHtml(provider.lastError || provider.metrics.storageError) + '</p>';
-        html += '<h4>Modelli verificati sul tuo account</h4><div class="table-wrap"><table class="table"><thead><tr><th>Modello</th><th>Thinking disponibili</th></tr></thead><tbody>';
+        html += '<h4>Models verified on this account</h4><div class="table-wrap"><table class="table"><thead><tr><th>Model</th><th>Available thinking levels</th></tr></thead><tbody>';
         (provider.models || []).forEach(function(model) { html += '<tr><td>' + escapeHtml(model.model) + '</td><td>' + escapeHtml(model.supportedReasoningEfforts.join(', ')) + '</td></tr>'; });
-        html += '</tbody></table></div><p class="footer-note">Fallback: solo su quota esaurita, al primo Gemini autorizzato nell’ordine configurato. Non per errori di login o modelli inesistenti.</p>';
-        target.innerHTML = html;
+        target.innerHTML = html + '</tbody></table></div>';
       }
-      async function pollCodexLogin(epoch) {
+      async function pollCodexUsage(epoch, id) {
         if (!state.authenticated || epoch !== codexEpoch) return;
         try {
-          const login = await request('/admin/codex/account/login');
+          const read = await request('/admin/codex/account/usage?accountId=' + encodeURIComponent(id));
+          if (!state.authenticated || epoch !== codexEpoch) return;
+          renderCodexUsage(read);
+          if (read.status === 'pending') codexUsageTimer = setTimeout(function() { pollCodexUsage(epoch,id); }, 1000);
+        } catch (error) { if (state.authenticated && epoch === codexEpoch) codexText('message', error.message); }
+      }
+      async function pollCodexLogin(epoch, id) {
+        if (!state.authenticated || epoch !== codexEpoch) return;
+        try {
+          const login = await request('/admin/codex/account/login?accountId=' + encodeURIComponent(id));
           if (!state.authenticated || epoch !== codexEpoch) return;
           clearCodexLogin();
-          if (login.status !== 'pending' || login.expiresAt <= Date.now()) { codexText('message', 'Login: ' + login.status); await loadCodexAccount(); return; }
+          if (login.status !== 'pending' || login.expiresAt <= Date.now()) {
+            codexText('message', 'Login: ' + login.status);
+            if (login.status === 'completed') await request('/admin/codex/account/refresh', { method: 'POST', body: JSON.stringify({accountId:id}) });
+            await loadCodexAccount(); await loadCodexQuota(); return;
+          }
           const url = new URL(login.verificationUrl);
-          if (url.protocol !== 'https:' || !['auth.openai.com','auth0.openai.com','chatgpt.com'].includes(url.hostname) || url.username || url.password || url.port) throw new Error('Login URL non valido');
+          if (url.protocol !== 'https:' || !['auth.openai.com','auth0.openai.com','chatgpt.com'].includes(url.hostname) || url.username || url.password || url.port) throw new Error('Invalid login URL');
           document.getElementById('codex-account-login-url').href = url.href;
-          codexText('login-code', login.userCode || '');
-          codexText('login-expiry', 'Scade: ' + new Date(login.expiresAt).toLocaleString());
+          codexText('login-code', login.userCode || ''); codexText('login-expiry', 'Expires: ' + codexDate(login.expiresAt));
           document.getElementById('codex-account-login').classList.remove('hidden');
           codexExpiryTimer = setTimeout(clearCodexLogin, Math.max(0, login.expiresAt - Date.now()));
-          codexLoginTimer = setTimeout(function() { pollCodexLogin(epoch); }, 2000);
+          codexLoginTimer = setTimeout(function() { pollCodexLogin(epoch,id); }, 2000);
         } catch (error) { if (state.authenticated && epoch === codexEpoch) { clearCodexLogin(); codexText('message', error.message); } }
       }
+      codexSelect.addEventListener('change', async function() {
+        const epoch = ++codexEpoch, id = codexSelect.value;
+        clearCodexLogin(); clearTimeout(codexUsageTimer); await loadCodexAccount();
+        await pollCodexLogin(epoch,id); await pollCodexUsage(epoch,id);
+      });
       codexPanel.addEventListener('click', async function(event) {
         const button = event.target.closest('[data-codex-action]');
         if (!button || !state.authenticated || codexBusy) return;
         const action = button.dataset.codexAction;
-        if (action === 'logout' && !window.confirm('Scollegare Codex? Le nuove richieste GPT richiederanno un nuovo login.')) return;
+        if (action === 'logout' && !window.confirm('Disconnect this Codex account? Its saved login will be removed. The other account will not be changed.')) return;
         const epoch = ++codexEpoch;
-        clearCodexLogin(); codexBusy = true;
-        codexPanel.setAttribute('aria-busy', 'true');
-        codexPanel.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
-        codexText('message', 'Operazione in corso…');
+        clearCodexLogin(); clearTimeout(codexUsageTimer); codexBusy = true; codexButtons();
+        codexPanel.setAttribute('aria-busy', 'true'); codexText('message', 'Working…');
+        let id = codexSelect.value;
         try {
-          const result = await request('/admin/codex/account/' + action, { method: 'POST', body: '{}' });
+          const result = await request(action === 'add' ? '/admin/codex/accounts' : '/admin/codex/account/' + action,
+            { method: 'POST', body: JSON.stringify(action === 'add' ? {} : {accountId:id}) });
           if (!state.authenticated || epoch !== codexEpoch) return;
-          if (action === 'usage') codexText('usage', JSON.stringify(result, null, 2));
-          if (action === 'logout') codexText('usage', '');
-          if (action === 'login') await pollCodexLogin(epoch);
-          await loadCodexAccount();
-          if (state.authenticated && epoch === codexEpoch) codexText('message', 'Operazione conclusa. Nessuna inferenza avviata.');
+          if (action === 'add') {
+            renderCodexAccount(result); id = result.account.id;
+            await request('/admin/codex/account/login', { method:'POST', body:JSON.stringify({accountId:id}) });
+          }
+          if (!state.authenticated || epoch !== codexEpoch) return;
+          await loadCodexAccount(); await loadCodexQuota();
+          if (!state.authenticated || epoch !== codexEpoch) return;
+          codexText('message', action === 'select' ? 'Account selected for new requests. No login needed.' : 'Done. No inference started.');
+          if (action === 'usage') await pollCodexUsage(epoch,id);
+          if (action === 'login' || action === 'add') await pollCodexLogin(epoch,id);
         } catch (error) { if (state.authenticated && epoch === codexEpoch) codexText('message', error.message); }
-        finally { codexBusy = false; codexPanel.removeAttribute('aria-busy'); codexPanel.querySelectorAll('button').forEach(function(b) { b.disabled = false; }); }
+        finally { codexBusy = false; codexPanel.removeAttribute('aria-busy'); codexButtons(); }
       });
 `;
