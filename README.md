@@ -148,7 +148,7 @@ Licensing scope and preserved third-party permissions are documented in [LICENSI
 ## Archived wake experiments
 
 The failed widget-wake microtest and preceding browser-controller experiment are
-archived in `archive/widget-wake-probe-2026-09-16` (`165a7b0`), including code,
+archived in `archive/widget-wake-probe-2026-09-16` (`12af0c3`), including code,
 tests and chronological evidence, without private profiles or credentials.
 See [the archive pointer](docs/chatgpt-widget-wake-verification.md).
 

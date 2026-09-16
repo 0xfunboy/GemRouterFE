@@ -31,7 +31,8 @@ HTTP/browser smoke. The earlier 105-test result below is the original release.
 A build to a separate temporary output directory also passed, without replacing
 the running production build. A scoped scan of the 16 changed/new files found no
 private account identifiers, personal email addresses, private keys, JWTs or
-common service-token patterns. No commit or push is claimed for this follow-up.
+common service-token patterns. See the authorized follow-up rollout below for
+the subsequent production deployment and history rewrite.
 
 Read-only production diagnostic of the existing (pre-change) usage endpoint:
 HTTP 200 in **1,312 ms**, both account activity and quota available. The reported
@@ -40,14 +41,43 @@ failure is asserted. The replacement usage endpoint responds immediately with
 202, is polled separately, and reports safe timeout/unavailable codes. Optional
 historical activity does not gate quota display or inference.
 
-No new live inference, second real login, production deployment or restart is
-claimed for this follow-up. The rollout recorded below belongs to the earlier
-single-account release. Publishing/restarting this follow-up requires authorization.
+These checkout checks were followed by an explicitly authorized deployment.
+A second real account login still requires the operator and has not been claimed.
+
+### Authorized follow-up rollout — 15:38 UTC
+
+The existing GemRouter service was restarted after a successful production build,
+with no Codex requests queued/in-flight at shutdown. No tunnel/network change or
+second production instance was needed. The original account remained authenticated;
+all four configured models were returned by its real catalog.
+
+Verified over public HTTPS:
+
+- The unauthenticated quota endpoint returns HTTP 200, one connected account and
+  two long-window rows, with no email in its DTO.
+- The deployed dashboard shows the public quota card before login, the admin
+  routing panel collapsed by default, an enabled **Add account** button and an
+  accurate **Accounts 1/2** badge. A temporary admin session was logged out after
+  verification. No account login was replaced and no second account was invented.
+- Optional account usage was accepted with HTTP 202 in **85 ms**, then completed
+  successfully through polling. This was a real upstream activity read.
+- A temporary, Luna-only app with thinking low and fallback disabled returned
+  **CODEX_ACCOUNTS_OK**, HTTP 200, backend **codex**, exact model **gpt-5.6-luna**.
+  The probe completed in **3,523 ms**, including the follow-up counter check.
+  Actual usage: **3,443 input + 10 output = 3,453 total tokens**; cached/reasoning
+  subcounts were zero. Per-account production metrics recorded the usage.
+- The temporary inference app was revoked and deleted. Existing app permissions
+  and the original login were preserved. Switching two real accounts still awaits
+  the operator's second login; the two-account switching test was simulated.
+
+The separately authorized full-history cleanup and its limits are documented in
+[privacy-history-rewrite.md](privacy-history-rewrite.md). This supersedes the
+initial publication boundary at the bottom of this document.
 
 ## Implementation
 
 Branch: `feat/codex-provider`. Former widget, native MCP and personal-chat/browser
-work is recoverable on `archive/widget-wake-probe-2026-09-16`, commit `165a7b0`.
+work is recoverable on `archive/widget-wake-probe-2026-09-16`, commit `12af0c3`.
 The active code retains Gemini/NVIDIA and the September 14 retired-model and
 revoked-app fixes. No hard reset or live database rollback was performed.
 
@@ -154,7 +184,7 @@ This is a real production inference, distinct from the earlier isolated HTTP
 test and the simulated UI/HTTP suite. It does not establish that every model,
 reasoning level or future quota exhaustion has been exercised live.
 
-## Publication privacy boundary
+## Initial publication privacy boundary (superseded by authorized full rewrite)
 
 The two unpublished implementation/archive snapshots were recreated with anonymous
 GitHub noreply commit metadata. Personal chat URLs, runtime identifiers, deployment

@@ -4,7 +4,7 @@ The complete prototype, build/lockfile, tests, operator commands, deployment
 example and chronological evidence are preserved in:
 
 - Branch: `archive/widget-wake-probe-2026-09-16`
-- Commit: `165a7b01bf083ed95d4eb58c38c5f428cbec591c`
+- Commit after the authorized privacy rewrite: `12af0c3faa5402b5d5c2f32db604f812b1497e48`
 - Report in that branch: `docs/chatgpt-widget-wake-verification.md`
 - Code in that branch: `experiments/chatgpt-widget-wake/`
 

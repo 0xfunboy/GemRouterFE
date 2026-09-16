@@ -220,7 +220,7 @@ See [verification report](codex-verification.md) for automated tests, simulated
 HTTP/UI, actual inference and deployment as separate categories.
 
 The entire widget/MCP/browser implementation is archived on
-archive/widget-wake-probe-2026-09-16 (165a7b0). Active cleanup retains the Gemini/
+archive/widget-wake-probe-2026-09-16 (12af0c3). Active cleanup retains the Gemini/
 NVIDIA routing, retired-model exclusions and revoked-app activation/removal from
 September 14. It does not delete live credentials, grants, databases or production
 processes. Historical notices remain for attribution.
