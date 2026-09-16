@@ -62,3 +62,21 @@ that map or old sensitive commit links as a public issue.
 
 See [GitHub's sensitive-data removal guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository).
 No claim is made that copies outside the managed branch histories have disappeared.
+
+## Observed remote result
+
+The atomic leased push succeeded for all six branches, and a subsequent remote
+ref check matched every published tip to its sanitized local counterpart. The
+active checkout is free of unreachable old objects. The repository API reported
+zero forks, and no pull-request refs were advertised.
+
+**Residual exposure verified:** three previously published commits containing
+private author metadata still returned HTTP 200 at their old direct GitHub URLs
+after the rewrite. These are retained server objects/cached views, not ancestors
+of the new branch tips. Thus the branch-history cleanup is complete, but total
+server-side erasure is **not** complete and cannot be claimed from a Git push.
+
+A ready-to-submit GitHub Support request, the exact affected URLs and the original
+commit map are stored only in the private recovery directory outside the repo.
+The request was not submitted automatically. The repository owner must submit it
+privately to GitHub Support, which determines eligibility and performs the purge.
