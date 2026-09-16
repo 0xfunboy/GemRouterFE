@@ -30,7 +30,9 @@ for (const commit of commits) {
     for (const match of data.matchAll(/https?:\/\/[^\s<>"'`]+/g)) {
       try {
         const url = new URL(match[0]);
-        const fixture = /(?:example|localhost|\.invalid|\.test)$/.test(url.hostname) || url.hostname.includes('.example.') || url.hostname === '127.0.0.1';
+        const fixture = /(?:example|localhost|\.invalid|\.test)$/.test(url.hostname)
+          || /(?:^|\.)example\.(?:com|org|net)$/.test(url.hostname)
+          || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
         if (!fixture && (url.username || url.password || [...url.searchParams.keys()].some((key) => /^(?:access_token|refresh_token|client_secret|api_key|token)$/i.test(key)))) findings.push({ file, kind: 'credential-bearing-url' });
       } catch { /* Code fragments/placeholders are not URLs. */ }
     }
