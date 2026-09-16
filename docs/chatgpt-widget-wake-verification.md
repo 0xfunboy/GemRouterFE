@@ -32,16 +32,16 @@ Codex is now implemented as an independent inference provider; see
 
 ## Operational boundary
 
-Source cleanup is not a deployment. At cleanup time, the existing temporary
-`gemrouter-widget-wake-probe.service` user unit and its ingress were **not**
-stopped/reloaded: authorization for that live cleanup was requested separately.
-The process has no automatic restart (`Restart=no`); do not manually restart it
-from this checkout after removing the prototype sources. Its already-loaded
-code, ignored `build/`/`node_modules/` and private state are not a new live test.
+After explicit authorization on 2026-09-16, the temporary widget user service was
+stopped, its ingress removed and the tunnel gracefully restarted. The retired
+endpoint returns 404. Generated widget assets were moved to a private local rollback
+directory. Source, tests and chronological evidence remain in the sanitized archive.
 
-After explicit authorization, stop **only** that temporary user unit, remove
-the `/widget-wake-probe/*` ingress in `ops/cloudflared/gemrouter.yml`, and reload
-or restart **only** `cloudflared-gemrouter`. That tunnel may briefly reconnect.
-Do not restart `gemrouter.service`, modify AIR3 or revoke its MCP grant as part
-of this cleanup. Preserve private profiles; remove generated widget artifacts
-only after the transient process has stopped.
+GemRouter was separately deployed with the Codex inference provider; see the
+[production verification](codex-verification.md). Existing private profiles,
+MCP grants and the archived database remain intact but are unused by the new
+provider. No old experiment can consume inference requests in this source tree.
+
+The public archive substitutes synthetic identifiers, example hostnames and
+placeholder home paths. Original unpublished snapshots exist only in a private
+local recovery bundle. Do not treat archived example URLs as usable connections.

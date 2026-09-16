@@ -69,33 +69,72 @@ temporary data were removed afterward. Real runtime/account/model/quota reads we
 also verified; private identity and account history are not included in Git.
 
 Not claimed live: completions on the other three models, a quota-exhaustion event,
-Gemini fallback triggered by a real exhausted Codex subscription, production API
-serving, concurrent load or personal ChatGPT/MCP wake. Fallback was verified with
-controlled fixtures, without deliberately draining the account.
+Gemini fallback triggered by an actually depleted subscription, concurrent load
+or personal ChatGPT/MCP wake. Fallback was tested with controlled fixtures.
 
-## Production boundary and proposed deployment
+## Authorized production rollout — 2026-09-16
 
-No production deployment, restart, tunnel edit, grant revocation or network change
-was performed. Existing services retained their original PIDs/start times during
-verification. Old credentials/profiles and AIR3 data remain untouched. The obsolete
-temporary widget process/ingress remains running pending explicit live cleanup
-authorization; source removal alone does not stop an already-running process.
+The operator subsequently authorized deployment, service/tunnel restarts, widget
+retirement and a privacy-checked push. Deployment completed and was verified:
 
-An authorized deployment would:
+- Production build and locked dependency installation succeeded.
+- GemRouter and its tunnel were gracefully restarted; both returned active/running.
+  The package-manager wrapper did not propagate its initial SIGTERM, so the exact
+  owned production Node process was stopped gracefully after checking its UID,
+  cgroup and working directory. The existing Restart=always policy restarted it.
+- The existing Codex account remained authenticated. All four requested models
+  and account quota buckets were available from the production runtime.
+- Public health and the actual HTML dashboard returned 200; the Codex panel is
+  present. Unauthenticated account access returned 401.
+- The temporary widget service was stopped, its ingress removed and the tunnel
+  configuration validated before restart. The old widget endpoint returns 404.
+- Old widget build/dependency artifacts and unused compiled MCP code were moved
+  to a private local rollback directory, not deleted irrecoverably.
+- Existing OAuth grant, refresh-token and worker records were preserved; the
+  archived SQLite database passed quick_check. No production DB downgrade or
+  second GemRouter instance was started.
 
-1. Preserve private rollback copies of the current build/config/app data, without
-   exporting credentials into Git. Preserve the archived MCP SQLite directory.
-2. Build/install the checked provider source; set Codex enabled, its absolute
-   executable and the existing private directory for the service user. The app
-   account starts disabled until explicitly enabled in each chosen app.
-3. Restart **only `gemrouter.service`**, check health and one explicitly authorized
-   app request. No second instance on the production database. The old MCP routes
-   and personal-chat worker aliases will no longer be served by this implementation.
-4. Separately stop **only** `gemrouter-widget-wake-probe.service` (user unit), remove
-   its `/widget-wake-probe/*` ingress, validate tunnel config and restart only
-   `cloudflared-gemrouter`; this can cause a short public tunnel reconnection.
-5. Keep private profiles and grants for rollback; remove ignored generated widget
-   artifacts only after its process has stopped. Roll back source/config/build
-   together if needed, not the live database via a destructive reset.
+### Actual public API completion
 
-These steps are a proposal, not a record of actions already performed.
+At **2026-09-16 13:16 UTC**, a temporary app with only gpt-5.6-luna allowed,
+thinking low and fallback disabled called the public production OpenAI-compatible
+endpoint. Result: **HTTP 200**, backend **codex**, exact model **gpt-5.6-luna**,
+payload **CODEX_PRODUCTION_OK** in **3,561 ms**.
+
+Upstream usage: **3,442 input + 9 output = 3,451 total tokens**; cached/reasoning
+subcounts were 0. Production request/token counters recorded the inference.
+The temporary app was revoked and removed immediately afterward. Existing app
+permissions were not expanded: operators must explicitly enable Codex per app.
+
+This is a real production inference, distinct from the earlier isolated HTTP
+test and the simulated UI/HTTP suite. It does not establish that every model,
+reasoning level or future quota exhaustion has been exercised live.
+
+## Publication privacy boundary
+
+The two unpublished implementation/archive snapshots were recreated with anonymous
+GitHub noreply commit metadata. Personal chat URLs, runtime identifiers, deployment
+domains, tunnel identifiers, invite links and home paths were replaced with inert
+examples in the archive. The active runtime tunnel configuration is now ignored;
+only gemrouter.example.yml is versioned. The original snapshots, environment,
+build and consistent SQLite backup remain in a private owner-only local rollback
+directory, never in Git or the push set.
+
+The automated check scans every newly published commit and its trees, not merely
+the latest diff. It checks sensitive/generated paths, credential formats, personal
+email metadata, account identifiers supplied privately to the scanner, personal
+chat URLs and credential-bearing URLs. Reserved test domains and synthetic fixture
+IDs are distinguished from actual private endpoints.
+
+Already-published remote ancestry was not force-rewritten. It contained deployment
+references and personal author metadata predating this work; current tracked
+templates were sanitized, but removal from historical remote commits would be a
+separate coordinated history rewrite. No claim is made that this push erases old
+public objects. Only explicit main/provider/archive refs are pushed; unrelated
+local branches and the private recovery bundle are excluded.
+
+Recheck an outgoing push set before publication:
+
+```sh
+pnpm check:privacy main feat/codex-provider archive/widget-wake-probe-2026-09-16
+```
