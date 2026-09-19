@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCodexConfig } from '../src/codex/config.js';
+import { verifyClientSlotRecovery } from './smoke-client-slots.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** Separate data directory and ephemeral port. Never loads .env or the live DB. */
@@ -25,6 +26,7 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
       GEMROUTER_CODEX_PRIVATE_DIR: options.live ? config.privateDirectory : path.join(dir, 'private'),
       GEMROUTER_CODEX_TIMEOUT_MS: '120000', GEMROUTER_CODEX_QUOTA_REFRESH_MS: '300000',
       GEMROUTER_BOOTSTRAP_RATE_LIMIT_PER_MINUTE: '0', GEMROUTER_BOOTSTRAP_MAX_CONCURRENCY: '2',
+      GEMROUTER_BOOTSTRAP_CONCURRENCY_WAIT_MS: '500',
     },
   });
   let browser: any; let stderr = '';
@@ -47,6 +49,7 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
       codexEnabled: true, codexReasoningEffort: 'low', codexFallbackEnabled: false, allowedOrigins: ['*'], rateLimitPerMinute: 0, maxConcurrency: 2 });
     assert.equal(create.status, 201, await create.clone().text()); const created = await create.json() as any;
     assert.equal(created.app.codexEnabled, true);
+    if (!options.live) await verifyClientSlotRecovery(call, adminKey);
     const models = await (await call('/v1/models', created.apiKey)).json() as any;
     assert(models.data.some((m: any) => m.id === request.model), 'Account Codex model absent from authorized catalog');
     const providerRuntime = await (await call('/v1/provider/runtime', created.apiKey)).json() as any;

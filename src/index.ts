@@ -1842,6 +1842,8 @@ async function handleChatCompletionsRequest(
   try {
     parsed = parseChatCompletionsRequest(request.body ?? {});
   } catch (error) {
+    // Validation precedes the inference try/finally: release before any early return.
+    access.release();
     const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'chat.completion.error',
@@ -2111,6 +2113,7 @@ async function handleResponsesRequest(
   try {
     parsed = parseResponsesRequest(request.body ?? {});
   } catch (error) {
+    access.release(); // Validation has not entered the inference try/finally yet.
     const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'responses.create.error',
@@ -2430,6 +2433,7 @@ async function handleImageGenerationsRequest(
   try {
     parsed = parseImageGenerationsRequest(request.body ?? {});
   } catch (error) {
+    access.release(); // Validation has not entered the inference try/finally yet.
     const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'images.generate.error',
@@ -2586,6 +2590,7 @@ async function handleOllamaChatRequest(
   try {
     parsed = parseOllamaChatRequest(request.body ?? {});
   } catch (error) {
+    access.release(); // Validation has not entered the inference try/finally yet.
     const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'ollama.chat.error',
@@ -2802,6 +2807,7 @@ async function handleOllamaGenerateRequest(
   try {
     parsed = parseOllamaGenerateRequest(request.body ?? {});
   } catch (error) {
+    access.release(); // Validation has not entered the inference try/finally yet.
     const message = error instanceof Error ? error.message : String(error);
     audit.write({
       type: 'ollama.generate.error',
