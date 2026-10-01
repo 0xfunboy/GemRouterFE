@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { isCodexRequest, CODEX_REASONING_EFFORTS } from '../codex/models.js';
+import { isCodexRequest, isCodexReasoningEffort } from '../codex/models.js';
 
 export type AppModelAccess = 'all' | 'custom';
 
@@ -124,6 +124,22 @@ export class AppStore {
     return [...this.state.apps];
   }
 
+  /** Discovery expands only apps that explicitly opted into Codex. */
+  addDiscoveredCodexModels(models: string[], newlyDiscovered = models): number {
+    const ids = normalizedModelIds(models).filter(isCodexRequest);
+    const grants = normalizedModelIds(newlyDiscovered).filter((id) => ids.includes(id));
+    for (const id of ids) this.modelUniverse.add(id);
+    let changed = 0;
+    for (const app of this.state.apps) {
+      if (!app.codexEnabled || app.revokedAt) continue;
+      const next = normalizedModelIds([...app.allowedModels, ...grants]);
+      if (sameStrings(next, app.allowedModels)) continue;
+      app.allowedModels = next; app.updatedAt = nowIso(); changed++;
+    }
+    if (changed) this.save();
+    return changed;
+  }
+
   restrictAllowedModels(allowedModels: string[]): number {
     const normalizedAllowedModels = normalizedModelIds(allowedModels);
     const allowed = new Set(normalizedAllowedModels);
@@ -166,7 +182,7 @@ export class AppStore {
   }
 
   create(input: CreateAppInput): { record: ApiAppRecord; rawKey: string } {
-    if (input.codexReasoningEffort !== undefined && !(CODEX_REASONING_EFFORTS as readonly string[]).includes(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
+    if (input.codexReasoningEffort !== undefined && !isCodexReasoningEffort(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
     const rawKey = input.rawKey?.trim() || `barb_${randomBytes(24).toString('base64url')}`;
     const timestamp = nowIso();
     const record: ApiAppRecord = {
@@ -354,7 +370,7 @@ export class AppStore {
   update(id: string, input: UpdateAppInput): ApiAppRecord | null {
     const current = this.findById(id);
     if (!current || current.revokedAt) return null;
-    if (input.codexReasoningEffort !== undefined && !(CODEX_REASONING_EFFORTS as readonly string[]).includes(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
+    if (input.codexReasoningEffort !== undefined && !isCodexReasoningEffort(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
     if (typeof input.name === 'string' && input.name.trim()) {
       current.name = input.name.trim();
     }
@@ -407,7 +423,7 @@ export class AppStore {
             ...app,
             codexEnabled: app.codexEnabled === true,
             codexFallbackEnabled: app.codexFallbackEnabled !== false,
-            codexReasoningEffort: (CODEX_REASONING_EFFORTS as readonly unknown[]).includes(app.codexReasoningEffort) ? app.codexReasoningEffort : 'high',
+            codexReasoningEffort: isCodexReasoningEffort(app.codexReasoningEffort) ? app.codexReasoningEffort : 'high',
             modelAccess: app.modelAccess === 'all' ? 'all' : 'custom',
             allowedOrigins: uniqueStrings(Array.isArray(app.allowedOrigins) ? app.allowedOrigins : []),
             allowedModels: normalizedModelIds(Array.isArray(app.allowedModels) ? app.allowedModels : []),

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { LLMClient, LLMMessage, LLMOptions, LLMResponse, LLMStreamChunk } from '../llm/types.js';
 import { LLMProviderError } from '../llm/errors.js';
-import { CodexRuntime, CodexRuntimeError, validatePrivateProfile, type CodexAccountState } from './runtime.js';
+import { CodexRuntime, CodexRuntimeError, validatePrivateProfile, type CodexAccountState, type CodexRuntimeOptions } from './runtime.js';
 import { CodexProvider } from './provider.js';
 import { CodexMetrics } from './metrics.js';
 import type { CodexConfig } from './config.js';
@@ -32,15 +32,19 @@ export class CodexAccounts implements LLMClient {
   private registry: Registry = { version: 1, selected: 'account-1', accounts: ['account-1'] };
   private entries = new Map<AccountId, Entry>();
   private initialized = false;
+  private maintenance = false;
+  private runtimeOverride: Partial<CodexRuntimeOptions> = {};
+  private lastRouting: { preferredAccountId: string; accountId: string; fallbackReason: string | null; at: string } | null = null;
+  onOutcome: (accountId: string, code: string | null) => void = () => {};
   private readonly file: string;
   constructor(readonly config: CodexConfig, private readonly dataDirectory: string,
-    private readonly excluded: string[], private readonly factory = (profileDirectory: string) => new CodexRuntime({ ...config, profileDirectory, excludedDirectories: excluded })) {
+    private readonly excluded: string[], private readonly factory = (profileDirectory: string, override: Partial<CodexRuntimeOptions> = {}) => new CodexRuntime({ ...config, ...override, profileDirectory, excludedDirectories: excluded })) {
     this.file = join(config.privateDirectory, 'accounts.json');
     this.create('account-1');
   }
-  private create(id: AccountId): Entry {
-    const runtime = this.factory(id === 'account-1' ? this.config.profileDirectory : join(this.config.privateDirectory, 'codex-account-2'));
-    const metrics = new CodexMetrics(join(this.dataDirectory, id === 'account-1' ? 'codex-metrics.json' : 'codex-account-2-metrics.json'));
+  private create(id: AccountId, retainedMetrics?: CodexMetrics): Entry {
+    const runtime = this.factory(id === 'account-1' ? this.config.profileDirectory : join(this.config.privateDirectory, 'codex-account-2'), this.runtimeOverride);
+    const metrics = retainedMetrics ?? new CodexMetrics(join(this.dataDirectory, id === 'account-1' ? 'codex-metrics.json' : 'codex-account-2-metrics.json'));
     const entry: Entry = { id, runtime, provider: new CodexProvider(this.config, runtime, metrics),
       usage: { status: 'idle', result: null, error: null }, usageEpoch: 0, managing: false };
     this.entries.set(id, entry); return entry;
@@ -73,30 +77,97 @@ export class CodexAccounts implements LLMClient {
     return entry;
   }
   add() {
+    if (this.maintenance) throw new CodexRuntimeError('codex_busy');
     if (!this.initialized) throw new CodexRuntimeError('codex_disabled');
     if (this.entries.size >= 2) throw new CodexRuntimeError('codex_account_limit');
     this.persist({ ...this.registry, accounts: [...this.registry.accounts, 'account-2'] });
     return this.create('account-2');
   }
   select(id: string) {
+    if (this.maintenance) throw new CodexRuntimeError('codex_busy');
     const entry = this.entry(id);
     if (entry.managing || !entry.runtime.connectedCached || !entry.provider.getDiagnostics().available) throw new CodexRuntimeError('codex_account_not_ready');
     this.persist({ ...this.registry, selected: entry.id });
   }
   async manage<T>(id: string | undefined, action: (entry: Entry) => Promise<T>): Promise<T> {
     const entry = this.entry(id), d = entry.provider.getDiagnostics();
-    if (entry.managing || d.inflight || d.queued) throw new CodexRuntimeError('codex_busy');
+    if (this.maintenance || entry.managing || d.inflight || d.queued) throw new CodexRuntimeError('codex_busy');
     entry.managing = true;
     entry.usageEpoch++; entry.usage = { status: 'idle', result: null, error: null };
     try { return await action(entry); } finally { entry.managing = false; }
   }
-  async refresh() { await Promise.all([...this.entries.values()].map((e) => e.managing ? Promise.resolve() : e.provider.refresh())); }
+  async refresh() { if (!this.maintenance) await Promise.all([...this.entries.values()].map((e) => e.managing ? Promise.resolve() : e.provider.refresh())); }
+  async refreshAccount(id?: string) {
+    const entry = this.entry(id);
+    if (this.maintenance || entry.managing) throw new CodexRuntimeError('codex_busy');
+    await entry.provider.refresh();
+  }
+  models() {
+    const catalog = new Map<string, ReturnType<CodexProvider['getDiagnostics']>['models'][number]>();
+    for (const e of this.entries.values()) for (const m of e.provider.getDiagnostics().models) {
+      const previous = catalog.get(m.model);
+      catalog.set(m.model, { ...m, supportedReasoningEfforts: [...new Set([...(previous?.supportedReasoningEfforts ?? []), ...m.supportedReasoningEfforts])] });
+    }
+    return [...catalog.values()];
+  }
+  /** Quiesce both profiles before replacing the executable. Never copy auth files. */
+  async replaceRuntime(command: string, version: string, commit: () => Promise<void> = async () => {}) {
+    if (this.maintenance || [...this.entries.values()].some((e) => e.managing || e.usage.status === 'pending' || e.runtime.loginPendingCached)) throw new CodexRuntimeError('codex_busy');
+    this.maintenance = true;
+    const previous = this.runtimeOverride;
+    const oldModels = this.models();
+    const original = [...this.entries.values()].map((e) => ({ id: e.id, metrics: e.provider.metrics, connected: e.runtime.connectedCached }));
+    const rebuild = async (override: Partial<CodexRuntimeOptions>) => {
+      for (const e of this.entries.values()) e.provider.invalidate();
+      await this.close(); this.entries.clear(); this.runtimeOverride = override;
+      for (const e of original) this.create(e.id, e.metrics);
+      await Promise.all([...this.entries.values()].map((e) => e.provider.refresh()));
+    };
+    try {
+      const deadline = Date.now() + this.config.timeoutMs + 1000;
+      while ([...this.entries.values()].some((e) => { const d = e.provider.getDiagnostics(); return d.inflight || d.queued; })) {
+        if (Date.now() >= deadline) throw new CodexRuntimeError('codex_update_drain_timeout');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      await rebuild({ command, expectedRuntimeVersion: version });
+      if (original.some((e) => e.connected && !this.entry(e.id).provider.getDiagnostics().available)) {
+        throw new CodexRuntimeError('codex_update_account_check_failed');
+      }
+      await commit();
+      const next = this.models();
+      return { addedModels: next.filter((m) => !oldModels.some((old) => old.model === m.model)),
+        removedModels: oldModels.filter((m) => !next.some((n) => n.model === m.model)).map((m) => m.model),
+        thinkingChanges: next.filter((m) => oldModels.some((old) => old.model === m.model && JSON.stringify(old.supportedReasoningEfforts) !== JSON.stringify(m.supportedReasoningEfforts))) };
+    } catch (e) {
+      // An unsuccessful candidate may never strand a working authenticated profile.
+      if (this.runtimeOverride !== previous) await rebuild(previous);
+      throw e;
+    } finally { this.maintenance = false; }
+  }
   async close() { await Promise.all([...this.entries.values()].map((e) => e.runtime.close())); }
   getDiagnostics() { return this.entry().provider.getDiagnostics(); }
-  chat(messages: LLMMessage[], opts?: LLMOptions) {
+  async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
     const entry = this.entry(); // Pin before any await: queued/inflight calls keep their original account.
-    if (entry.managing) return Promise.reject(new LLMProviderError('codex_busy', 'codex', 'Account management in progress.', { statusCode: 503 }));
-    return entry.provider.chat(messages, opts);
+    if (this.maintenance || entry.managing) throw new LLMProviderError('codex_busy', 'codex', 'Account management in progress.', { statusCode: 503 });
+    const complete = async (target: Entry) => {
+      let response: LLMResponse;
+      try { response = await target.provider.chat(messages, opts); this.onOutcome(target.id, null); }
+      catch (e) { this.onOutcome(target.id, e instanceof LLMProviderError ? e.code : 'codex_inference_failed'); throw e; }
+      this.lastRouting = { preferredAccountId: entry.id, accountId: target.id,
+        fallbackReason: target.id === entry.id ? null : 'codex_quota_depleted', at: new Date().toISOString() };
+      return { ...response, codexAccountId: target.id, codexAccountFallbackFrom: target.id !== entry.id ? entry.id : undefined };
+    };
+    try { return await complete(entry); }
+    catch (error) {
+      if (!(error instanceof LLMProviderError) || error.code !== 'codex_quota_depleted' || !this.config.accountFallbackEnabled || opts?.signal?.aborted) throw error;
+      const alternate = [...this.entries.values()].find((e) => e.id !== entry.id && !e.managing);
+      if (!alternate) throw error;
+      await alternate.provider.refresh();
+      const effort = opts?.codex?.reasoningEffort ?? this.config.reasoningEffort;
+      if (!alternate.runtime.connectedCached || alternate.provider.quotaState().depleted
+        || !alternate.provider.getDiagnostics().models.some((m) => m.model === opts?.model && m.supportedReasoningEfforts.includes(effort))) throw error;
+      return complete(alternate);
+    }
   }
   async *streamChat(messages: LLMMessage[], opts?: LLMOptions): AsyncGenerator<LLMStreamChunk, LLMResponse, void> {
     const response = await this.chat(messages, opts);
@@ -105,14 +176,14 @@ export class CodexAccounts implements LLMClient {
   snapshot(id?: string) {
     const entry = this.entry(id);
     const accountView = (e: Entry) => ({ ...safeAccount(e.runtime.cachedStatus(), e.id), inferenceAvailable: e.runtime.connectedCached && e.provider.getDiagnostics().available });
-    return { account: accountView(entry), selectedAccountId: this.registry.selected,
+    return { account: accountView(entry), selectedAccountId: this.registry.selected, accountFallbackEnabled: this.config.accountFallbackEnabled, lastRouting: this.lastRouting,
       maxAccounts: 2, inferenceEnabled: this.config.enabled, provider: entry.provider.getDiagnostics(),
-      accounts: [...this.entries.values()].map(accountView), usage: entry.usage };
+      accounts: [...this.entries.values()].map(accountView), catalog: this.models(), usage: entry.usage };
   }
   publicQuota() {
-    return { enabled: this.config.enabled, maxAccounts: 2, accounts: [...this.entries.values()].map((entry) => {
+    return { enabled: this.config.enabled, maxAccounts: 2, accountFallbackEnabled: this.config.accountFallbackEnabled, lastRouting: this.lastRouting, accounts: [...this.entries.values()].map((entry) => {
       const state = safeAccount(entry.runtime.cachedStatus(), entry.id), d = entry.provider.getDiagnostics();
-      return { alias: state.alias, authenticated: state.authenticated, active: this.registry.selected === entry.id,
+      return { id: entry.id, alias: state.alias, authenticated: state.authenticated, active: this.registry.selected === entry.id, depleted: entry.provider.quotaState().depleted,
         stale: d.quotaStale, observedAt: d.quota?.observedAt ?? null,
         // Only service-reported buckets; preserve every window, including unknown usage.
         // A zero-use 5h window may be hidden, but any positive use must be visible.
@@ -129,7 +200,7 @@ export class CodexAccounts implements LLMClient {
   }
   startUsage(id?: string) {
     const entry = this.entry(id);
-    if (entry.managing) throw new CodexRuntimeError('codex_busy');
+    if (this.maintenance || entry.managing) throw new CodexRuntimeError('codex_busy');
     if (entry.usage.status === 'pending') return entry.usage;
     const epoch = ++entry.usageEpoch;
     entry.usage = { status: 'pending', result: entry.usage.result, error: null };

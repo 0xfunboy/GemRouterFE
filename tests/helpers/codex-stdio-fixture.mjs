@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic protocol fixture. Never authenticates or contacts any service.
 import readline from 'node:readline';
-if (process.argv.includes('--version')) { console.log('codex-cli 0.154.0-alpha.6.2'); process.exit(0); }
+if (process.argv.includes('--version')) { console.log('codex-cli 0.159.3'); process.exit(0); }
 const send = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 const models = ['gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-6-astra'];
 let sequence = 0;

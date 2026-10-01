@@ -4,6 +4,10 @@ export const codexQuotaHtml = `
   <div class="section-head"><div><h3 class="section-title">Codex Token Quota</h3>
     <p class="section-copy">Reported account quota windows, including 5-hour usage when above zero. Shared with other Codex activity; remaining tokens and requests are not exposed.</p></div>
     <div class="meta-row" id="codex-quota-pills"></div></div>
+  <div id="codex-runtime-update-banner" class="codex-runtime-banner hidden" role="status" aria-live="polite">
+    <div><strong id="codex-runtime-update-title">Codex login update available</strong><p id="codex-runtime-update-summary" class="section-copy"></p></div>
+    <button type="button" data-codex-runtime-action="update" disabled>Update Codex and scan models</button>
+  </div>
   <div class="table-wrap"><table class="table responsive-table quota-table codex-quota-table">
     <thead><tr><th>Account / quota</th><th>Remaining</th><th>Next reset</th><th>Used / total</th><th>Usage</th></tr></thead>
     <tbody id="codex-quota-rows"><tr><td colspan="5" class="muted">Loading account quota…</td></tr></tbody>
@@ -19,6 +23,13 @@ export const codexAccountHtml = `
         <span class="section-toggle-label">Expand</span><span class="section-toggle-arrow" aria-hidden="true">▸</span>
       </button></div></div>
   <div id="codex-account-panel" class="section-body hidden">
+    <div class="codex-runtime-controls">
+      <p id="codex-runtime-state" role="status" aria-live="polite">Loading managed runtime status…</p>
+      <div class="button-row"><button type="button" class="secondary" data-codex-runtime-action="check">Check Codex updates</button>
+        <button type="button" data-codex-runtime-action="update" disabled>Update and scan models / thinking</button></div>
+      <div id="codex-runtime-changes" class="footer-note" aria-live="polite"></div>
+      <p id="codex-alert-state" class="footer-note"></p>
+    </div>
     <div class="codex-account-controls">
       <label>Account to manage<select id="codex-account-select" aria-label="Account to manage"></select></label>
       <div class="button-row"><button type="button" class="secondary" data-codex-action="add">Add account</button>
@@ -39,7 +50,7 @@ export const codexAccountHtml = `
       <p>Temporary code: <code id="codex-account-login-code"></code></p><p id="codex-account-login-expiry"></p>
     </div>
     <div id="codex-account-provider" aria-live="polite"></div>
-    <p class="footer-note">On quota exhaustion only, fallback uses the first authorized Gemini model in the configured order. Login errors and unavailable models do not trigger fallback. Account switching is manual, not an automatic quota-rotation policy.</p>
+    <p class="footer-note">The selected account stays preferred. Only exhausted 5-hour or weekly quota permits temporary routing to the other connected account with the exact model and thinking level. Fresh service quota restores the preferred account automatically. If both accounts are exhausted, an app-authorized Gemini fallback can be used. Login errors and unavailable models never trigger fallback.</p>
     <p class="footer-note">GemRouter token counts include the Codex internal context. Cached input and reasoning tokens are subsets, not extra tokens. Streaming is buffered.</p>
     <details class="codex-usage-details"><summary>Whole-account token activity · optional, not the remaining quota</summary>
       <div id="codex-account-usage" class="mono-box">Use “Read account usage” to fetch account-wide activity without blocking this page.</div></details>
@@ -89,13 +100,50 @@ export const codexAccountScript = String.raw`
         }).join(''); }).join('');
       }
       async function loadCodexQuota() {
+        await loadCodexRuntime();
         try {
           const data = await request('/dashboard/codex-quota');
           document.getElementById('codex-quota-rows').innerHTML = codexQuotaRows(data.accounts || []);
           document.getElementById('codex-quota-pills').innerHTML = '<span class="chip">Accounts ' + (data.accounts || []).filter(function(a) { return a.authenticated; }).length + '/2</span>'
-            + '<span class="chip ' + (data.enabled ? 'good' : 'warn') + '">' + (data.enabled ? 'Codex enabled' : 'Codex disabled') + '</span>';
+            + '<span class="chip ' + (data.enabled ? 'good' : 'warn') + '">' + (data.enabled ? 'Codex enabled' : 'Codex disabled') + '</span>'
+            + (data.lastRouting && data.lastRouting.fallbackReason ? '<span class="chip warn">Temporary quota fallback · ' + escapeHtml(data.lastRouting.accountId) + '</span>' : '');
         } catch { document.getElementById('codex-quota-rows').innerHTML = '<tr><td colspan="5" class="muted">Quota unavailable. Next automatic refresh will retry.</td></tr>'; }
       }
+      let codexRuntimeState = null, codexRuntimeBusy = false, codexRuntimeTimer = null;
+      async function loadCodexRuntime() {
+        try {
+          const data = await request('/dashboard/codex/runtime'); codexRuntimeState = data;
+          const working = ['downloading','checking_compatibility','activating'].includes(data.phase);
+          const banner = document.getElementById('codex-runtime-update-banner');
+          banner.classList.toggle('hidden', !data.updateAvailable && !working && !data.error);
+          document.getElementById('codex-runtime-update-title').textContent = data.updateAvailable ? 'Codex login update available' : working ? 'Codex runtime update in progress' : 'Codex runtime attention required';
+          document.getElementById('codex-runtime-update-summary').textContent = 'Installed ' + (data.version || 'external runtime') + ' · latest ' + (data.latestVersion || 'not checked')
+            + (working ? ' · ' + data.phase.replaceAll('_',' ') : data.error ? ' · ' + data.error : '')
+            + (!state.authenticated ? ' · Sign in as admin to update.' : ' · Existing account logins are preserved.');
+          document.getElementById('codex-runtime-state').textContent = data.managed ? 'Repository-managed Codex ' + (data.version || 'preparing') + ' · ' + (data.phase || 'idle') + (data.error ? ' · ' + data.error : '') : 'External test runtime: managed updates are disabled.';
+          document.querySelectorAll('[data-codex-runtime-action]').forEach(function(button) {
+            button.disabled = !state.authenticated || !data.managed || working || codexRuntimeBusy
+              || (button.dataset.codexRuntimeAction === 'update' && !data.updateAvailable);
+          });
+          const changes = data.changes;
+          document.getElementById('codex-runtime-changes').textContent = changes ? 'New models: ' + (changes.addedModels || []).map(function(m) { return m.model + ' [' + m.supportedReasoningEfforts.join(', ') + ']'; }).join('; ')
+            + ' · Thinking changes: ' + (changes.thinkingChanges || []).map(function(m) { return m.model + ' [' + m.supportedReasoningEfforts.join(', ') + ']'; }).join('; ')
+            + ' · Removed: ' + (changes.removedModels || []).join(', ') + ' · Codex-enabled apps updated: ' + (changes.updatedApps || 0) : '';
+          clearTimeout(codexRuntimeTimer);
+          if (working) codexRuntimeTimer = setTimeout(function() { loadCodexRuntime(); }, 1500);
+        } catch { document.getElementById('codex-runtime-state').textContent = 'Runtime update status unavailable; inference is unchanged.'; }
+      }
+      document.addEventListener('click', async function(event) {
+        const button = event.target.closest('[data-codex-runtime-action]');
+        if (!button || button.disabled || !state.authenticated || codexRuntimeBusy) return;
+        const action = button.dataset.codexRuntimeAction;
+        if (action === 'update' && !window.confirm('Update the official Codex runtime? New Codex requests pause briefly while existing requests finish. Both saved logins and the preferred account are preserved. Incompatible updates roll back.')) return;
+        codexRuntimeBusy = true;
+        document.querySelectorAll('[data-codex-runtime-action]').forEach(function(b) { b.disabled = true; });
+        try { await request('/admin/codex/runtime/' + action, { method: 'POST', body: '{}' }); }
+        catch (error) { codexText('message', error.message); }
+        finally { codexRuntimeBusy = false; await loadCodexRuntime(); }
+      });
       function clearCodexLogin() {
         clearTimeout(codexLoginTimer); clearTimeout(codexExpiryTimer);
         codexLoginTimer = codexExpiryTimer = null;
@@ -133,7 +181,12 @@ export const codexAccountScript = String.raw`
         const epoch = codexEpoch, id = codexSelect.value;
         try {
           const data = await request('/admin/codex/account' + (id ? '?accountId=' + encodeURIComponent(id) : ''));
-          if (state.authenticated && epoch === codexEpoch) renderCodexAccount(data);
+          if (state.authenticated && epoch === codexEpoch) {
+            renderCodexAccount(data); await loadCodexRuntime();
+            const alerts = await request('/admin/codex/alerts');
+            if (state.authenticated && epoch === codexEpoch) document.getElementById('codex-alert-state').textContent = alerts.enabled ? 'Telegram critical alerts · ' + alerts.destinations + ' authorized destinations'
+              + (alerts.storageError ? ' · deduplication storage error' : '') + (alerts.delivery || []).map(function(d) { return d.ok ? ' · delivery verified' : ' · ' + d.code; }).join('') : 'Telegram alerts are not configured.';
+          }
         } catch (error) { if (state.authenticated && epoch === codexEpoch) codexText('message', error.message); }
       }
       function renderCodexUsage(read) {
@@ -161,6 +214,12 @@ export const codexAccountScript = String.raw`
         html += '<h4>Models verified on this account</h4><div class="table-wrap"><table class="table"><thead><tr><th>Model</th><th>Available thinking levels</th></tr></thead><tbody>';
         (provider.models || []).forEach(function(model) { html += '<tr><td>' + escapeHtml(model.model) + '</td><td>' + escapeHtml(model.supportedReasoningEfforts.join(', ')) + '</td></tr>'; });
         target.innerHTML = html + '</tbody></table></div>';
+        const efforts = [...new Set((codexSnapshot.catalog || provider.models || []).flatMap(function(m) { return m.supportedReasoningEfforts; }))];
+        const selector = document.querySelector('#app-form [name="codexReasoningEffort"]');
+        if (selector && efforts.length) {
+          const current = selector.value || 'high'; if (!efforts.includes(current)) efforts.push(current);
+          selector.innerHTML = efforts.map(function(e) { return '<option value="' + escapeHtml(e) + '">' + escapeHtml(e) + '</option>'; }).join(''); selector.value = current;
+        }
       }
       async function pollCodexUsage(epoch, id) {
         if (!state.authenticated || epoch !== codexEpoch) return;

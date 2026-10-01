@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 
 /** Contract inspected with generate-json-schema --experimental; upgrades require review. */
-export const CODEX_RUNTIME_VERSION = '0.154.0-alpha.6.2';
+export const CODEX_RUNTIME_VERSION = '0.159.3';
 const MAX_LINE_BYTES = 1024 * 1024;
 const LOGIN_LIFETIME_MS = 5 * 60_000;
 
@@ -26,6 +26,7 @@ type ActiveInference = {
 };
 
 export interface CodexRuntimeOptions {
+  expectedRuntimeVersion?: string;
   enabled: boolean;
   command: string;
   profileDirectory: string;
@@ -102,6 +103,7 @@ export class CodexRuntime {
   get readyCached(): boolean {
     return this.connectedCached && this.state.modelAvailable;
   }
+  get loginPendingCached(): boolean { return this.login?.state.status === 'pending'; }
 
   get connectedCached(): boolean {
     return this.options.enabled && !this.closed && this.login?.state.status !== 'pending'
@@ -353,7 +355,7 @@ export class CodexRuntime {
     this.resolvedCommand ??= await resolveRuntimeExecutable(this.options.command);
     const version = await this.version(env, cwd);
     if (this.closed) throw new CodexRuntimeError('codex_closed');
-    if (version !== CODEX_RUNTIME_VERSION) throw new CodexRuntimeError('codex_runtime_version_unsupported');
+    if (version !== (this.options.expectedRuntimeVersion ?? CODEX_RUNTIME_VERSION)) throw new CodexRuntimeError('codex_runtime_version_unsupported');
     this.state.runtimeVersion = version;
     const args = ['app-server', '--listen', 'stdio://'];
     for (const [key, value] of Object.entries(restrictedConfig())) args.push('-c', `${key}=${JSON.stringify(value)}`);

@@ -1,5 +1,73 @@
 # Codex provider verification — 2026-09-16
 
+## Managed runtime / discovery / account fallback — 2026-10-01
+
+Implementation: official runtime **0.159.3** is vendored as two gzip chunks with
+upstream SHA-512 and archive/native SHA-256 checks. An offline checkout can extract
+it; no IDE executable path is needed. Admin-only async updates perform an isolated
+real compatibility check, drain requests, preserve both logins/counters/selection
+and roll back failed activation. Public cached update alerts, dynamic actual
+catalog/thinking discovery, opted-in-app additions, quota-only account fallback
+and persistent deduplicated outbound Telegram alerts are implemented. See
+[operational guide](codex-runtime-updates.md).
+
+Automated: **139/139 tests**, TypeScript checking and production build passed.
+Coverage includes 5h/weekly failover, same exact model/effort, automatic preferred
+return only on fresh available quota, no rotation on auth/model/timeout/rate-limit
+errors, both-depleted behavior, draining/management lock, pointer-write rollback,
+offline archive extraction, checksum/source rejection, no downgrade, discovery
+permission boundaries, admin-only mutations and alert deduplication/sanitization.
+
+Simulated HTTP/frontend smoke: isolated fixture runtime/database passed all
+existing compatible surfaces, opt-in, buffering, usage and CSRF tests. A simulated
+available update is prominent for both guest and admin; the guest button is
+disabled. Account login/switching, quota meters/countdowns and app controls pass
+without browser JavaScript errors. These are **not live upgrade or depletion tests**.
+
+Live: the bundled executable was actually started in an unauthenticated temporary
+profile and passed version/effective-restriction checks without any inference.
+The production service was gracefully stopped at **12:49:08 CEST** and became
+available on the new runtime by **12:49:28 CEST**. Both real account slots remained
+authenticated and inference-ready; Account 2 stayed preferred. The official
+registry check and public HTTPS runtime endpoint both reported version 0.159.3
+and no newer release. No forced update/downgrade or second production instance
+was used. User-owned pending Gemini source changes were preserved, excluded from
+the commit, and verified byte-identical to their previously deployed JS builds.
+The final source build (including alert/initial-discovery refinements) was
+activated by a second idle-queue graceful restart at **12:57:07 CEST**, available
+by **12:57:25 CEST**. Both logins, Account 2 preference and the target app's xhigh
+policy were rechecked afterward. Real public/mobile and authenticated HTTPS
+frontend checks then showed the quota card, eight actual catalog rows, the
+managed runtime version and an appropriately disabled update button when already
+latest, with **zero JavaScript errors** and no private account email in the Codex
+panel. The temporary dashboard verification session was logged out.
+
+The actual account catalog contains eight models on both slots:
+`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`,
+`gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`. Actual Sol 6.1 thinking includes
+`low, medium, high, xhigh, max, ultra`; this account catalog, not an API-model
+documentation guess, is authoritative for this path.
+
+The existing target app now authorizes `gpt-6.1-sol` with default **xhigh**; its key,
+origins, concurrency and existing Gemini fallback permissions were not rotated.
+A temporary app with the same policy completed a real public HTTPS inference at
+**12:51:44 CEST**, without a thinking parameter: HTTP **200**, exact model
+**gpt-6.1-sol**, backend **codex**, thinking header **xhigh**, account **account-2**,
+output **CODEX_61_XHIGH_OK**, latency **5,264 ms**, measured usage **3,953 input +
+11 output = 3,964 total tokens**. Cached input/reasoning subcounts were zero;
+zero reported reasoning tokens do not prove omitted effort. The temporary app
+was revoked and removed. This is a same-policy probe, **not a request originating
+from the remote AIR3 machine or using its private key**.
+
+Telegram `getChat` verified the authorized supergroup and private user, and
+`sendMessage` successfully delivered one setup notification to each. The bot
+token and real recipient IDs are confined to ignored owner-only configuration;
+they are not in this report, HTTP projections or Git. Actual quota exhaustion
+and intentional logout were **not induced**. Their alerts and account failover
+are verified with fixtures; a future-version dashboard upgrade has not been
+claimed live when the current version is already latest.
+
+
 ## Quota-window and exact-routing follow-up
 
 The public quota card now includes each reported weekly window and every 5-hour

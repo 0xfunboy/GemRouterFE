@@ -16,6 +16,8 @@ export function readCodexConfig(env: NodeJS.ProcessEnv = process.env) {
   };
   return {
     enabled: env.GEMROUTER_CODEX_ENABLED === 'true', command, privateDirectory,
+    managedRuntime: env.GEMROUTER_CODEX_MANAGED_RUNTIME === 'true' || (env.GEMROUTER_CODEX_MANAGED_RUNTIME !== 'false' && !env.GEMROUTER_CODEX_COMMAND && !env.GEMROUTER_CHATGPT_CONTROL_COMMAND),
+    accountFallbackEnabled: env.GEMROUTER_CODEX_ACCOUNT_FALLBACK_ENABLED !== 'false',
     profileDirectory: join(privateDirectory, 'codex'),
     requestedModel: env.GEMROUTER_CODEX_MODEL?.trim() || 'gpt-6-astra',
     reasoningEffort: env.GEMROUTER_CODEX_REASONING_EFFORT?.trim() || 'high',

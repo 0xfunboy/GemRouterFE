@@ -19,6 +19,8 @@ Enable it per app; on exhausted quota it can fall back to that app's authorized 
 The dashboard supports two isolated saved logins and manual account selection,
 with private aliases, public quota bars and per-account measured request tokens. No MCP,
 personal-chat wake, browser controller or coding tools. See [Codex](docs/codex-account.md).
+The official Codex executable is bundled in the repository. See
+[runtime updates, quota-only account fallback and Telegram alerts](docs/codex-runtime-updates.md).
 
 It is designed to squeeze the maximum useful throughput out of **free-tier** Gemini accounts:
 pool many accounts, always try the strongest model first, and gracefully scale down a fallback

@@ -33,8 +33,10 @@ Complete the official login yourself with the second account. The **Account to
 manage** selector only changes the inspected account. **Select account for routing**
 changes the persisted default for new requests from all Codex-enabled apps; it
 does not relogin, copy tokens or move queued/in-flight requests. A disconnected or
-unverified account cannot be selected. There is no automatic account rotation.
+unverified account cannot be selected. Quota-only temporary routing is described below.
 The existing per-app opt-in/model allowlist/thinking/fallback policy still applies.
+See [runtime updates, discovery and alerts](codex-runtime-updates.md) for the
+repository-managed executable and admin-only update workflow.
 
 The original `codex/` profile is kept in place. The second uses
 `codex-account-2/` under the same private parent. Each has its own official runtime
@@ -112,6 +114,7 @@ Exact account catalog verified on 2026-09-16:
 | `gpt-5.6-luna` | low, medium, high, xhigh, max |
 | `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra |
 | `gpt-6-astra` | low, medium, high, xhigh, max, ultra |
+| `gpt-6.1-sol` | Use the account's actual discovered thinking levels; xhigh when advertised |
 
 Availability and effort are revalidated against model/list. Unavailable IDs or
 efforts fail rather than silently selecting another GPT model.
@@ -137,7 +140,10 @@ labeled conversation data. There is no persistent coding conversation. Client
 disconnect/deadline cancels the owned runtime. Dispatch is serial, with a bounded
 queue (default 16 waiting).
 
-The official app-server runtime is pinned to **0.154.0-alpha.6.2**. Startup verifies
+The repository bundles official app-server **0.159.3** (Linux x64) with verified
+SHA-512 provenance and SHA-256 executable/archive hashes. It needs no VS Code
+extension or globally installed Codex. Reviewed runtime upgrades can be activated
+from the admin dashboard; the active version is checked exactly. Startup verifies
 version, profile, effective restrictions and the returned model. Unexpected
 capability/tool requests fail closed. Only final text is exposed, never reasoning
 or commentary. This removes our coding/controller workflow; it does **not** create
@@ -161,7 +167,13 @@ GPT requests do not go to Gemini as if they were Gemini model IDs. Ordinary
 Gemini/NVIDIA requests never consume Codex automatically.
 
 An exhausted **general Codex quota window** or structured upstream
-usageLimitExceeded allows fallback to the first authorized configured Gemini
+usageLimitExceeded first permits temporary routing to the other connected account,
+with the **same exact model and thinking**, without changing the persisted preferred
+selection. No rotation on login, timeout, model, thinking or generic rate-limit errors.
+The preferred account is retried only when fresh service quota confirms recovery;
+an elapsed reset countdown alone cannot clear exhaustion. A structured upstream
+rejection has a short backoff so a lagging snapshot cannot cause a retry storm.
+With no usable alternate account, exhausted quota allows fallback to the first authorized configured Gemini
 (current curated order starts with gemini-3.8-flash). Existing key rotation and
 model downgrades still respect the app allowlist and shared request deadline.
 Reorder the routing editor when a new preferred Gemini becomes available.
@@ -202,7 +214,9 @@ prompts/answers: protect that data directory.
 | Variable | Default |
 |---|---|
 | GEMROUTER_CODEX_ENABLED | false |
-| GEMROUTER_CODEX_COMMAND | codex (absolute path recommended for systemd) |
+| GEMROUTER_CODEX_MANAGED_RUNTIME | true when no external command is supplied |
+| GEMROUTER_CODEX_COMMAND | optional explicit external command for isolated tests |
+| GEMROUTER_CODEX_ACCOUNT_FALLBACK_ENABLED | true; quota-only, preserves preferred selection |
 | GEMROUTER_CODEX_PRIVATE_DIR | OS home + .local/share/gemrouter-personal-control |
 | GEMROUTER_CODEX_MODEL | gpt-6-astra (account diagnostic default, not substitution) |
 | GEMROUTER_CODEX_REASONING_EFFORT | high |

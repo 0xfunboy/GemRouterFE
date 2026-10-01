@@ -20,6 +20,9 @@ export interface InteractionRecord {
   model: string;
   requestedModel?: string;
   backendModel?: string;
+  codexAccountId?: string;
+  codexAccountFallbackFrom?: string;
+  reasoningEffort?: string;
   apiKeyId?: string;
   quotaGroup?: string;
   promptExcerpt: string;
@@ -78,6 +81,9 @@ interface RecordInteractionInput {
   model: string;
   requestedModel?: string;
   backendModel?: string;
+  codexAccountId?: string;
+  codexAccountFallbackFrom?: string;
+  reasoningEffort?: string;
   apiKeyId?: string;
   quotaGroup?: string;
   prompt: string;
@@ -142,6 +148,9 @@ export class InteractionStore {
       model: input.model,
       requestedModel: input.requestedModel,
       backendModel: input.backendModel,
+      codexAccountId: input.codexAccountId,
+      codexAccountFallbackFrom: input.codexAccountFallbackFrom,
+      reasoningEffort: input.reasoningEffort,
       apiKeyId: input.apiKeyId,
       quotaGroup: input.quotaGroup,
       promptExcerpt: trimExcerpt(input.prompt, MAX_PROMPT_EXCERPT),

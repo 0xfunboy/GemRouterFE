@@ -82,6 +82,8 @@ export interface LLMResponse {
   streamingMode?: 'buffered';
   ignoredParameters?: string[];
   fallbackFrom?: LLMBackendId;
+  codexAccountId?: string;
+  codexAccountFallbackFrom?: string;
   fallbackReason?: string;
   fallbackAttempts?: LLMFallbackAttempt[];
   latencyMs?: number;

@@ -91,7 +91,12 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
         const context = await browser.newContext(); const page = await context.newPage(); const errors: string[] = [];
         page.on('pageerror', (error: Error) => errors.push(error.message));
         await context.addCookies([{ name: cookie.split('=')[0], value: cookie.slice(cookie.indexOf('=')+1), url: origin }]);
+        await page.route('**/dashboard/codex/runtime', (route: any) => route.fulfill({ json: { managed: true,
+          version: '1.2.3', latestVersion: '1.2.4', updateAvailable: true, phase: 'idle', error: null } }));
         await page.goto(origin); await page.locator('#admin-dashboard:not(.hidden)').waitFor();
+        await page.locator('#codex-runtime-update-banner').waitFor();
+        assert.match(await page.locator('#codex-runtime-update-banner').innerText(), /Codex login update available/);
+        await page.waitForFunction(() => !(document.querySelector('#codex-runtime-update-banner button') as HTMLButtonElement)?.disabled);
         assert.equal(await page.locator('#codex-account-panel').isVisible(), false);
         await page.locator('[data-section-toggle="codex-account-panel"]').click();
         await page.getByRole('button', { name: 'Verify account', exact: true }).click();
@@ -121,6 +126,7 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
         assert((await loginLink.boundingBox())!.height >= 44);
         await page.getByText('Login: completed',{exact:true}).waitFor();
         await page.waitForFunction(()=>document.getElementById('codex-account-state')?.textContent?.includes('Account 2 FX · Connected'));
+        await page.waitForFunction(()=>document.querySelectorAll('#codex-quota-rows tr').length===6);
         assert.equal(await page.locator('#codex-quota-rows tr').count(),6);
         await page.getByRole('button',{name:'Select account for routing',exact:true}).click();
         await page.getByText('Account selected for new requests. No login needed.',{exact:true}).waitFor();
@@ -132,10 +138,14 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
         assert.equal((await (await call('/admin/codex/account',adminKey)).json() as any).selectedAccountId,'account-1');
         if (process.env.GEMROUTER_TEST_SCREENSHOT) await page.screenshot({path:process.env.GEMROUTER_TEST_SCREENSHOT,fullPage:true});
         const guest = await browser.newPage({viewport:{width:390,height:844}});
+        await guest.route('**/dashboard/codex/runtime', (route: any) => route.fulfill({ json: { managed: true,
+          version: '1.2.3', latestVersion: '1.2.4', updateAvailable: true, phase: 'idle', error: null } }));
         await guest.goto(origin); await guest.locator('#codex-quota-rows tr').first().waitFor();
         await guest.waitForFunction(()=>document.querySelectorAll('#codex-quota-rows tr').length===6);
         assert.equal(await guest.locator('#codex-quota-section').isVisible(),true);
         assert.equal(await guest.locator('#codex-account-section').isVisible(),false);
+        assert.equal(await guest.locator('#codex-runtime-update-banner').isVisible(),true);
+        assert.equal(await guest.locator('#codex-runtime-update-banner button').isDisabled(),true);
         assert.equal((await guest.locator('body').innerText()).includes('fixture@example.test'),false);
         await guest.close();
         await page.locator('[data-section-toggle="apps-section-body"]').click();

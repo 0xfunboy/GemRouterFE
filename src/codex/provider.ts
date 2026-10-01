@@ -28,12 +28,16 @@ export class CodexProvider implements LLMClient {
         const status = await this.runtime.status();
         if (epoch !== this.snapshotEpoch) return;
         if (!status.authenticated) { this.invalidate(); this.lastError = status.reasonCode ?? 'codex_auth_required'; return; }
-        const catalog = (await this.runtime.models()).filter((m) => this.config.models.includes(m.model));
+        const catalog = (await this.runtime.models()).filter((m) => isCodexModel(m.model));
         if (epoch !== this.snapshotEpoch) return;
         this.catalog = catalog;
         const buckets = await this.runtime.quota();
         if (epoch !== this.snapshotEpoch) return;
         this.quotaSnapshot = { observedAt: Date.now(), buckets };
+        // Only a fresh, explicitly non-exhausted service window clears a rejection.
+        const standard = buckets.find((b) => b.limitId === 'codex');
+        const windows = [standard?.primary, standard?.secondary].filter((w) => w?.usedPercent != null);
+        if (Date.now() >= this.quotaRejectedUntil && windows.length && windows.every((w) => w!.usedPercent! < 100)) this.quotaRejectedUntil = 0;
         this.lastError = null;
       } catch (error) { if (epoch === this.snapshotEpoch) this.lastError = error instanceof CodexRuntimeError ? error.code : 'codex_refresh_failed'; }
       finally { if (epoch === this.snapshotEpoch) this.lastRefreshAt = Date.now(); }
@@ -47,16 +51,20 @@ export class CodexProvider implements LLMClient {
       metrics: this.metrics.snapshot(), inflight: this.active ? 1 : 0, queued: this.waiting.length,
       lastError: this.lastError, streamingMode: 'buffered', toolsEnabled: false };
   }
+  quotaState() {
+    const now = Date.now(), bucket = this.quotaSnapshot?.buckets.find((b) => b.limitId === 'codex');
+    const blocked = [bucket?.primary, bucket?.secondary].filter((w) => w?.usedPercent != null && w.usedPercent >= 100);
+    return { depleted: this.depleted(), resetAt: blocked.length && blocked.every((w) => w?.resetsAt != null)
+      ? Math.max(...blocked.map((w) => w!.resetsAt!)) * 1000 : this.quotaRejectedUntil > now ? this.quotaRejectedUntil : null };
+  }
   private depleted(): boolean {
     // An explicit upstream exhaustion error is stronger than a lagging quota
     // snapshot. Bound the local backoff; never turn unknown data into depletion.
     if (Date.now() < this.quotaRejectedUntil) return true;
-    // These four standard models share the codex bucket. Never apply another
+    // Standard models share the codex bucket. Never apply another
     // specialized model's bucket (e.g. codex_bengalfox) to them.
     const bucket = this.quotaSnapshot?.buckets.find((b) => b.limitId === 'codex');
-    return Boolean(bucket && [bucket.primary, bucket.secondary].some((w) => w?.usedPercent != null && w.usedPercent >= 100
-      && (w.resetsAt != null ? w.resetsAt * 1000 > Date.now()
-        : Date.now() - this.quotaSnapshot!.observedAt < this.config.quotaRefreshMs)));
+    return Boolean(bucket && [bucket.primary, bucket.secondary].some((w) => w?.usedPercent != null && w.usedPercent >= 100));
   }
   private async acquire(signal: AbortSignal, deadline: number): Promise<() => void> {
     if (signal.aborted || deadline <= Date.now()) throw new CodexRuntimeError('codex_cancelled');
@@ -91,7 +99,7 @@ export class CodexProvider implements LLMClient {
     try {
       release = await this.acquire(signal, deadline);
       if (Date.now() - this.lastRefreshAt >= this.config.quotaRefreshMs || !this.runtime.cachedStatus().authenticated) await this.refresh();
-      if (!this.runtime.cachedStatus().authenticated) throw new CodexRuntimeError('codex_auth_required');
+      if (!this.runtime.cachedStatus().authenticated) throw new CodexRuntimeError(this.runtime.cachedStatus().reasonCode ?? 'codex_auth_required');
       const entry = this.catalog.find((m) => m.model === model);
       if (!entry) throw new CodexRuntimeError('codex_model_unavailable');
       const effort = opts.codex.reasoningEffort ?? this.config.reasoningEffort;

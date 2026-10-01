@@ -939,6 +939,10 @@ export function renderAppShell(input: {
       .codex-login-link { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 16px; border: 1px solid var(--accent); background: var(--surface-muted); color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
       .codex-login-link:hover { background: var(--surface); }
       .codex-login-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+      .codex-runtime-banner { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 16px; margin-bottom: 16px; border: 2px solid var(--accent); background: var(--surface-muted); border-radius: 12px; }
+      .codex-runtime-banner strong { font-size: 1.1rem; }
+      .codex-runtime-controls { padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+      @media (max-width: 680px) { .codex-runtime-banner { flex-direction: column; align-items: stretch; } }
       .codex-account-controls > label { min-width: 220px; flex: 1; }
       #codex-account-panel h4 { margin: 20px 0 12px; }
       #codex-account-login, .codex-usage-details { margin-top: 16px; }
@@ -3860,7 +3864,9 @@ export function renderAppShell(input: {
           steps.push(
             '<div class="footer-note good-text">' +
             String(step++) + '. ok ' + escapeHtml(finalModel) +
-            ' · ' + escapeHtml(String(item.apiKeyId || 'unknown')) + '</div>'
+            ' · ' + escapeHtml(String(item.codexAccountId || item.apiKeyId || 'unknown'))
+            + (item.reasoningEffort ? ' · thinking ' + escapeHtml(item.reasoningEffort) : '')
+            + (item.codexAccountFallbackFrom ? ' · quota fallback from ' + escapeHtml(item.codexAccountFallbackFrom) : '') + '</div>'
           );
         } else {
           const finalReason = item.fallbackReason || item.error || 'failed';

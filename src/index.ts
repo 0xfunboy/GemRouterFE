@@ -1,7 +1,7 @@
 import 'dotenv/config';
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import Fastify, { LogController, type FastifyReply, type FastifyRequest } from 'fastify';
@@ -9,7 +9,9 @@ import Fastify, { LogController, type FastifyReply, type FastifyRequest } from '
 import { loadConfig } from './config.js';
 import { CodexAccounts } from './codex/accounts.js';
 import { registerCodexAccountRoutes } from './codex/routes.js';
-import { CODEX_REASONING_EFFORTS, isCodexRequest } from './codex/models.js';
+import { isCodexReasoningEffort, isCodexRequest } from './codex/models.js';
+import { ManagedCodexRuntime } from './codex/managed-runtime.js';
+import { TelegramAlerts, readTelegramConfig } from './alerts/telegram.js';
 import { codexRequestPolicy } from './codex/request.js';
 import { applyBackup, buildBackup, summarizeBackupContents } from './lib/backup.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
@@ -84,6 +86,7 @@ const ADMIN_COOKIE_NAME = 'gemrouter_admin_session';
 const config = loadConfig();
 const MODEL_CONFIG_PATH = path.join(config.dataDir, 'model-config.json');
 const PRIVATE_BACKUP_EXCLUSIONS = [config.codex.privateDirectory, path.join(config.dataDir, 'chatgpt-gateway'),
+  path.join(config.rootDir, '.runtime'),
   path.resolve(config.rootDir, process.env.GEMROUTER_CHATGPT_DATA_DIR || path.join(config.dataDir, 'chatgpt-gateway'))];
 
 /** The selectable universe of routed Gemini text/gemma models (from the curated limit table). */
@@ -149,6 +152,30 @@ const compatibility = new CompatibilityStore(config.compatibility.settingsStoreP
   enabledSurfaces: config.compatibility.enabledSurfaces,
 });
 const interactions = new InteractionStore(config.interactionsStorePath);
+const codexRuntime = new ManagedCodexRuntime(config.rootDir, config.codex.enabled && config.codex.managedRuntime);
+const telegramAlerts = new TelegramAlerts(readTelegramConfig(), path.join(config.codex.privateDirectory, 'telegram-alert-state.json'));
+const codexCatalogPath = path.join(config.dataDir, 'codex-catalog.json');
+let knownCodexModels = new Set(config.codex.models);
+try {
+  const cached = JSON.parse(readFileSync(codexCatalogPath, 'utf8'));
+  if (Array.isArray(cached.models)) for (const model of cached.models) if (typeof model === 'string' && /^gpt-[a-z0-9.-]{1,96}$/.test(model)) knownCodexModels.add(model);
+} catch { /* No cached catalog yet. Defaults remain known, not automatically re-granted. */ }
+config.codex.models = [...knownCodexModels];
+config.modelIds = [...new Set([...config.modelIds, ...knownCodexModels])];
+codexLlm.onOutcome = (id, code) => { telegramAlerts.recordOutcome(id, code); telegramAlerts.observe(codexLlm); };
+function syncCodexCatalog() {
+  const models = codexLlm.models().map((m) => m.model);
+  const additions = models.filter((m) => !knownCodexModels.has(m));
+  config.codex.models = [...new Set([...config.codex.models, ...models])];
+  config.modelIds = [...new Set([...config.modelIds, ...models])];
+  const result = { updatedApps: appStore.addDiscoveredCodexModels(models, additions) };
+  if (additions.length || !existsSync(codexCatalogPath)) {
+    models.forEach((m) => knownCodexModels.add(m));
+    const temp = `${codexCatalogPath}.tmp`;
+    writeFileSync(temp, JSON.stringify({ models: [...knownCodexModels] }), { mode: 0o600 }); renameSync(temp, codexCatalogPath);
+  }
+  return result;
+}
 
 const bootstrapApp = appStore.ensureBootstrapApp({
   name: config.bootstrapApp.name,
@@ -172,16 +199,22 @@ registerCodexAccountRoutes(app, codexLlm, {
   ensureAdmin, ensureAdminMutation,
   adminCsrf: (request) => getAdminSession(request)?.csrfToken ?? null,
   audit: (event) => audit.write(event),
-});
+}, codexRuntime, telegramAlerts, syncCodexCatalog);
 let codexRefreshTimer: ReturnType<typeof setInterval> | undefined;
+let codexUpdateTimer: ReturnType<typeof setInterval> | undefined;
 app.addHook('onReady', async () => {
   if (!config.codex.enabled) return;
   await codexLlm.initialize();
+  const managed = await codexRuntime.prepare();
+  if (managed) await codexLlm.replaceRuntime(managed.command, managed.version);
   await codexLlm.refresh();
-  codexRefreshTimer = setInterval(() => { void codexLlm.refresh(); }, config.codex.quotaRefreshMs);
+  syncCodexCatalog(); telegramAlerts.observe(codexLlm);
+  codexRefreshTimer = setInterval(() => { void codexLlm.refresh().then(() => { syncCodexCatalog(); telegramAlerts.observe(codexLlm); }).catch(() => {}); }, config.codex.quotaRefreshMs);
   codexRefreshTimer.unref();
+  void codexRuntime.check();
+  codexUpdateTimer = setInterval(() => { void codexRuntime.check(); }, 6 * 60 * 60_000); codexUpdateTimer.unref();
 });
-app.addHook('onClose', async () => { clearInterval(codexRefreshTimer); await codexLlm.close(); });
+app.addHook('onClose', async () => { clearInterval(codexRefreshTimer); clearInterval(codexUpdateTimer); await codexRuntime.close(); await codexLlm.close(); await telegramAlerts.close(); });
 app.addHook('onRequest', async (request, reply) => {
   const pathname = request.url.split('?')[0];
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)
@@ -943,6 +976,9 @@ function recordInteraction(input: {
     model: input.model,
     requestedModel: input.requestedModel ?? input.model,
     backendModel: response?.backendModel,
+    codexAccountId: response?.codexAccountId,
+    codexAccountFallbackFrom: response?.codexAccountFallbackFrom,
+    reasoningEffort: response?.reasoningEffort,
     apiKeyId: response?.apiKeyId,
     quotaGroup: response?.quotaGroup,
     prompt: flattenPrompt(input.messages),
@@ -1075,6 +1111,8 @@ function resolveProviderLabel(response: LLMResponse): string {
 }
 
 function applyBackendHeaders(reply: FastifyReply, response: LLMResponse): void {
+  if (response.codexAccountId) reply.header('x-gemrouter-codex-account', response.codexAccountId);
+  if (response.codexAccountFallbackFrom) reply.header('x-gemrouter-codex-account-fallback-from', response.codexAccountFallbackFrom);
   if (response.reasoningEffort) reply.header('x-gemrouter-reasoning-effort', response.reasoningEffort);
   if (response.usageSource) reply.header('x-gemrouter-usage-source', response.usageSource);
   if (response.streamingMode) reply.header('x-gemrouter-stream-mode', response.streamingMode);
@@ -1135,6 +1173,8 @@ function buildStreamResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
   if (response?.usageSource) headers['x-gemrouter-usage-source'] = response.usageSource;
   if (response?.reasoningEffort) headers['x-gemrouter-reasoning-effort'] = response.reasoningEffort;
+  if (response?.codexAccountId) headers['x-gemrouter-codex-account'] = response.codexAccountId;
+  if (response?.codexAccountFallbackFrom) headers['x-gemrouter-codex-account-fallback-from'] = response.codexAccountFallbackFrom;
   if (response?.streamingMode || response?.fallbackFrom === 'codex') headers['x-gemrouter-stream-mode'] = 'buffered';
   if (response?.ignoredParameters?.length) headers['x-gemrouter-ignored-parameters'] = response.ignoredParameters.join(',');
   return headers;
@@ -1158,6 +1198,8 @@ function buildNdjsonResponseHeaders(request: FastifyRequest, response?: LLMRespo
   if (response?.quotaSource) headers['x-gemrouter-quota-source'] = response.quotaSource;
   if (response?.usageSource) headers['x-gemrouter-usage-source'] = response.usageSource;
   if (response?.reasoningEffort) headers['x-gemrouter-reasoning-effort'] = response.reasoningEffort;
+  if (response?.codexAccountId) headers['x-gemrouter-codex-account'] = response.codexAccountId;
+  if (response?.codexAccountFallbackFrom) headers['x-gemrouter-codex-account-fallback-from'] = response.codexAccountFallbackFrom;
   if (response?.streamingMode || response?.fallbackFrom === 'codex') headers['x-gemrouter-stream-mode'] = 'buffered';
   if (response?.ignoredParameters?.length) headers['x-gemrouter-ignored-parameters'] = response.ignoredParameters.join(',');
   return headers;
@@ -1310,7 +1352,7 @@ function buildAdminModelCatalog(
 // configured entries absent from discovery still receive a safe capability fallback.
 function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<Record<string, unknown>> {
   const providerEntries = [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries(),
-    ...codexLlm.getDiagnostics().models.map((model) => ({ id: model.model, provider: 'codex', displayName: model.displayName,
+    ...codexLlm.models().map((model) => ({ id: model.model, provider: 'codex', displayName: model.displayName,
       supportedReasoningEfforts: model.supportedReasoningEfforts, available: true, capabilities: { chat: true } }))];
   const byId = new Map(
     providerEntries.map((entry) => [String(entry.id ?? '').trim().toLowerCase(), entry] as const),
@@ -1425,7 +1467,7 @@ function buildProviderSnapshot(
       lastSuccessAt: ollama.lastSuccessAt ?? null,
     },
     models: [
-      ...codexLlm.getDiagnostics().models.map((model) => ({ id: model.model, displayName: model.displayName,
+      ...codexLlm.models().map((model) => ({ id: model.model, displayName: model.displayName,
         provider: 'codex', backends: { codex: true }, capabilities: { chat: true }, supportedReasoningEfforts: model.supportedReasoningEfforts })),
       ...buildProviderModelState(geminiApi),
       ...ollamaModels.map((model) => ({
@@ -1623,7 +1665,7 @@ function getRuntimeSnapshot(
     },
     provider,
     models: [
-      ...codexLlm.getDiagnostics().models.map((model) => model.model),
+      ...codexLlm.models().map((model) => model.model),
       ...buildCompatibleSurfaceModelIds(geminiApiDiagnostics, 'chat-or-image'),
       ...(Array.isArray(ollamaDiagnostics.models)
         ? (ollamaDiagnostics.models as Record<string, unknown>[]).map((model) => String(model.id ?? '').trim()).filter(Boolean)
@@ -1680,7 +1722,7 @@ function unknownAllowedModels(values: unknown): string[] {
 
 function validateCodexAppPolicy(body: Record<string, unknown>): void {
   if (['codexEnabled', 'codexFallbackEnabled'].some((key) => body[key] !== undefined && typeof body[key] !== 'boolean')
-    || (body.codexReasoningEffort !== undefined && !(CODEX_REASONING_EFFORTS as readonly unknown[]).includes(body.codexReasoningEffort))) {
+    || (body.codexReasoningEffort !== undefined && !isCodexReasoningEffort(body.codexReasoningEffort))) {
     throw Object.assign(new Error('Invalid Codex app policy: boolean flags and a supported reasoning effort are required.'), { statusCode: 400 });
   }
 }

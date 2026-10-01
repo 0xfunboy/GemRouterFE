@@ -1,0 +1,9 @@
+{
+  "version": "0.159.3",
+  "platform": "linux-x64",
+  "sha256": "8bf204b36a2f6dd0dab73aa2f639892e67ef9ac8befccb4a05b1496ebf25c479",
+  "archiveSha256": "d79eed22e4b78f621573e7a77749608bad424ad56ea517b9525016652b2debfa",
+  "archiveParts": 2,
+  "integrity": "sha512-xlHydfOksnNt/qz4BEVFvjMWunweaVSNtha/DkVUwWZnVZxbqiJwsXSl2iZDk04b6k/g0OI7jU06XqzHB2s5og==",
+  "license": "Apache-2.0"
+}

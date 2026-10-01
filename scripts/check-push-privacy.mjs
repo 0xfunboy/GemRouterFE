@@ -12,6 +12,7 @@ const patterns = [
   ['private-key', /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/],
   ['jwt', /eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}/],
   ['service-token', /\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{24,}|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})/],
+  ['telegram-token', /\b\d{6,12}:AA[A-Za-z0-9_-]{30,}\b/],
   ['personal-chat', /https?:\/\/(?:chatgpt|chat\.openai)\.com\/c\/(?!00000000-0000-0000-0000-)[a-f0-9-]{36}/i],
   ['literal-secret', /(?:api_key|apiKey|access_token|refresh_token|password|client_secret)\s*[:=]\s*['"][A-Za-z0-9_+/=-]{40,}['"]/i],
 ];
@@ -30,7 +31,9 @@ for (const commit of commits) {
       || /(?:^|\/)(?:node_modules|dist|data|profiles|backups)\//.test(file)) findings.push({ file, kind: 'private-or-generated-path' });
     if (scanned.has(id)) continue;
     scanned.add(id);
-    const data = git('cat-file', 'blob', id); if (data.includes('\0')) continue;
+    const blob = execFileSync('git', ['cat-file', 'blob', id], { maxBuffer: 128 * 1024 * 1024 });
+    if (blob.includes(0)) continue;
+    const data = blob.toString('utf8');
     if (hasPrivateEmail(data)) findings.push({ file, kind: 'private-email' });
     for (const [kind, pattern] of patterns) if (pattern.test(data)) findings.push({ file, kind });
     if (deny.some((word) => data.toLowerCase().includes(word))) findings.push({ file, kind: 'denied-identity-or-url' });

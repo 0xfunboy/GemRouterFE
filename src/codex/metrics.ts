@@ -28,7 +28,7 @@ export class CodexMetrics {
     } catch { this.storageError = 'codex_metrics_unreadable'; }
   }
   private update(model: string, action: (c: Counters) => void) {
-    // Only the fixed provider allowlist may supply model IDs.
+    // Safe catalog-shaped IDs only; dispatch separately enforces app entitlement.
     if (!isCodexModel(model)) throw new Error('Unknown Codex metrics model');
     this.data.models[model] ??= empty();
     action(this.data.totals); action(this.data.models[model]);

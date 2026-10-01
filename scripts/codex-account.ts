@@ -2,12 +2,17 @@
 import { randomUUID } from 'node:crypto';
 import { readCodexConfig } from '../src/codex/config.js';
 import { CodexRuntime, CodexRuntimeError } from '../src/codex/runtime.js';
+import { ManagedCodexRuntime } from '../src/codex/managed-runtime.js';
+import { safeAccount } from '../src/codex/accounts.js';
 
 const command = process.argv[2] ?? 'status';
 if (!['status', 'usage', 'models', 'login'].includes(command)) {
   console.error('Usage: pnpm codex:account [status|usage|models|login]'); process.exit(2);
 }
-const runtime = new CodexRuntime({ ...readCodexConfig(), enabled: true, excludedDirectories: [process.cwd()] });
+const config = readCodexConfig();
+const managed = new ManagedCodexRuntime(process.cwd(), config.managedRuntime);
+const asset = await managed.prepare();
+const runtime = new CodexRuntime({ ...config, ...(asset ? { command: asset.command, expectedRuntimeVersion: asset.version } : {}), enabled: true, excludedDirectories: [process.cwd()] });
 let closing = false;
 const stop = async () => { if (!closing) { closing = true; await runtime.close(); process.exitCode = 130; } };
 process.once('SIGINT', stop); process.once('SIGTERM', stop);
@@ -32,7 +37,7 @@ try {
       }
     }
   } else {
-    const data = command === 'usage' ? await runtime.usage() : command === 'models' ? await runtime.models() : await runtime.status();
+    const data = command === 'usage' ? await runtime.usage() : command === 'models' ? await runtime.models() : safeAccount(await runtime.status());
     console.log(JSON.stringify(data, null, 2));
     if (command === 'status' && !runtime.cachedStatus().authenticated) process.exitCode = 1;
   }
