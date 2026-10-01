@@ -8,9 +8,7 @@ export const DEFAULT_DIRECT_MODEL_IDS = [
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash-lite',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
 ] as const;
@@ -22,9 +20,7 @@ export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash-lite',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
 ] as const;
@@ -41,6 +37,8 @@ export const DEFAULT_FREE_TIER_AUDIO_MODEL_IDS = [
 // those sources can independently repopulate operator-facing model lists.
 export const RETIRED_GEMINI_MODEL_IDS = [
   'gemini-3.1-flash-live-preview',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
 ] as const;
 
 const RETIRED_GEMINI_MODELS = new Set<string>(RETIRED_GEMINI_MODEL_IDS);
@@ -67,9 +65,7 @@ export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3-flash-preview',
-  'gemini-2.5-flash',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash-lite',
   'gemma-4-31b-it',
   'gemma-4-26b-a4b-it',
 ] as const;

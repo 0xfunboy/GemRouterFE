@@ -778,9 +778,13 @@ function attemptFetchSignal(timeoutMs: number, opts?: LLMOptions): AbortSignal {
   return opts?.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 }
 
-function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+function configuredQuotaGroups(
+  config: GeminiApiProviderConfig,
+  ledgerGroups: Array<Record<string, unknown>>,
+  accountCatalog?: GeminiAccountModelCatalog,
+): Array<Record<string, unknown>> {
   const byId = new Map(ledgerGroups.map((group) => [String(group.id), group]));
-  const modelIds = Object.keys(config.limits);
+  const modelIds = Object.keys(config.limits).filter((model) => !isRetiredGeminiModelId(model));
   const configuredModel = (model: string): Record<string, unknown> => {
     const limit = config.limits[model] ?? { rpm: null, tpm: null, rpd: null };
     return {
@@ -799,15 +803,36 @@ function configuredQuotaGroups(config: GeminiApiProviderConfig, ledgerGroups: Ar
       authoritative: false,
     };
   };
+
+  const keysByGroup = new Map<string, GeminiApiKeyConfig[]>();
   for (const key of config.keys) {
+    const list = keysByGroup.get(key.quotaGroup) ?? [];
+    list.push(key);
+    keysByGroup.set(key.quotaGroup, list);
+  }
+
+  const groupAllowsModel = (groupId: string, model: string): boolean => {
+    if (isRetiredGeminiModelId(model)) return false;
+    const keys = keysByGroup.get(groupId);
+    if (!keys || keys.length === 0) return true;
+    return keys.some((key) => {
+      if (!key.enabled) return false;
+      const curated = !key.models || key.models.length === 0 || key.models.includes(model);
+      return curated && (accountCatalog?.allows(key.id, model) ?? true);
+    });
+  };
+
+  for (const key of config.keys) {
+    const allowedModelIds = modelIds.filter((m) => groupAllowsModel(key.quotaGroup, m));
     const existing = byId.get(key.quotaGroup);
     if (!existing) {
-      byId.set(key.quotaGroup, { id: key.quotaGroup, models: modelIds.map(configuredModel) });
+      byId.set(key.quotaGroup, { id: key.quotaGroup, models: allowedModelIds.map(configuredModel) });
       continue;
     }
-    const models = Array.isArray(existing.models) ? existing.models as Record<string, unknown>[] : [];
+    const rawModels = Array.isArray(existing.models) ? existing.models as Record<string, unknown>[] : [];
+    const models = rawModels.filter((m) => groupAllowsModel(key.quotaGroup, String(m.model)));
     const knownModels = new Set(models.map((model) => String(model.model)));
-    existing.models = [...models, ...modelIds.filter((model) => !knownModels.has(model)).map(configuredModel)];
+    existing.models = [...models, ...allowedModelIds.filter((model) => !knownModels.has(model)).map(configuredModel)];
   }
   // Present every group's models in the configured order (enabled/fallback chain
   // first, then the remaining catalogued models), not in the ledger's historical
@@ -1395,7 +1420,11 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     getDiagnostics(): Record<string, unknown> {
       const quota = ledger.snapshot();
       const discoverySnapshot = discovery.snapshot();
-      const quotaGroups = configuredQuotaGroups(config, quota.quotaGroups as unknown as Array<Record<string, unknown>>);
+      const quotaGroups = configuredQuotaGroups(
+        config,
+        quota.quotaGroups as unknown as Array<Record<string, unknown>>,
+        accountCatalog,
+      );
       return {
         provider: 'gemini-api',
         enabled: config.enabled,

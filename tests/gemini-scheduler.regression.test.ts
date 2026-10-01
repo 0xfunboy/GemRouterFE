@@ -338,7 +338,7 @@ describe('Gemini request scheduler', () => {
       'gemini-3.6-flash': { rpm: 100, tpm: 250_000, rpd: 1_000 },
       'gemini-3.5-flash': { rpm: 100, tpm: 250_000, rpd: 1_000 },
       'gemini-3-flash-preview': { rpm: 100, tpm: 250_000, rpd: 1_000 },
-      'gemini-2.5-flash': { rpm: 100, tpm: 250_000, rpd: 1_000 },
+      'gemini-3.5-flash-lite': { rpm: 100, tpm: 250_000, rpd: 1_000 },
     };
     const config = makeConfig({ keyCount: 10, limits: models });
     const client = createGeminiApiClient(config);
@@ -362,7 +362,7 @@ describe('Gemini request scheduler', () => {
           assert.equal(calls.filter((model) => model === 'gemini-3.6-flash').length, 3);
           assert.equal(calls.filter((model) => model === 'gemini-3.5-flash').length, 1);
           assert.equal(calls.filter((model) => model === 'gemini-3-flash-preview').length, 1);
-          assert.equal(calls.filter((model) => model === 'gemini-2.5-flash').length, 1);
+          assert.equal(calls.filter((model) => model === 'gemini-3.5-flash-lite').length, 1);
           return true;
         },
       );
