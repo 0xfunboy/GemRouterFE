@@ -3,15 +3,7 @@ import path from 'node:path';
 
 import { isRetiredGeminiModelId } from '../../../lib/models.js';
 import type { GeminiApiModelInfo, GeminiApiProviderConfig } from './types.js';
-
-interface GeminiModelApiShape {
-  name?: string;
-  displayName?: string;
-  description?: string;
-  inputTokenLimit?: number;
-  outputTokenLimit?: number;
-  supportedGenerationMethods?: string[];
-}
+import { fetchGeminiCatalog } from './catalogApi.js';
 
 interface GeminiModelCacheFile {
   version: 1;
@@ -67,19 +59,14 @@ export class GeminiApiModelDiscovery {
       return this.cache.models;
     }
 
-    const endpoint = `${this.config.baseUrl.replace(/\/+$/, '')}/${this.config.version}/models?key=${encodeURIComponent(key.key)}`;
     try {
-      const response = await fetch(endpoint, { signal: AbortSignal.timeout(this.config.timeoutMs) });
-      if (!response.ok) {
-        throw new Error(`Gemini model discovery failed with HTTP ${response.status}`);
-      }
-      const payload = await response.json() as { models?: GeminiModelApiShape[] };
+      const models = await fetchGeminiCatalog(this.config, key.key);
       const discoveredAt = nowIso();
       this.cache = {
         version: 1,
         updatedAt: discoveredAt,
         lastError: null,
-        models: (payload.models ?? []).map((model) => {
+        models: models.map((model) => {
           const name = model.name ?? '';
           return {
             id: modelIdFromName(name),

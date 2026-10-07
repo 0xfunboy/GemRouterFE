@@ -1,5 +1,33 @@
 # Codex provider verification — 2026-09-16
 
+## Live managed update — 2026-10-07
+
+The running service's admin updater activated official **0.160.1** from
+**0.159.3**, with its existing integrity/restriction checks and account-draining
+workflow. No GemRouter service restart, global CLI installation, browser login,
+new router instance or private credential migration was needed. Both existing
+slots stayed authenticated (Pro/Plus), with slot 2 preferred. Public runtime
+status reported `completed`, version/latestVersion 0.160.1 and no pending update.
+The rescan reported **no new/removed models or thinking changes**, and zero app
+updates. Seven catalog entries were returned on both slots; that listing is not
+a claim of successful inference on all seven.
+
+A real request through the running compatible API returned HTTP **200** in
+**4,416 ms**: exact `gpt-6.1-sol`, default **xhigh**, account **2**, text
+`CODEX_UPDATE_OK`. Usage: **3,948 input + 8 output = 3,956 tokens**, cached and
+reasoning counts zero. This used a temporary tightly scoped verification app,
+subsequently revoked and removed; it was not the remote AIR3 client itself.
+The bundled offline baseline remains 0.159.3; the downloaded 0.160.1 executable
+and active pointer persist privately under ignored `.runtime/`, independently
+of the IDE executable. See [managed updates](codex-runtime-updates.md) and the
+[same-day real Gemini census](gemini-account-census.md).
+
+Following the separately authorized Gemini deployment/restart, both profiles
+were again authenticated on 0.160.1 with slot 2 preferred. A **public HTTPS**
+request then returned exact `gpt-6.1-sol` / default `xhigh` on slot 2 in **3,599
+ms**, HTTP 200, text `ROUTER_LIVE_OK`, **3,959 total tokens**. The actual public
+frontend reported no available update and zero browser JavaScript errors.
+
 ## Managed runtime / discovery / account fallback — 2026-10-01
 
 Implementation: official runtime **0.159.3** is vendored as two gzip chunks with

@@ -29,6 +29,13 @@ describe('routing telemetry labels', () => {
 });
 
 describe('frontend model performance ordering', () => {
+  it('uses model-specific account eligibility, excluding disabled accounts and distinguishing catalog from inference', () => {
+    assert.match(shell, /if \(key\.enabled === false\) return;/);
+    assert.match(shell, /Array\.isArray\(model\.accountIds\) \? model\.accountIds : accountLabels/);
+    assert.match(shell, /modelAccountLabels\.forEach/);
+    assert.match(shell, /listed; inference access not verified/);
+    assert.match(shell, /excluded from routing/);
+  });
   it('ranks Gemini 3.8 ahead of every older Flash generation', () => {
     const orderSource = shell.match(/const MODEL_POWER_ORDER = \[([\s\S]*?)\];/)?.[1] ?? '';
     const order = [...orderSource.matchAll(/'([^']+)'/g)].map((match) => match[1]);

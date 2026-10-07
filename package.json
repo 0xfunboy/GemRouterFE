@@ -21,6 +21,7 @@
     "smoke:codex:ui": "node --import tsx scripts/smoke-codex.ts --ui",
     "smoke:codex:live": "node --import tsx scripts/smoke-codex.ts --live",
     "codex:account": "node --import tsx scripts/codex-account.ts",
+    "census:gemini": "node --import tsx scripts/gemini-census.ts",
     "check:privacy": "node scripts/check-push-privacy.mjs",
     "test": "node --import tsx --test tests/**/*.test.ts"
   },

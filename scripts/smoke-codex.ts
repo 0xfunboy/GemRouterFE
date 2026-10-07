@@ -42,6 +42,8 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
       body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(130000),
     });
     assert.equal((await call('/admin/codex/account', null)).status, 401);
+    assert.equal((await call('/admin/provider/gemini-api/accounts/probe-model', null, 'POST', { accountId: 'fixture', model: 'gemini-3.8-flash' })).status, 401);
+    assert.equal((await call('/admin/provider/gemini-api/accounts/probe-model', adminKey, 'POST', { accountId: 'fixture', model: 'gemini-3.8-flash', prompt: 'must be rejected' })).status, 400);
     const publicHealth = await (await call('/health', null)).text(); assert.equal(publicHealth.includes('fixture@example.test'), false);
     const request = { model: 'gpt-5.6-luna', reasoning_effort: 'low', messages: [{ role: 'user', content: 'Reply exactly CODEX_PROVIDER_OK.' }] };
     assert.equal((await call('/v1/chat/completions', clientKey, 'POST', request)).status, 403);

@@ -1516,6 +1516,7 @@ function buildGuestSummary() {
       models: Array.isArray(group.models)
         ? (group.models as Record<string, unknown>[]).map((model) => ({
           model: model.model ?? 'unknown',
+          accountIds: model.accountIds ?? [],
           rpm: model.rpm ?? null,
           tpm: model.tpm ?? null,
           rpd: model.rpd ?? null,
@@ -3290,6 +3291,7 @@ app.post('/admin/provider/gemini-api/clear-cooldown', async (request, reply) => 
 type GeminiAccountClient = typeof geminiApiLlm & {
   reloadAccounts?: (keys: typeof config.geminiApi.keys) => Record<string, unknown>;
   listAccountModels?: (accountId: string) => Promise<Record<string, unknown>>;
+  probeAccountModel?: (accountId: string, model: string) => Promise<Record<string, unknown>>;
 };
 
 function persistGeminiAccounts(): void {
@@ -3349,6 +3351,18 @@ app.post<{ Body: { accountId?: string } }>('/admin/provider/gemini-api/accounts/
     return sendError(reply, 503, { message: 'Model listing is not available', type: 'server_error', code: 'list_models_unavailable' });
   }
   return client.listAccountModels(accountId);
+});
+
+app.post<{ Body: { accountId?: string; model?: string } }>('/admin/provider/gemini-api/accounts/probe-model', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const body = request.body;
+  if (!body || Object.keys(body).some((key) => !['accountId', 'model'].includes(key))
+    || typeof body.accountId !== 'string' || typeof body.model !== 'string'
+    || body.accountId.length > 100 || !/^(?:gemini|gemma)-[a-z0-9.-]+$/.test(body.model)) {
+    return sendError(reply, 400, { message: 'accountId and an exact text model are required.', type: 'invalid_request_error', code: 'invalid_account_model' });
+  }
+  const client = geminiApiLlm as GeminiAccountClient;
+  return client.probeAccountModel?.(body.accountId, body.model) ?? { ok: false, error: 'probe_unavailable' };
 });
 
 app.post<{

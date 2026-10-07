@@ -6,10 +6,12 @@ import {
   isGeminiNativeAudioModelId,
   isRetiredGeminiModelId,
   isGeminiTtsModelId,
+  inferModelCapabilities,
 } from '../../../lib/models.js';
 import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/semantics.js';
 import { LLMHedgeCancelled } from '../../errors.js';
 import { GeminiAccountModelCatalog } from './accountCatalog.js';
+import { fetchGeminiCatalog, geminiAccessDenial } from './catalogApi.js';
 import { GeminiApiProviderError } from './errors.js';
 import { GeminiApiKeyPool, type GeminiApiKeyReservation, type GeminiApiLocalBackpressure } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
@@ -785,8 +787,8 @@ function configuredQuotaGroups(
 ): Array<Record<string, unknown>> {
   const byId = new Map(ledgerGroups.map((group) => [String(group.id), group]));
   const modelIds = Object.keys(config.limits).filter((model) => !isRetiredGeminiModelId(model));
-  const configuredModel = (model: string): Record<string, unknown> => {
-    const limit = config.limits[model] ?? { rpm: null, tpm: null, rpd: null };
+  const configuredModel = (group: string, model: string): Record<string, unknown> => {
+    const limit = config.groupLimits?.[group]?.[model] ?? config.limits[model] ?? { rpm: null, tpm: null, rpd: null };
     return {
       model,
       rpm: { used: 0, limit: limit.rpm, remaining: limit.rpm },
@@ -813,8 +815,10 @@ function configuredQuotaGroups(
 
   const groupAllowsModel = (groupId: string, model: string): boolean => {
     if (isRetiredGeminiModelId(model)) return false;
+    const limit = config.groupLimits?.[groupId]?.[model] ?? config.limits[model];
+    if (limit && (limit.rpm === 0 || limit.tpm === 0 || limit.rpd === 0)) return false;
     const keys = keysByGroup.get(groupId);
-    if (!keys || keys.length === 0) return true;
+    if (!keys || keys.length === 0) return false;
     return keys.some((key) => {
       if (!key.enabled) return false;
       const curated = !key.models || key.models.length === 0 || key.models.includes(model);
@@ -826,13 +830,13 @@ function configuredQuotaGroups(
     const allowedModelIds = modelIds.filter((m) => groupAllowsModel(key.quotaGroup, m));
     const existing = byId.get(key.quotaGroup);
     if (!existing) {
-      byId.set(key.quotaGroup, { id: key.quotaGroup, models: allowedModelIds.map(configuredModel) });
+      byId.set(key.quotaGroup, { id: key.quotaGroup, models: allowedModelIds.map((model) => configuredModel(key.quotaGroup, model)) });
       continue;
     }
     const rawModels = Array.isArray(existing.models) ? existing.models as Record<string, unknown>[] : [];
     const models = rawModels.filter((m) => groupAllowsModel(key.quotaGroup, String(m.model)));
     const knownModels = new Set(models.map((model) => String(model.model)));
-    existing.models = [...models, ...allowedModelIds.filter((model) => !knownModels.has(model)).map(configuredModel)];
+    existing.models = [...models, ...allowedModelIds.filter((model) => !knownModels.has(model)).map((model) => configuredModel(key.quotaGroup, model))];
   }
   // Present every group's models in the configured order (enabled/fallback chain
   // first, then the remaining catalogued models), not in the ledger's historical
@@ -846,9 +850,13 @@ function configuredQuotaGroups(
     const catalogued = limitsOrder.get(id);
     return 1_000 + (catalogued !== undefined ? catalogued : 1_000);
   };
-  return [...byId.values()].map((group) => {
+  return [...byId.values()].filter((group) => keysByGroup.get(String(group.id))?.some((key) => key.enabled)).map((group) => {
     const models = Array.isArray(group.models) ? group.models as Record<string, unknown>[] : [];
-    return { ...group, models: [...models].sort((a, b) => rank(String(a.model)) - rank(String(b.model))) };
+    return { ...group, models: [...models].map((model): Record<string, unknown> => ({ ...model,
+      accountIds: (keysByGroup.get(String(group.id)) ?? []).filter((key) => key.enabled
+        && (!key.models?.length || key.models.includes(String(model.model)))
+        && (accountCatalog?.allows(key.id, String(model.model)) ?? true)).map((key) => key.id),
+    })).sort((a, b) => rank(String(a.model)) - rank(String(b.model))) };
   });
 }
 
@@ -900,6 +908,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
   let lastSuccessAt: string | null = null;
   let lastFailureAt: string | null = null;
   let lastLatencyMs: number | null = null;
+  let activeAccountProbes = 0;
+  const accountProbeTimes = new Map<string, number>();
 
   async function reserveWithLocalBackpressure(
     model: string,
@@ -1140,13 +1150,14 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         try {
           budget.upstreamAttempts += 1;
           modelUpstreamAttempts += 1;
+          const dispatchedKey = reservation.key.key;
           ledger.markDispatched({
             quotaGroup: reservation.key.quotaGroup,
             keyId: reservation.key.id,
             model,
             requestId: reservation.requestId,
           });
-          const response = await fetch(withKey(endpoint, reservation.key.key), {
+          const response = await fetch(withKey(endpoint, dispatchedKey), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(buildGeminiGenerationBody(messages, effectiveOptions)),
@@ -1157,6 +1168,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             }), requestOptions),
           });
           const payload = await response.json().catch(() => ({}));
+          accountCatalog.observeInference(reservation.key.id, model, response.status, payload, dispatchedKey);
           if (!response.ok) {
             throwGeminiError(response, payload, endpoint, model, reservation);
           }
@@ -1527,20 +1539,14 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     },
 
     // Query Google's model catalog with one account's own key and return the chat/text
-    // models it can actually serve, annotated with the limits configured for that account.
+    // listed models (not proof of entitlement), annotated with configured limits.
     async listAccountModels(accountId: string): Promise<Record<string, unknown>> {
       const account = config.keys.find((key) => key.id === accountId);
       if (!account) {
         return { ok: false, error: 'account_not_found', accountId };
       }
-      const url = `${config.baseUrl}/${config.version}/models?key=${encodeURIComponent(account.key)}&pageSize=1000`;
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-        const payload = await response.json().catch(() => ({})) as { models?: Array<Record<string, unknown>>; error?: { message?: string } };
-        if (!response.ok) {
-          return { ok: false, accountId, status: response.status, error: redact(String(payload.error?.message ?? response.statusText)) };
-        }
-        const models = (Array.isArray(payload.models) ? payload.models : [])
+        const models = (await fetchGeminiCatalog(config, account.key))
           .map((model) => {
             const id = String(model.name ?? '').replace(/^models\//, '');
             const methods = Array.isArray(model.supportedGenerationMethods)
@@ -1552,6 +1558,8 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               displayName: typeof model.displayName === 'string' ? model.displayName : id,
               supportedGenerationMethods: methods,
               chat: methods.includes('generateContent'),
+              routingAvailable: accountCatalog.allows(account.id, id)
+                && (!account.models?.length || account.models.includes(id)),
               limit,
             };
           })
@@ -1562,6 +1570,34 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
         return { ok: false, accountId, error: redact(error instanceof Error ? error.message : String(error)) };
       }
     },
+
+    // Explicit admin diagnostic can recover a quarantined pair without opening
+    // normal traffic or treating a catalog listing as proof of quota entitlement.
+    async probeAccountModel(accountId: string, model: string): Promise<Record<string, unknown>> {
+      const account = config.keys.find((key) => key.id === accountId && key.enabled);
+      if (!account || !/^(?:gemini|gemma)-[a-z0-9.-]+$/.test(model) || isRetiredGeminiModelId(model)) return { ok: false, error: 'invalid_account_model' };
+      const probeId = `${accountId}:${model}`, started = Date.now();
+      for (const [id, time] of accountProbeTimes) if (started - time >= 60_000) accountProbeTimes.delete(id);
+      if (activeAccountProbes >= 2 || accountProbeTimes.has(probeId)) return { ok: false, error: 'account_probe_busy' };
+      accountProbeTimes.set(probeId, started); activeAccountProbes++;
+      const key = account.key;
+      try {
+        const entry = (await fetchGeminiCatalog(config, key)).find((m) => m.name === `models/${model}`);
+        const flags = inferModelCapabilities(model, entry?.supportedGenerationMethods);
+        if (!entry || !flags.chat || flags.imageGeneration) return { ok: false, error: 'model_not_in_text_catalog' };
+        const response = await fetch(buildEndpoint(config, model), {
+          method: 'POST', redirect: 'error', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+          body: JSON.stringify(buildGeminiGenerationBody([{ role: 'user', content: 'Reply OK.' }], { model, maxTokens: 128, thinking: { thinkingLevel: 'minimal' } })),
+          signal: AbortSignal.timeout(20_000),
+        });
+        const payload = await response.json() as GeminiGenerateResponse;
+        accountCatalog.observeInference(accountId, model, response.status, payload, key);
+        return { ok: true, accountId, model, status: response.status, ms: Date.now() - started,
+          access: geminiAccessDenial(response.status, payload) ?? (response.ok && extractText(payload).trim() ? 'inference_verified' : 'inconclusive'),
+          tokens: payload.usageMetadata?.totalTokenCount ?? null };
+      } catch { return { ok: false, accountId, model, error: 'account_probe_failed', ms: Date.now() - started }; }
+      finally { activeAccountProbes--; }
+    },
   } as LLMClient & {
     health: () => Record<string, unknown>;
     discoverModels: () => Promise<Record<string, unknown>>;
@@ -1571,5 +1607,6 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     resetTelemetry: () => Record<string, unknown>;
     reloadAccounts: (keys: GeminiApiKeyConfig[]) => Record<string, unknown>;
     listAccountModels: (accountId: string) => Promise<Record<string, unknown>>;
+    probeAccountModel: (accountId: string, model: string) => Promise<Record<string, unknown>>;
   };
 }

@@ -2508,7 +2508,7 @@ export function renderAppShell(input: {
             }
             const lines = (data.models || []).slice().sort(byModelPower).map(function(model) {
               const lim = model.limit ? ('  rpm=' + model.limit.rpm + ' tpm=' + model.limit.tpm + ' rpd=' + model.limit.rpd) : '  (no configured limit)';
-              return model.id + lim;
+              return model.id + (model.routingAvailable === false ? '  [excluded from routing]' : '  [listed; inference access not verified]') + lim;
             });
             accountModelsOutput.textContent = lines.join('\\n') || 'No chat models returned.';
           } catch (error) {
@@ -2923,6 +2923,7 @@ export function renderAppShell(input: {
         const apiKeys = Array.isArray(quota.apiKeys) ? quota.apiKeys : [];
         const accountLabelsByGroup = new Map();
         apiKeys.forEach(function(key) {
+          if (key.enabled === false) return;
           const group = typeof key.quotaGroup === 'string' && key.quotaGroup.trim() ? key.quotaGroup.trim() : '';
           const account = typeof key.id === 'string' && key.id.trim() ? key.id.trim() : '';
           if (!group || !account) return;
@@ -2945,6 +2946,8 @@ export function renderAppShell(input: {
           models.forEach(function(model) {
             const modelId = String(model && model.model || '').trim();
             if (!modelId) return;
+            const modelAccountLabels = Array.isArray(model.accountIds) ? model.accountIds : accountLabels;
+            if (!modelAccountLabels.length) return;
             const rpd = model && model.rpd ? model.rpd : null;
             if (!rpd || rpd.limit === null || rpd.limit === undefined) return;
             const used = typeof rpd.used === 'number' ? rpd.used : 0;
@@ -2953,12 +2956,12 @@ export function renderAppShell(input: {
             const entry = byModel.get(modelId) || {
               model: modelId, accounts: new Set(), used: 0, limit: 0, remaining: 0,
             };
-            accountLabels.forEach(function(label) { entry.accounts.add(label); });
+            modelAccountLabels.forEach(function(label) { entry.accounts.add(label); });
             entry.used += used;
             entry.limit += limit;
             entry.remaining += Math.max(0, limit - used);
             byModel.set(modelId, entry);
-            accountLabels.forEach(function(label) {
+            modelAccountLabels.forEach(function(label) {
               perAccount.push({ account: label, model: modelId, used: used, limit: limit, remaining: Math.max(0, limit - used) });
             });
           });
