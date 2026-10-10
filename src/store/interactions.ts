@@ -221,6 +221,7 @@ export class InteractionStore {
       promptTokens: number | null;
       completionTokens: number | null;
       totalTokens: number | null;
+      knownTotalTokens: number;
       usageUnavailableRequests: number;
       avgLatencyMs: number;
     };
@@ -262,6 +263,7 @@ export class InteractionStore {
     return {
       totals: {
         ...totals,
+        knownTotalTokens: totals.totalTokens,
         promptTokens: totals.usageUnavailableRequests > 0 ? null : totals.promptTokens,
         completionTokens: totals.usageUnavailableRequests > 0 ? null : totals.completionTokens,
         totalTokens: totals.usageUnavailableRequests > 0 ? null : totals.totalTokens,

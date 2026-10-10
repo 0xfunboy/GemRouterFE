@@ -1615,6 +1615,8 @@ function buildGuestSummary() {
       successRatePct,
       avgLatencyMs: stats.avgLatencyMs,
       totalTokens: stats.totalTokens,
+      knownTotalTokens: stats.knownTotalTokens,
+      usageUnavailableRequests: stats.usageUnavailableRequests,
       promptTokens: stats.promptTokens,
       completionTokens: stats.completionTokens,
       windowStartedAt: new Date(usageWindow.startedAtMs).toISOString(),

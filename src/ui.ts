@@ -2840,6 +2840,13 @@ export function renderAppShell(input: {
 
       function renderPublicStats(summary) {
         const stats = summary.stats || {};
+        const measuredTokens = typeof stats.totalTokens === 'number' ? stats.totalTokens : stats.knownTotalTokens;
+        const missingUsage = stats.usageUnavailableRequests || 0;
+        const tokenVolume = typeof measuredTokens === 'number' && (measuredTokens > 0 || missingUsage === 0)
+          ? fmtNumber(measuredTokens) : '—';
+        const tokenDetail = missingUsage > 0
+          ? 'Partial total · ' + fmtNumber(missingUsage) + ' requests without token usage'
+          : 'Prompt and completion tokens';
         const completeWindow = stats.windowComplete === true;
         const windowLabel = completeWindow ? '24h' : 'tracking';
         const requestDetail = completeWindow
@@ -2854,7 +2861,7 @@ export function renderAppShell(input: {
           ['Requests (' + windowLabel + ')', fmtNumber(stats.requests), requestDetail],
           ['Success Rate', escapeHtml(String(stats.successRatePct || 0)) + '%', 'Calculated from logged requests'],
           ['Avg Latency', fmtNumber(stats.avgLatencyMs) + ' ms', 'Router-side average'],
-          ['Token Volume', fmtNumber(stats.totalTokens), 'Prompt and completion tokens'],
+          ['Token Volume', tokenVolume, tokenDetail],
         ].map(function(entry) {
           return '<div class="card"><div class="label">' + escapeHtml(entry[0]) + '</div><div class="metric">' + entry[1] + '</div><div class="metric-sub">' + escapeHtml(entry[2]) + '</div></div>';
         }).join('');
