@@ -134,3 +134,17 @@ test('app all-model access still requires explicit Codex opt-in and request body
   assert.throws(() => codexRequestPolicy({ reasoning_effort: 'high' }, 'low', record));
   assert.throws(() => codexRequestPolicy({ tools: [{ type: 'shell' }] }, undefined, record));
 });
+
+test('request input cannot select a different Codex account or override its fallback policy', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'codex-app-pin-test-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new AppStore(join(dir, 'apps.json'));
+  const { record } = store.create({ name: 'trading', allowedModels: ['gpt-6.1-sol'], allowedOrigins: [],
+    sessionNamespace: 'trading', rateLimitPerMinute: 30, maxConcurrency: 2,
+    codexEnabled: true, codexAccountId: 'account-2', codexAccountFallbackEnabled: true, codexFallbackEnabled: false });
+  const policy = codexRequestPolicy({ codexAccountId: 'account-1', codexAccountFallbackEnabled: false,
+    codex: { enabled: false, accountId: 'account-1', accountFallbackEnabled: false, fallbackEnabled: true } }, undefined, record);
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.accountId, 'account-2');
+  assert.equal(policy.accountFallbackEnabled, true);
+  assert.equal(policy.fallbackEnabled, false);
+});

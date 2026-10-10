@@ -170,6 +170,12 @@ An exhausted **general Codex quota window** or structured upstream
 usageLimitExceeded first permits temporary routing to the other connected account,
 with the **same exact model and thinking**, without changing the persisted preferred
 selection. No rotation on login, timeout, model, thinking or generic rate-limit errors.
+An app can pin its own primary with `codexAccountId: "account-1" | "account-2"`
+and set `codexAccountFallbackEnabled: true | false` for quota-only fallback to the
+other account. These trusted admin policies are independent of the global selection
+and of `codexFallbackEnabled`, which controls the later Gemini fallback. Omitted
+account fields inherit global policy; sending `null` to the admin API clears an
+override. Ordinary inference request bodies cannot override the app's account.
 The preferred account is retried only when fresh service quota confirms recovery;
 an elapsed reset countdown alone cannot clear exhaustion. A structured upstream
 rejection has a short backoff so a lagging snapshot cannot cause a retry storm.

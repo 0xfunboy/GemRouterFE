@@ -27,7 +27,15 @@ export interface LLMFallbackAttempt {
 
 export interface LLMOptions {
   /** Trusted app policy; never copied wholesale from request JSON. */
-  codex?: { enabled: boolean; reasoningEffort?: string; fallbackEnabled?: boolean };
+  codex?: {
+    enabled: boolean;
+    reasoningEffort?: string;
+    fallbackEnabled?: boolean;
+    /** App-pinned account; absent preserves the globally selected account. */
+    accountId?: 'account-1' | 'account-2';
+    /** Account-to-account quota fallback, independent of Gemini fallback. */
+    accountFallbackEnabled?: boolean;
+  };
   model?: string;
   allowedModelIds?: string[];
   tier?: ModelTier;

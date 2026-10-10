@@ -147,7 +147,10 @@ export class CodexAccounts implements LLMClient {
   async close() { await Promise.all([...this.entries.values()].map((e) => e.runtime.close())); }
   getDiagnostics() { return this.entry().provider.getDiagnostics(); }
   async chat(messages: LLMMessage[], opts?: LLMOptions): Promise<LLMResponse> {
-    const entry = this.entry(); // Pin before any await: queued/inflight calls keep their original account.
+    // A trusted app pin overrides global selection. Resolve before any await so
+    // queued/inflight calls keep their account even if an administrator switches.
+    const entry = this.entry(opts?.codex?.accountId);
+    const accountFallbackEnabled = opts?.codex?.accountFallbackEnabled ?? this.config.accountFallbackEnabled;
     if (this.maintenance || entry.managing) throw new LLMProviderError('codex_busy', 'codex', 'Account management in progress.', { statusCode: 503 });
     const complete = async (target: Entry) => {
       let response: LLMResponse;
@@ -159,9 +162,9 @@ export class CodexAccounts implements LLMClient {
     };
     try { return await complete(entry); }
     catch (error) {
-      if (!(error instanceof LLMProviderError) || error.code !== 'codex_quota_depleted' || !this.config.accountFallbackEnabled || opts?.signal?.aborted) throw error;
-      const alternate = [...this.entries.values()].find((e) => e.id !== entry.id && !e.managing);
-      if (!alternate) throw error;
+      if (!(error instanceof LLMProviderError) || error.code !== 'codex_quota_depleted' || !accountFallbackEnabled || opts?.signal?.aborted) throw error;
+      const alternate = this.entries.get(entry.id === 'account-1' ? 'account-2' : 'account-1');
+      if (!alternate || alternate.managing) throw error;
       await alternate.provider.refresh();
       const effort = opts?.codex?.reasoningEffort ?? this.config.reasoningEffort;
       if (!alternate.runtime.connectedCached || alternate.provider.quotaState().depleted

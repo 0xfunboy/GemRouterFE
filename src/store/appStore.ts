@@ -4,6 +4,7 @@ import path from 'node:path';
 import { isCodexRequest, isCodexReasoningEffort } from '../codex/models.js';
 
 export type AppModelAccess = 'all' | 'custom';
+export type AppCodexAccountId = 'account-1' | 'account-2';
 
 export interface ApiAppRecord {
   id: string;
@@ -16,6 +17,8 @@ export interface ApiAppRecord {
   codexEnabled?: boolean;
   codexReasoningEffort?: string;
   codexFallbackEnabled?: boolean;
+  codexAccountId?: AppCodexAccountId;
+  codexAccountFallbackEnabled?: boolean;
   sessionNamespace: string;
   rateLimitPerMinute: number;
   maxConcurrency: number;
@@ -28,6 +31,8 @@ interface CreateAppInput {
   codexEnabled?: boolean;
   codexReasoningEffort?: string;
   codexFallbackEnabled?: boolean;
+  codexAccountId?: AppCodexAccountId | null;
+  codexAccountFallbackEnabled?: boolean | null;
   name: string;
   rawKey?: string;
   allowedOrigins: string[];
@@ -42,6 +47,8 @@ interface UpdateAppInput {
   codexEnabled?: boolean;
   codexReasoningEffort?: string;
   codexFallbackEnabled?: boolean;
+  codexAccountId?: AppCodexAccountId | null;
+  codexAccountFallbackEnabled?: boolean | null;
   name?: string;
   allowedOrigins?: string[];
   modelAccess?: AppModelAccess;
@@ -69,6 +76,27 @@ function normalizedModelIds(values: string[]): string[] {
 
 function sameStrings(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function isCodexAccountId(value: unknown): value is AppCodexAccountId {
+  return value === 'account-1' || value === 'account-2';
+}
+
+function validateCodexAccountPolicy(input: Pick<CreateAppInput, 'codexAccountId' | 'codexAccountFallbackEnabled'>): void {
+  if (input.codexAccountId !== undefined && input.codexAccountId !== null && !isCodexAccountId(input.codexAccountId)) {
+    throw new Error('Invalid Codex account');
+  }
+  if (input.codexAccountFallbackEnabled !== undefined && input.codexAccountFallbackEnabled !== null
+    && typeof input.codexAccountFallbackEnabled !== 'boolean') {
+    throw new Error('Invalid Codex account fallback policy');
+  }
+}
+
+function applyCodexAccountPolicy(record: ApiAppRecord, input: Pick<CreateAppInput, 'codexAccountId' | 'codexAccountFallbackEnabled'>): void {
+  if (input.codexAccountId === null) delete record.codexAccountId;
+  else if (input.codexAccountId !== undefined) record.codexAccountId = input.codexAccountId;
+  if (input.codexAccountFallbackEnabled === null) delete record.codexAccountFallbackEnabled;
+  else if (input.codexAccountFallbackEnabled !== undefined) record.codexAccountFallbackEnabled = input.codexAccountFallbackEnabled;
 }
 
 function hashApiKey(rawKey: string): string {
@@ -164,6 +192,7 @@ export class AppStore {
   }
 
   ensureBootstrapApp(input: CreateAppInput): ApiAppRecord {
+    validateCodexAccountPolicy(input);
     const apiKeyHash = hashApiKey(input.rawKey ?? '');
     const existing = this.state.apps.find((app) => stableCompare(app.apiKeyHash, apiKeyHash));
     if (existing) {
@@ -174,6 +203,7 @@ export class AppStore {
       existing.sessionNamespace = sanitizeSegment(input.sessionNamespace);
       existing.rateLimitPerMinute = Math.max(0, input.rateLimitPerMinute);
       existing.maxConcurrency = Math.max(0, input.maxConcurrency);
+      applyCodexAccountPolicy(existing, input);
       existing.updatedAt = nowIso();
       this.save();
       return existing;
@@ -183,6 +213,7 @@ export class AppStore {
 
   create(input: CreateAppInput): { record: ApiAppRecord; rawKey: string } {
     if (input.codexReasoningEffort !== undefined && !isCodexReasoningEffort(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
+    validateCodexAccountPolicy(input);
     const rawKey = input.rawKey?.trim() || `barb_${randomBytes(24).toString('base64url')}`;
     const timestamp = nowIso();
     const record: ApiAppRecord = {
@@ -202,6 +233,7 @@ export class AppStore {
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    applyCodexAccountPolicy(record, input);
     this.state.apps.push(record);
     this.save();
     return { record, rawKey };
@@ -371,6 +403,7 @@ export class AppStore {
     const current = this.findById(id);
     if (!current || current.revokedAt) return null;
     if (input.codexReasoningEffort !== undefined && !isCodexReasoningEffort(input.codexReasoningEffort)) throw new Error('Invalid Codex thinking level');
+    validateCodexAccountPolicy(input);
     if (typeof input.name === 'string' && input.name.trim()) {
       current.name = input.name.trim();
     }
@@ -382,6 +415,7 @@ export class AppStore {
     }
     if (typeof input.codexEnabled === 'boolean') current.codexEnabled = input.codexEnabled;
     if (typeof input.codexFallbackEnabled === 'boolean') current.codexFallbackEnabled = input.codexFallbackEnabled;
+    applyCodexAccountPolicy(current, input);
     if (input.codexReasoningEffort !== undefined) {
       current.codexReasoningEffort = input.codexReasoningEffort;
     }
@@ -421,8 +455,12 @@ export class AppStore {
         apps: Array.isArray(parsed.apps)
           ? parsed.apps.map((app) => ({
             ...app,
-            codexEnabled: app.codexEnabled === true,
+            // A malformed explicit pin must never become implicit global routing.
+            codexEnabled: app.codexEnabled === true
+              && (app.codexAccountId === undefined || app.codexAccountId === null || isCodexAccountId(app.codexAccountId)),
             codexFallbackEnabled: app.codexFallbackEnabled !== false,
+            codexAccountId: isCodexAccountId(app.codexAccountId) ? app.codexAccountId : undefined,
+            codexAccountFallbackEnabled: typeof app.codexAccountFallbackEnabled === 'boolean' ? app.codexAccountFallbackEnabled : undefined,
             codexReasoningEffort: isCodexReasoningEffort(app.codexReasoningEffort) ? app.codexReasoningEffort : 'high',
             modelAccess: app.modelAccess === 'all' ? 'all' : 'custom',
             allowedOrigins: uniqueStrings(Array.isArray(app.allowedOrigins) ? app.allowedOrigins : []),

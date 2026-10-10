@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, copyFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, chmod, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,10 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
   const adminKey = randomBytes(32).toString('hex'), clientKey = randomBytes(32).toString('hex');
   const config = readCodexConfig();
   const fixture = path.join(dir, 'codex-fixture');
-  await copyFile(path.join(root, 'tests/helpers/codex-stdio-fixture.mjs'), fixture); await chmod(fixture, 0o700);
+  // The runtime intentionally uses a restricted PATH; NVM installations may
+  // have no Node in it. Keep the fake executable independent of that PATH.
+  const fixtureSource = await readFile(path.join(root, 'tests/helpers/codex-stdio-fixture.mjs'), 'utf8');
+  await writeFile(fixture, fixtureSource.replace(/^#![^\n]*/, '#!' + process.execPath)); await chmod(fixture, 0o700);
   const child = spawn(process.execPath, ['--import', 'tsx', path.join(root, 'src/index.ts')], {
     cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: {
       PATH: process.env.PATH, DOTENV_CONFIG_PATH: path.join(dir, 'no-env-file'), HOST: '127.0.0.1', PORT: '0',

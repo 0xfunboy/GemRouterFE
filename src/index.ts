@@ -1723,8 +1723,10 @@ function unknownAllowedModels(values: unknown): string[] {
 
 function validateCodexAppPolicy(body: Record<string, unknown>): void {
   if (['codexEnabled', 'codexFallbackEnabled'].some((key) => body[key] !== undefined && typeof body[key] !== 'boolean')
+    || (body.codexAccountId !== undefined && body.codexAccountId !== null && body.codexAccountId !== 'account-1' && body.codexAccountId !== 'account-2')
+    || (body.codexAccountFallbackEnabled !== undefined && body.codexAccountFallbackEnabled !== null && typeof body.codexAccountFallbackEnabled !== 'boolean')
     || (body.codexReasoningEffort !== undefined && !isCodexReasoningEffort(body.codexReasoningEffort))) {
-    throw Object.assign(new Error('Invalid Codex app policy: boolean flags and a supported reasoning effort are required.'), { statusCode: 400 });
+    throw Object.assign(new Error('Invalid Codex app policy: use boolean flags, a supported reasoning effort and account-1/account-2 (or null to inherit).'), { statusCode: 400 });
   }
 }
 
@@ -4126,6 +4128,8 @@ app.post<{
     codexEnabled?: boolean;
     codexReasoningEffort?: string;
     codexFallbackEnabled?: boolean;
+    codexAccountId?: 'account-1' | 'account-2' | null;
+    codexAccountFallbackEnabled?: boolean | null;
     allowedModels?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
@@ -4168,6 +4172,7 @@ app.post<{
   }
   const created = appStore.create({
     codexEnabled: body.codexEnabled, codexReasoningEffort: body.codexReasoningEffort, codexFallbackEnabled: body.codexFallbackEnabled,
+    codexAccountId: body.codexAccountId, codexAccountFallbackEnabled: body.codexAccountFallbackEnabled,
     name: String(body.name ?? '').trim() || 'local-app',
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : config.bootstrapApp.allowedOrigins,
     modelAccess,
@@ -4208,6 +4213,8 @@ app.put<{
     codexEnabled?: boolean;
     codexReasoningEffort?: string;
     codexFallbackEnabled?: boolean;
+    codexAccountId?: 'account-1' | 'account-2' | null;
+    codexAccountFallbackEnabled?: boolean | null;
     allowedModels?: string[];
     sessionNamespace?: string;
     rateLimitPerMinute?: number;
@@ -4243,6 +4250,7 @@ app.put<{
   }
   const updated = appStore.update(request.params.id, {
     codexEnabled: body.codexEnabled, codexReasoningEffort: body.codexReasoningEffort, codexFallbackEnabled: body.codexFallbackEnabled,
+    codexAccountId: body.codexAccountId, codexAccountFallbackEnabled: body.codexAccountFallbackEnabled,
     name: typeof body.name === 'string' ? body.name : undefined,
     allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : undefined,
     modelAccess,

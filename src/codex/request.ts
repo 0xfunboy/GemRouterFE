@@ -16,5 +16,6 @@ export function codexRequestPolicy(body: unknown, header: unknown, app: ApiAppRe
   if (Array.isArray(raw.tools) && raw.tools.length) invalid('Codex inference does not expose tools.');
   if (raw.tool_choice !== undefined && raw.tool_choice !== 'none') invalid('Codex inference does not expose tools.');
   return { enabled: app.codexEnabled === true, reasoningEffort: values[0] as string | undefined ?? app.codexReasoningEffort,
-    fallbackEnabled: app.codexFallbackEnabled !== false };
+    fallbackEnabled: app.codexFallbackEnabled !== false,
+    accountId: app.codexAccountId, accountFallbackEnabled: app.codexAccountFallbackEnabled };
 }

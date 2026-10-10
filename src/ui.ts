@@ -1934,7 +1934,9 @@ export function renderAppShell(input: {
                 </label>
                 <fieldset>
                   <legend>Codex for this app</legend>
-                  <label class="model-access-option"><input type="checkbox" name="codexEnabled" /><span>Allow the selected Codex routing account for this app</span></label>
+                  <label class="model-access-option"><input type="checkbox" name="codexEnabled" /><span>Allow Codex for this app</span></label>
+                  <label>Primary account<select name="codexAccountId"><option value="">Use global selection</option><option value="account-1">Account 1</option><option value="account-2">Account 2</option></select></label>
+                  <label>Other account on exhausted quota<select name="codexAccountFallbackEnabled"><option value="">Use global policy</option><option value="true">Allow fallback</option><option value="false">Disable fallback</option></select></label>
                   <label>Default thinking<select name="codexReasoningEffort"><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option><option>ultra</option></select></label>
                   <label class="model-access-option"><input type="checkbox" name="codexFallbackEnabled" checked /><span>Quota depleted → authorized Gemini fallback</span></label>
                   <p class="footer-note">Also allow the GPT models in the list above. Requests can select thinking with reasoning_effort; available levels appear in Codex Backend Routing. Allow at least one Gemini model for fallback.</p>
@@ -3733,6 +3735,8 @@ export function renderAppShell(input: {
         appForm.elements.codexEnabled.checked = app.codexEnabled === true;
         appForm.elements.codexReasoningEffort.value = app.codexReasoningEffort || 'high';
         appForm.elements.codexFallbackEnabled.checked = app.codexFallbackEnabled !== false;
+        appForm.elements.codexAccountId.value = app.codexAccountId || '';
+        appForm.elements.codexAccountFallbackEnabled.value = typeof app.codexAccountFallbackEnabled === 'boolean' ? String(app.codexAccountFallbackEnabled) : '';
         appForm.elements.allowedOrigins.value = app.allowedOrigins.join(', ');
         appForm.elements.sessionNamespace.value = app.sessionNamespace;
         appForm.elements.rateLimitPerMinute.value = app.rateLimitPerMinute;
@@ -4340,6 +4344,8 @@ export function renderAppShell(input: {
           codexEnabled: form.get('codexEnabled') === 'on',
           codexReasoningEffort: form.get('codexReasoningEffort'),
           codexFallbackEnabled: form.get('codexFallbackEnabled') === 'on',
+          codexAccountId: form.get('codexAccountId') || null,
+          codexAccountFallbackEnabled: form.get('codexAccountFallbackEnabled') === '' ? null : form.get('codexAccountFallbackEnabled') === 'true',
           allowedModels: getAllowedModelSelection(),
           sessionNamespace: form.get('sessionNamespace'),
           rateLimitPerMinute: Number(form.get('rateLimitPerMinute') || 0),
