@@ -14,6 +14,7 @@ import { ManagedCodexRuntime } from './codex/managed-runtime.js';
 import { TelegramAlerts, readTelegramConfig } from './alerts/telegram.js';
 import { codexRequestPolicy } from './codex/request.js';
 import { applyBackup, buildBackup, summarizeBackupContents } from './lib/backup.js';
+import { registerPrivateBackupDownload } from './lib/privateBackupDownload.js';
 import { buildCompatibilityRoutes, type ApiSurface } from './lib/compatibility.js';
 import {
   buildDiscoveredModelCatalog,
@@ -191,8 +192,16 @@ appStore.restrictAllowedModels(config.modelIds);
 
 const app = Fastify({
   logger: false,
+  // Account initialization can include several bounded Codex RPCs (15s each).
+  pluginTimeout: 120_000,
   requestIdHeader: 'x-request-id',
   logController: new LogController({ disableRequestLogging: true }),
+});
+
+registerPrivateBackupDownload(app, {
+  directory: path.join(config.rootDir, 'backups', 'private'),
+  ensureAdmin,
+  audit: (event) => audit.write(event),
 });
 
 registerCodexAccountRoutes(app, codexLlm, {
@@ -533,8 +542,16 @@ async function ensureClientAccess(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<AuthenticatedClientAccess | null> {
+  const reject = (statusCode: number, code: string, appId?: string): void => {
+    // Count admission failures separately from inference. Never log supplied
+    // credentials, origins, query strings, or request bodies.
+    audit.write({ type: 'client.admission.rejected', requestId: request.id, appId,
+      route: request.routeOptions.url ?? request.url.split('?')[0], statusCode,
+      details: { code } });
+  };
   const token = getBearerToken(request);
   if (!token) {
+    reject(401, 'missing_api_key');
     sendError(reply, 401, {
       message: 'Missing API key',
       type: 'authentication_error',
@@ -545,6 +562,7 @@ async function ensureClientAccess(
 
   const clientApp = appStore.verify(token);
   if (!clientApp) {
+    reject(401, 'invalid_api_key');
     sendError(reply, 401, {
       message: 'Invalid API key',
       type: 'authentication_error',
@@ -555,6 +573,7 @@ async function ensureClientAccess(
 
   const origin = getRequestOrigin(request) ?? null;
   if (!appStore.isOriginAllowedForApp(clientApp, origin)) {
+    reject(403, 'origin_not_allowed', clientApp.id);
     sendError(reply, 403, {
       message: `Origin not allowed for app ${clientApp.name}`,
       type: 'permission_error',
@@ -564,6 +583,7 @@ async function ensureClientAccess(
   }
 
   if (!appStore.consumeRateLimit(clientApp)) {
+    reject(429, 'rate_limit_exceeded', clientApp.id);
     sendError(reply, 429, {
       message: 'Rate limit exceeded',
       type: 'rate_limit_error',
@@ -579,6 +599,7 @@ async function ensureClientAccess(
   );
 
   if (!release) {
+    reject(429, 'concurrency_limit_exceeded', clientApp.id);
     sendError(reply, 429, {
       message: 'Concurrency limit exceeded',
       type: 'rate_limit_error',
@@ -3357,6 +3378,21 @@ app.post<{ Body: { accountId?: string } }>('/admin/provider/gemini-api/accounts/
   return client.listAccountModels(accountId);
 });
 
+app.post<{ Body: { model?: string } }>('/admin/provider/nvidia/probe-model', async (request, reply) => {
+  if (!ensureAdmin(request, reply)) return reply;
+  const body = request.body;
+  if (!body || Object.keys(body).some((key) => key !== 'model')
+    || typeof body.model !== 'string' || body.model.length > 200
+    || !/^[a-z0-9.-]+\/[a-z0-9._-]+$/.test(body.model)) {
+    return sendError(reply, 400, { message: 'An exact configured NVIDIA model is required.', type: 'invalid_request_error', code: 'invalid_probe_model' });
+  }
+  const result = await nvidiaLlm.probeModel(body.model);
+  audit.write({ type: 'admin.nvidia.model_probe', requestId: request.id,
+    route: '/admin/provider/nvidia/probe-model', model: body.model,
+    details: { ok: result.ok, status: result.status ?? null, access: result.access ?? null } });
+  return result;
+});
+
 app.post<{ Body: { accountId?: string; model?: string } }>('/admin/provider/gemini-api/accounts/probe-model', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const body = request.body;
@@ -3859,9 +3895,9 @@ app.get('/v1/admin/backup/summary', async (request, reply) => {
   };
 });
 
-// Full-state snapshot: complete .env plus every file under data/. The response
-// contains every secret the router owns — admin session required, treat the
-// downloaded gemrouter.cfg like a private key.
+// Portable router configuration: .env and eligible data files. Private Codex
+// profiles/runtime and archived gateway databases require the separate private
+// archive. Both downloads contain secrets and require an administrator session.
 app.get('/v1/admin/backup/export', async (request, reply) => {
   if (!ensureAdmin(request, reply)) return reply;
   const backup = buildBackup({ rootDir: config.rootDir, dataDir: config.dataDir, excludedPaths: PRIVATE_BACKUP_EXCLUSIONS });

@@ -189,6 +189,83 @@ test('explicit bounded admin probes recover access only on real inference and ne
   assert.equal(generationCalls, 2);
 });
 
+test('admin probes charge the requested alias exactly once and expose the validated served model', async () => {
+  const c = config();
+  const client = createGeminiApiClient(c) as ReturnType<typeof createGeminiApiClient> & { probeAccountModel: (id: string, model: string) => Promise<Record<string, unknown>> };
+  globalThis.fetch = async (input) => String(input).includes(':generateContent')
+    ? Response.json({ ...ok, modelVersion: active, usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 2, totalTokenCount: 5 } })
+    : Response.json(listing(active, other));
+  const result = await client.probeAccountModel('first', other);
+  assert.equal(result.access, 'inference_verified'); assert.equal(result.servedModelVersion, active);
+  const quota = new GeminiApiQuotaLedger(c).snapshot();
+  const group = quota.quotaGroups.find((g) => g.id === 'first')!;
+  const alias = group.models.find((m) => m.model === other)!;
+  assert.equal(alias.rpm.used, 1); assert.equal(alias.rpd.used, 1); assert.equal(alias.tpm.used, 3);
+  assert.equal(alias.lastSuccessAt !== null, true);
+  // Serving metadata cannot invent a second independent quota charge or alter routing.
+  assert.equal(group.models.some((m) => m.model === active), false);
+});
+
+test('admin probes refuse known exhausted quota before dispatching generation', async (t) => {
+  const c = config(); c.limits[active] = { rpm: 5, tpm: 100, rpd: 1 };
+  let time = Date.now(), generationCalls = 0; t.mock.method(Date, 'now', () => time);
+  const client = createGeminiApiClient(c) as ReturnType<typeof createGeminiApiClient> & { probeAccountModel: (id: string, model: string) => Promise<Record<string, unknown>> };
+  globalThis.fetch = async (input) => {
+    if (!String(input).includes(':generateContent')) return Response.json(listing(active));
+    generationCalls++; return Response.json(ok);
+  };
+  assert.equal((await client.probeAccountModel('first', active)).access, 'inference_verified');
+  time += 60_001;
+  const blocked = await client.probeAccountModel('first', active);
+  assert.equal(blocked.error, 'account_probe_quota_unavailable'); assert.equal(blocked.reason, 'rpd');
+  assert.equal(generationCalls, 1);
+});
+
+test('probe 429s update the same quota cooldown without charging rejected requests', async () => {
+  const c = config();
+  const client = createGeminiApiClient(c) as ReturnType<typeof createGeminiApiClient> & { probeAccountModel: (id: string, model: string) => Promise<Record<string, unknown>> };
+  globalThis.fetch = async (input) => String(input).includes(':generateContent')
+    ? Response.json({ error: { status: 'RESOURCE_EXHAUSTED', message: 'Quota per minute exceeded' } }, { status: 429, headers: { 'retry-after': '5' } })
+    : Response.json(listing(active));
+  assert.equal((await client.probeAccountModel('first', active)).status, 429);
+  const group = new GeminiApiQuotaLedger(c).snapshot().quotaGroups.find((g) => g.id === 'first')!;
+  const quota = group.models.find((m) => m.model === active)!;
+  assert.equal(quota.rpd.used, 0); assert.equal(quota.lastFailureCode, 'gemini_api_rate_limited');
+  assert.equal(quota.cooldownSource, 'retry-after'); assert.equal(Date.parse(quota.cooldownUntil!) > Date.now(), true);
+});
+
+test('transport failures retain dispatched probe usage and empty successes still count', async () => {
+  const c = config();
+  const client = createGeminiApiClient(c) as ReturnType<typeof createGeminiApiClient> & { probeAccountModel: (id: string, model: string) => Promise<Record<string, unknown>> };
+  globalThis.fetch = async (input) => {
+    if (!String(input).includes(':generateContent')) return Response.json(listing(active, other));
+    if (String(input).includes(other)) throw new Error('private-network-error');
+    return Response.json({ candidates: [], modelVersion: 'https://private.example/key', usageMetadata: { promptTokenCount: 4 } });
+  };
+  const failed = await client.probeAccountModel('first', other);
+  assert.equal(failed.error, 'account_probe_failed'); assert.equal(JSON.stringify(failed).includes('private-network-error'), false);
+  const empty = await client.probeAccountModel('first', active);
+  assert.equal(empty.access, 'inconclusive'); assert.equal(empty.servedModelVersion, null);
+  const models = new GeminiApiQuotaLedger(c).snapshot().quotaGroups.find((g) => g.id === 'first')!.models;
+  assert.equal(models.find((m) => m.model === other)!.rpd.used, 1);
+  assert.equal(models.find((m) => m.model === other)!.lastFailureCode, 'gemini_api_upstream_error');
+  assert.equal(models.find((m) => m.model === active)!.rpd.used, 1);
+  assert.equal(models.find((m) => m.model === active)!.tpm.used, 4);
+});
+
+test('ordinary Gemini responses retain the requested alias and report the upstream served model', async () => {
+  const c = config(); c.keys.forEach((k) => { k.models = [other]; });
+  const client = createGeminiApiClient(c);
+  let version = active;
+  globalThis.fetch = async (input) => String(input).includes(':generateContent')
+    ? Response.json({ ...ok, modelVersion: version }) : Response.json(listing(active, other));
+  const response = await client.chat([{ role: 'user', content: 'short' }], { model: other, allowedModelIds: [other] });
+  assert.equal(response.model, other); assert.equal(response.backendModel, active);
+  version = 'https://private.example/key';
+  const unsafe = await client.chat([{ role: 'user', content: 'short' }], { model: other, allowedModelIds: [other] });
+  assert.equal(unsafe.model, other); assert.equal(unsafe.backendModel, other);
+});
+
 test('capacity hides disabled/deleted groups, honors group overrides and counts shared quota once', () => {
   const c = config(); c.keys[0].models = [active, other]; c.keys[1].models = [active, other];
   c.groupLimits.first = { [active]: { rpm: 0, tpm: 100, rpd: 100 }, [other]: { rpm: 3, tpm: 100, rpd: 7 } };

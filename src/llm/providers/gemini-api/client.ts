@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   isGeminiEmbeddingModelId,
   isGeminiImageGenerationModelId,
@@ -100,6 +102,14 @@ export function estimateGeminiAdmissionTokens(messages: LLMMessage[]): number {
 function normalizeGeminiApiModel(model: string | undefined): string {
   const normalized = String(model ?? 'gemini-3.5-flash').trim().toLowerCase();
   return normalized.replace(/^models\//, '');
+}
+
+function servedGeminiModel(payload: GeminiGenerateResponse): string | null {
+  // Upstream metadata is untrusted. Only expose exact Gemini/Gemma model ids,
+  // never arbitrary strings from a response or an error payload.
+  return typeof payload.modelVersion === 'string'
+    && /^(?:gemini|gemma)-[a-z0-9.-]{1,120}$/.test(payload.modelVersion)
+    ? payload.modelVersion : null;
 }
 
 // A completion that comes back with no visible text (e.g. truncated to length with 0 output
@@ -210,11 +220,11 @@ export function buildGeminiGenerationBody(messages: LLMMessage[], opts?: LLMOpti
     };
   }
   const generationConfig: Record<string, unknown> = {};
-  // Gemini 3.8 rejects legacy sampling parameters. Keep accepting the OpenAI-style
-  // client field, but omit it upstream for this model.
+  // Gemini 3.8 rejects legacy sampling parameters. Since 2026-10-08 Google also
+  // redirects the 3.7 alias to 3.8. Accept the client field but omit it upstream.
   if (
     typeof opts?.temperature === 'number' &&
-    !/^gemini-3\.8-flash/i.test(normalizeGeminiApiModel(opts.model))
+    !/^gemini-3\.(?:7|8)-flash/i.test(normalizeGeminiApiModel(opts.model))
   ) {
     generationConfig.temperature = opts.temperature;
   }
@@ -1170,7 +1180,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
           const payload = await response.json().catch(() => ({}));
           accountCatalog.observeInference(reservation.key.id, model, response.status, payload, dispatchedKey);
           if (!response.ok) {
-            throwGeminiError(response, payload, endpoint, model, reservation);
+            throw recordGeminiHttpFailure(response, payload, endpoint, model, reservation);
           }
           const gemini = payload as GeminiGenerateResponse;
           const content = normalizeSemanticOutput(extractText(gemini), attemptOptions?.semanticProfile);
@@ -1242,7 +1252,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
             provider: 'gemini-api',
             model: opts?.model ?? model,
             backend: 'gemini-api',
-            backendModel: model,
+            backendModel: servedGeminiModel(gemini) ?? model,
             apiKeyId: reservation.key.id,
             quotaGroup: reservation.key.quotaGroup,
             quotaSource: 'local-ledger',
@@ -1324,13 +1334,13 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     );
   }
 
-  function throwGeminiError(
+  function recordGeminiHttpFailure(
     response: Response,
     payload: unknown,
     endpoint: string,
     model: string,
     reservation: GeminiApiKeyReservation,
-  ): never {
+  ): GeminiApiProviderError {
     const googleError = parseGoogleError(payload);
     const mapped = mapErrorCode(response.status, googleError);
     lastUpstreamError = {
@@ -1358,7 +1368,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       highDemand: mapped.code === 'gemini_api_high_demand',
       ...(response.status === 429 ? { rateLimitScope: rateLimitScope(payload, googleError) } : {}),
     });
-    throw new GeminiApiProviderError(
+    return new GeminiApiProviderError(
       mapped.code,
       redact(googleError.message ?? `Gemini API request failed with HTTP ${response.status}`),
       {
@@ -1581,21 +1591,44 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       if (activeAccountProbes >= 2 || accountProbeTimes.has(probeId)) return { ok: false, error: 'account_probe_busy' };
       accountProbeTimes.set(probeId, started); activeAccountProbes++;
       const key = account.key;
+      const quotaGroup = account.quotaGroup;
+      let reservation: GeminiApiKeyReservation | null = null;
       try {
         const entry = (await fetchGeminiCatalog(config, key)).find((m) => m.name === `models/${model}`);
         const flags = inferModelCapabilities(model, entry?.supportedGenerationMethods);
         if (!entry || !flags.chat || flags.imageGeneration) return { ok: false, error: 'model_not_in_text_catalog' };
+        const current = config.keys.find((candidate) => candidate.id === accountId && candidate.enabled);
+        if (!current || current.key !== key || current.quotaGroup !== quotaGroup) return { ok: false, error: 'account_changed_during_probe' };
+        const messages: LLMMessage[] = [{ role: 'user', content: 'Reply OK.' }];
+        const estimatedTokens = estimateGeminiAdmissionTokens(messages);
+        const availability = ledger.getAvailability(quotaGroup, model, estimatedTokens);
+        if (!availability.available) return { ok: false, accountId, model, error: 'account_probe_quota_unavailable',
+          reason: availability.reason, retryAfterMs: availability.waitMs };
+        reservation = { key: { ...account }, model, requestId: `probe-${randomUUID()}`, estimatedTokens };
+        ledger.reserve({ quotaGroup, keyId: accountId, model, requestId: reservation.requestId, estimatedTokens });
+        ledger.markDispatched({ quotaGroup, keyId: accountId, model, requestId: reservation.requestId });
         const response = await fetch(buildEndpoint(config, model), {
           method: 'POST', redirect: 'error', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
-          body: JSON.stringify(buildGeminiGenerationBody([{ role: 'user', content: 'Reply OK.' }], { model, maxTokens: 128, thinking: { thinkingLevel: 'minimal' } })),
+          body: JSON.stringify(buildGeminiGenerationBody(messages, { model, maxTokens: 128, thinking: { thinkingLevel: 'minimal' } })),
           signal: AbortSignal.timeout(20_000),
         });
         const payload = await response.json() as GeminiGenerateResponse;
         accountCatalog.observeInference(accountId, model, response.status, payload, key);
+        if (response.ok) {
+          // Empty HTTP 200 replies still consume upstream requests and input tokens.
+          ledger.markSuccess({ quotaGroup, keyId: accountId, model, requestId: reservation.requestId,
+            promptTokens: payload.usageMetadata?.promptTokenCount, upstreamHeaders: captureRateLimitHeaders(response) });
+        } else {
+          recordGeminiHttpFailure(response, payload, buildEndpoint(config, model), model, reservation);
+        }
         return { ok: true, accountId, model, status: response.status, ms: Date.now() - started,
           access: geminiAccessDenial(response.status, payload) ?? (response.ok && extractText(payload).trim() ? 'inference_verified' : 'inconclusive'),
-          tokens: payload.usageMetadata?.totalTokenCount ?? null };
-      } catch { return { ok: false, accountId, model, error: 'account_probe_failed', ms: Date.now() - started }; }
+          tokens: payload.usageMetadata?.totalTokenCount ?? null, servedModelVersion: servedGeminiModel(payload) };
+      } catch (error) {
+        // A dispatched probe may have reached Google even if the network fails.
+        if (reservation) normalizeError(error, buildEndpoint(config, model), model, reservation);
+        return { ok: false, accountId, model, error: 'account_probe_failed', ms: Date.now() - started };
+      }
       finally { activeAccountProbes--; }
     },
   } as LLMClient & {

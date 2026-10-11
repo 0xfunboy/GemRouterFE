@@ -143,6 +143,14 @@ describe('Gemini request scheduler', () => {
     });
   });
 
+  it('omits temperature for the redirected 3.7 alias and preserves supported 3.6 sampling', () => {
+    const messages = [{ role: 'user' as const, content: 'hello' }];
+    const alias = buildGeminiGenerationBody(messages, { model: 'gemini-3.7-flash', temperature: 0.4 });
+    assert.equal((alias.generationConfig as Record<string, unknown>).temperature, undefined);
+    const older = buildGeminiGenerationBody(messages, { model: 'gemini-3.6-flash', temperature: 0.4 });
+    assert.equal((older.generationConfig as Record<string, unknown>).temperature, 0.4);
+  });
+
   it('plans exact -> closest downgrade and rejects candidates from other providers', () => {
     const allowed = [
       'nvidia-auto',

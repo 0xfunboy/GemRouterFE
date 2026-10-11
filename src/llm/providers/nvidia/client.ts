@@ -18,6 +18,15 @@ import type {
 
 const PROBE_PROMPT = 'Reply with the single word: ok';
 
+export interface NvidiaClient extends LLMClient {
+  health: () => Record<string, unknown>;
+  scoreboardReport: () => Record<string, unknown>;
+  resetScoreboard: () => Record<string, unknown>;
+  probeNow: () => Promise<Record<string, unknown>>;
+  probeModel: (model: string) => Promise<Record<string, unknown>>;
+  listUpstreamModels: () => Promise<Record<string, unknown>>;
+}
+
 interface AttemptResult {
   content: string;
   finishReason: 'stop' | 'length' | 'content_filter';
@@ -84,7 +93,7 @@ function toOpenAiMessages(messages: LLMMessage[]): Array<Record<string, unknown>
   });
 }
 
-export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
+export function createNvidiaClient(config: NvidiaProviderConfig): NvidiaClient {
   const scoreboard = new NvidiaScoreboard(config.scoreboardPath, {
     rateLimitCooldownMs: config.rateLimitCooldownMs,
   });
@@ -100,6 +109,7 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
   let probeRunning = false;
   let lastProbeAt: string | null = null;
   let lastProbeError: string | null = null;
+  const targetedProbeTimes = new Map<string, number>();
 
   const catalog = new Map<string, NvidiaModelConfig>();
   const aliasIndex = new Map<string, string>();
@@ -773,6 +783,42 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
       return { ok: true, lastProbeAt, lastProbeError };
     },
 
+    async probeModel(model: string): Promise<Record<string, unknown>> {
+      const started = Date.now();
+      const target = catalog.get(model);
+      if (!config.enabled || !config.apiKey) return { ok: false, error: config.enabled ? 'nvidia_missing_key' : 'backend_disabled' };
+      // Deliberate recovery requires an exact enabled id; aliases/tier fallbacks
+      // must never silently probe or clear another model's quarantine.
+      if (!target?.enabled) return { ok: false, error: 'invalid_nvidia_model' };
+      for (const [id, at] of targetedProbeTimes) if (started - at >= 60_000) targetedProbeTimes.delete(id);
+      if (probeRunning || targetedProbeTimes.has(model)) return { ok: false, model, error: 'nvidia_probe_busy' };
+      targetedProbeTimes.set(model, started); probeRunning = true;
+      try {
+        // Calling the single-attempt executor bypasses only this target's stale
+        // scoreboard cooldown. Shared key RPM/concurrency limits still apply.
+        const result = await runAttempt(model, [{ role: 'user', content: 'Reply OK.' }], {
+          model, maxTokens: 128, temperature: 0, thinking: { includeThoughts: false, thinkingLevel: 'low' },
+          deadline: started + 20_000,
+        }, new AbortController().signal, () => {});
+        scoreboard.recordSuccess(model, { latencyMs: result.latencyMs, ttfbMs: result.ttfbMs,
+          completionTokens: result.usage.completionTokens ?? null, source: 'probe' });
+        lastProbeAt = new Date().toISOString(); lastProbeError = null;
+        return { ok: true, model, status: 200, access: 'inference_verified', ms: Date.now() - started,
+          tokens: result.usage.totalTokens ?? null };
+      } catch (error) {
+        const providerError = error instanceof NvidiaProviderError ? error : null;
+        const local = providerError as (NvidiaProviderError & { localBudget?: boolean; localBudgetReason?: string; retryAfterMs?: number | null }) | null;
+        if (!local?.localBudget) scoreboard.recordFailure(model, {
+          code: providerError?.code ?? 'nvidia_upstream_error', status: providerError?.options.statusCode ?? null,
+          timeout: providerError?.code === 'nvidia_timeout', retryAfterMs: local?.retryAfterMs ?? null, source: 'probe',
+        });
+        const code = local?.localBudget ? local.localBudgetReason ?? 'local_nvidia_budget_unavailable' : providerError?.code ?? 'nvidia_upstream_error';
+        lastProbeAt = new Date().toISOString(); lastProbeError = code;
+        return { ok: false, model, status: local?.localBudget ? null : providerError?.options.statusCode ?? null,
+          access: 'inconclusive', ms: Date.now() - started, tokens: null, error: code };
+      } finally { probeRunning = false; }
+    },
+
     async listUpstreamModels(): Promise<Record<string, unknown>> {
       try {
         const response = await fetch(`${config.baseUrl}/v1/models`, {
@@ -786,11 +832,5 @@ export function createNvidiaClient(config: NvidiaProviderConfig): LLMClient {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
     },
-  } as LLMClient & {
-    health: () => Record<string, unknown>;
-    scoreboardReport: () => Record<string, unknown>;
-    resetScoreboard: () => Record<string, unknown>;
-    probeNow: () => Promise<Record<string, unknown>>;
-    listUpstreamModels: () => Promise<Record<string, unknown>>;
   };
 }

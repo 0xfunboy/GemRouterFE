@@ -45,9 +45,35 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
       body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(130000),
     });
     assert.equal((await call('/admin/codex/account', null)).status, 401);
+    assert.equal((await call('/v1/admin/backup/private-download/gemrouter-private-20261011T000000Z.tar.gz', null)).status, 401);
     assert.equal((await call('/admin/provider/gemini-api/accounts/probe-model', null, 'POST', { accountId: 'fixture', model: 'gemini-3.8-flash' })).status, 401);
+    assert.equal((await call('/admin/provider/nvidia/probe-model', null, 'POST', { model: 'fixture/model' })).status, 401);
+    assert.equal((await call('/admin/provider/nvidia/probe-model', adminKey, 'POST', { model: 'fixture/model', prompt: 'must be rejected' })).status, 400);
     assert.equal((await call('/admin/provider/gemini-api/accounts/probe-model', adminKey, 'POST', { accountId: 'fixture', model: 'gemini-3.8-flash', prompt: 'must be rejected' })).status, 400);
     const publicHealth = await (await call('/health', null)).text(); assert.equal(publicHealth.includes('fixture@example.test'), false);
+    assert.equal((await call('/v1/models?secret=never-log-this-query', null)).status, 401);
+    assert.equal((await call('/v1/models', 'never-log-this-invalid-key')).status, 401);
+    // Audit writes are queued; wait for the two admission events rather than
+    // assuming a completed HTTP reply has already flushed the file.
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 3000;
+      const check = async () => {
+        try {
+          const raw = await readFile(path.join(appRoot, 'data/audit.log'), 'utf8');
+          const rows = raw.trim().split('\n').map((line) => JSON.parse(line));
+          const rejected = rows.filter((row) => row.type === 'client.admission.rejected');
+          if (rejected.length >= 2) {
+            assert.deepEqual(rejected.slice(-2).map((row) => row.details.code), ['missing_api_key', 'invalid_api_key']);
+            assert(rejected.every((row) => row.statusCode === 401 && row.route === '/v1/models'));
+            assert(!raw.includes('never-log-this'));
+            resolve(); return;
+          }
+        } catch (error) { if (Date.now() >= deadline) { reject(error); return; } }
+        if (Date.now() >= deadline) { reject(Error('Missing admission audit events')); return; }
+        setTimeout(check, 25);
+      };
+      void check();
+    });
     const request = { model: 'gpt-5.6-luna', reasoning_effort: 'low', messages: [{ role: 'user', content: 'Reply exactly CODEX_PROVIDER_OK.' }] };
     assert.equal((await call('/v1/chat/completions', clientKey, 'POST', request)).status, 403);
     const create = await call('/admin/apps', adminKey, 'POST', { name: 'isolated-codex-test', modelAccess: 'custom', allowedModels: ['gpt-5.6-luna', 'gemini-3.8-flash'],
@@ -86,6 +112,7 @@ export async function smokeCodex(options: { live?: boolean; ui?: boolean } = {})
       assert.equal(login.status, 200); const cookie = login.headers.get('set-cookie')!.split(';')[0];
       const me = await (await call('/auth/me', null, 'GET', undefined, { cookie })).json() as any;
       assert(me.csrfToken);
+      assert.equal((await call('/v1/admin/backup/private-download/gemrouter-private-20261011T000000Z.tar.gz', null, 'GET', undefined, { cookie })).status, 404);
       assert.equal((await call('/admin/codex/account/refresh', null, 'POST', {}, { cookie })).status, 403);
       assert.equal((await call('/v1/admin/backup/import', null, 'POST', {}, { cookie })).status, 403);
       assert.equal((await call('/admin/codex/account/refresh', null, 'POST', {}, { cookie, 'x-gemrouter-csrf': me.csrfToken, origin })).status, 200);

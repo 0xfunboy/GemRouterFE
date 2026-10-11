@@ -17,7 +17,9 @@ ExecStartPre=/bin/bash -lc "pnpm build"
 ExecStart=/bin/bash -lc "exec node dist/index.js"
 Restart=always
 RestartSec=10
-TimeoutStopSec=30
+TimeoutStopSec=600
+# Signal the Node parent first so HTTP requests drain before Codex runtimes stop.
+KillMode=mixed
 StandardOutput=journal
 StandardError=journal
 
