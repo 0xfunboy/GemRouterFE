@@ -1,13 +1,10 @@
 # Codex inference provider
 
-Codex is an opt-in text inference backend beside Gemini API and NVIDIA. It uses
-your Codex account, not a personal ChatGPT conversation, MCP grant or API key.
-Source implementation is not automatically deployed to gemrouter.example.com.
+Codex lets an authorized app send text requests through a connected Codex account. Clients use their own GemRouter app key. GemRouter keeps the account login in a separate runtime profile and starts an ephemeral turn for each request.
 
 ## Login and app onboarding
 
-1. During an **authorized deployment**, set `GEMROUTER_CODEX_ENABLED=true` and
-   `GEMROUTER_CODEX_COMMAND` to the executable's absolute path visible to systemd.
+1. Set `GEMROUTER_CODEX_ENABLED=true` in the service environment. On Linux x64, leave `GEMROUTER_CODEX_COMMAND` unset to use the bundled, managed runtime. An explicit external command selects a different runtime mode by default; the service must be able to execute it.
 2. Reuse the existing private parent directory, by default
    `/home/OPERATOR/.local/share/gemrouter-personal-control`; authentication stays
    in its `codex/` child. Never copy credentials into the checkout or environment.
@@ -22,16 +19,14 @@ Source implementation is not automatically deployed to gemrouter.example.com.
 6. Enable **Quota depleted → authorized Gemini fallback** if desired. Authorize
    at least one Gemini too; the existing routed-model order sets its priority.
 
-The account panel is collapsed by default. Temporary login codes are cleared on
-expiry, cancellation and dashboard logout. Account routes require admin auth;
-browser mutations require CSRF and same-origin checks. Responses are no-store.
+The account panel is collapsed by default. Pending device codes expire and can be cancelled by the initiating administrator. Browser-session mutations require a CSRF token and pass origin checks. Account-route responses use `Cache-Control: no-store`.
 
-### Two accounts and private aliases
+### Account slots and aliases
 
 **Add account** provisions a second independent profile and starts device login.
 Complete the official login yourself with the second account. The **Account to
 manage** selector only changes the inspected account. **Select account for routing**
-changes the persisted default for new requests from all Codex-enabled apps; it
+changes the persisted default for new requests from apps that inherit the global selection; it
 does not relogin, copy tokens or move queued/in-flight requests. A disconnected or
 unverified account cannot be selected. Quota-only temporary routing is described below.
 The existing per-app opt-in/model allowlist/thinking/fallback policy still applies.
@@ -89,16 +84,15 @@ the existing `codex-metrics.json`, Account 2 uses `codex-account-2-metrics.json`
 The compatibility CLI below still addresses the original profile, not the
 dashboard-selected slot. Use the dashboard to manage the second account.
 
-Read-only account CLI (does not load production .env or open its database):
+The CLI reads the shell environment. These commands inspect the original profile:
 
 ```sh
 pnpm --silent codex:account status
 pnpm --silent codex:account models
 pnpm --silent codex:account usage
-pnpm --silent codex:account login
 ```
 
-Login requires a terminal and is a no-op if already authenticated. Closing the
+To connect this profile interactively, run `pnpm --silent codex:account login`. The command requires a terminal and returns immediately for an authenticated profile. Closing the
 runtime is not logout. Old private-dir/command variables remain fallback selectors
 to preserve the profile; old MCP/controller enable flags have no effect. Private
 profiles and the archived MCP database stay on disk, excluded from backup/restore,
@@ -106,26 +100,16 @@ and are not migrated or opened by this provider.
 
 ## Models, thinking and API
 
-Exact account catalog verified on 2026-09-16:
+Use `GET /v1/models` with the client app key to find the GPT IDs exposed to that app. The admin account view shows which models and thinking levels each connected account reports. An app pinned to an account needs a model and effort supported by that account. Recheck the catalog after switching accounts or upgrading the runtime.
 
-| Model | Supported thinking |
-|---|---|
-| `gpt-5.5` | low, medium, high, xhigh |
-| `gpt-5.6-luna` | low, medium, high, xhigh, max |
-| `gpt-5.6-sol` | low, medium, high, xhigh, max, ultra |
-| `gpt-6-astra` | low, medium, high, xhigh, max, ultra |
-| `gpt-6.1-sol` | Use the account's actual discovered thinking levels; xhigh when advertised |
-
-Availability and effort are revalidated against model/list. Unavailable IDs or
-efforts fail rather than silently selecting another GPT model.
-
-Example, **after deployment**:
+Set `GEMROUTER_BASE_URL` to the router origin, `GEMROUTER_CLIENT_KEY` to the app key and `CODEX_MODEL` to an authorized GPT ID. This example uses the app's configured thinking level and requires `curl` and `jq`.
 
 ```sh
-curl https://gemrouter.example.com/v1/chat/completions \
-  -H "Authorization: Bearer $GEMROUTER_CLIENT_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-5.6-luna","reasoning_effort":"low","messages":[{"role":"user","content":"Rispondi solo OK"}]}'
+jq -n --arg model "$CODEX_MODEL" \
+  '{model: $model, messages: [{role: "user", content: "Reply with OK."}]}' |
+  curl --fail-with-body -sS "$GEMROUTER_BASE_URL/v1/chat/completions" \
+    -H "Authorization: Bearer $GEMROUTER_CLIENT_KEY" \
+    -H 'Content-Type: application/json' --data-binary @-
 ```
 
 The same routing applies to /chat/completions (GemRouter/DeepSeek), /v1/responses,
@@ -137,8 +121,7 @@ Each request creates one isolated, **ephemeral Codex turn**: no coding tools,
 shell, web search, skills, plugins, MCP, apps, approvals or delegation. System
 messages become developer instructions; multi-message history is serialized as
 labeled conversation data. There is no persistent coding conversation. Client
-disconnect/deadline cancels the owned runtime. Dispatch is serial, with a bounded
-queue (default 16 waiting).
+disconnect/deadline cancels the owned runtime. Each account serializes its turns and has its own bounded queue (default 16 waiting).
 
 The repository bundles official app-server **0.159.3** (Linux x64) with verified
 SHA-512 provenance and SHA-256 executable/archive hashes. It needs no VS Code
@@ -185,8 +168,7 @@ model downgrades still respect the app allowlist and shared request deadline.
 Reorder the routing editor when a new preferred Gemini becomes available.
 
 No fallback for authentication, unsupported model/effort, timeout, ambiguous
-error text or generic rate limiting. No authorized Gemini, app/global fallback
-disabled or explicit backend pin means an error. Specialized quota buckets are
+error text or generic rate limiting. Gemini fallback requires an authorized Gemini model, both app and global Gemini fallback permissions, and automatic provider selection. Specialized quota buckets are
 shown but not applied to unrelated models; new model families need a mapping
 review. A quota snapshot is not a reservation against concurrent account users.
 An explicit upstream quota rejection also applies a short local backoff equal to
@@ -221,7 +203,7 @@ prompts/answers: protect that data directory.
 |---|---|
 | GEMROUTER_CODEX_ENABLED | false |
 | GEMROUTER_CODEX_MANAGED_RUNTIME | true when no external command is supplied |
-| GEMROUTER_CODEX_COMMAND | optional explicit external command for isolated tests |
+| GEMROUTER_CODEX_COMMAND | optional path to an external compatible executable |
 | GEMROUTER_CODEX_ACCOUNT_FALLBACK_ENABLED | true; quota-only, preserves preferred selection |
 | GEMROUTER_CODEX_PRIVATE_DIR | OS home + .local/share/gemrouter-personal-control |
 | GEMROUTER_CODEX_MODEL | gpt-6-astra (account diagnostic default, not substitution) |
@@ -231,12 +213,20 @@ prompts/answers: protect that data directory.
 | GEMROUTER_CODEX_QUOTA_REFRESH_MS | 30000 (1000–300000) |
 | GEMROUTER_CODEX_FALLBACK_ENABLED | true |
 
-Admin endpoints: GET /admin/codex/account, POST .../refresh, POST .../usage,
-GET|POST .../login, POST .../login/cancel, POST .../logout. App create/update accepts
-codexEnabled, codexReasoningEffort, codexFallbackEnabled. There is no arbitrary
-RPC endpoint, cookie export or credential forwarding.
+### Administrative HTTP routes
 
-Protocol: [official Codex App Server documentation](https://learn.chatgpt.com/docs/app-server).
+| Method and path | Action |
+|---|---|
+| `GET /admin/codex/account` | Read one account and the account catalog. |
+| `POST /admin/codex/accounts` | Provision an available slot. |
+| `POST /admin/codex/account/select` | Set the global preferred slot using `accountId`. |
+| `POST /admin/codex/account/refresh` | Refresh the account and synchronize discovered models. |
+| `POST` or `GET /admin/codex/account/usage` | Start an activity read or poll the result. |
+| `POST` or `GET /admin/codex/account/login` | Start device login or read its status. |
+| `POST /admin/codex/account/login/cancel` | Cancel a pending login owned by the caller. |
+| `POST /admin/codex/account/logout` | Disconnect the selected profile. |
+
+App creation and updates accept `codexEnabled`, `codexReasoningEffort`, `codexAccountId`, `codexAccountFallbackEnabled` and `codexFallbackEnabled`. Model access is configured separately in `modelAccess` and `allowedModels`. [Admin route implementation](../src/codex/routes.ts) · [Official Codex app-server documentation](https://developers.openai.com/codex/app-server)
 
 ## Verification and retired experiments
 

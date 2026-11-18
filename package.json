@@ -2,7 +2,7 @@
   "name": "gem-router",
   "version": "0.1.0",
   "private": true,
-  "description": "Lightweight Gemini routing backend with API-key and CLI fallback.",
+  "description": "Self-hosted AI gateway with per-app model access, Gemini quota tracking and OpenAI-compatible HTTP endpoints.",
   "type": "module",
   "packageManager": "pnpm@10.26.1",
   "scripts": {

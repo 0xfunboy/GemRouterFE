@@ -1,223 +1,69 @@
-# Routing and quota
+# Model routing and quota
 
-## Key pool
+Use this guide to choose a model policy, understand which provider handled a request, and interpret remaining capacity. The [API reference](api.md) covers request formats and the [configuration guide](configuration.md) lists environment variables.
 
-Configure one or more Gemini API keys via:
+## How a text request is resolved
 
-```env
-GEMROUTER_GEMINI_API_KEYS=AIza...key1,AIza...key2
-# or
-GEMROUTER_GEMINI_API_KEYS_JSON=[{"id":"k1","key":"AIza...","quotaGroup":"proj-a","tier":"free","priority":100,"enabled":true}]
-```
+1. GemRouter authenticates the app and derives the allowed models from its access policy. A GPT request additionally requires the app’s Codex grant. An explicit Decision model on a chat route returns HTTP 400 with the native Decisions endpoint.
+2. Chat and Responses requests that omit `model` start with `gemini-4-hydrogen`. An allowed, configured model ID starts with that model. For an unsupported or unauthorized ordinary text model, the resolver selects the first entry in the configured fallback list that the app may use. An app with no eligible text model receives HTTP 403.
+3. Gemini normally tries the exact model first. It ranks alternatives by relative capability, family and model characteristics, using the configured order to break ties. With the default catalog and access to both models, Hydrogen falls back first to `gemini-3.8-flash`. The admin model editor persists the ordered text list to `data/model-config.json`. Models named in `GEMROUTER_GEMINI_API_STRICT_MODELS` are constrained to the requested model on the Gemini path and suppress cross-provider fallback in automatic routing.
+4. Check the returned model and, when present, `x-gemrouter-backend`, `x-gemrouter-backend-model`, `x-gemrouter-fallback-from` and `x-gemrouter-fallback-reason`. A Google alias can return a different upstream model version. Buffered streaming and failure after stream headers have been sent can limit the metadata available to a client.
 
-For richer per-account metadata (tiers, limit overrides) use `data/gemini-api-accounts.json`. The file matches keys by `id` to accounts by `id`. See `docs/gemini-api-accounts.example.json`.
-
-## Quota tracking
-
-GemRouter tracks quota entirely in-process in `data/gemini-api-quota-ledger.json` - no Google Cloud calls, no `gcloud` CLI, no service account required. Tracked per quota group + model:
-
-- **RPM** - requests in the last 60 s sliding window
-- **TPM** - tokens in the last 60 s sliding window  
-- **RPD** - requests since midnight **America/Los_Angeles** (matches Google's actual reset boundary, including DST changes)
-
-On every response the ledger records real token counts (from the API reply) and upstream rate-limit headers (`x-ratelimit-remaining-requests-day`, etc.) as secondary validation. On a 429 the relevant events are optionally rolled back (`GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE`).
-
-### Key selection
-
-The pool picks the key/group with the best multi-factor score, evaluated in this order:
-
-1. **Priority** - higher `priority` field wins
-2. **Capacity score** - `rpmRatio×30 + tpmRatio×30 + rpdRatio×30`, minus penalties for recent 429s, where each ratio is `remaining / limit`
-3. **Rotation** - least recently successful/used key wins when scores are equal
-4. **Config order** - tie-break by position in the key list
-
-Keys at or beyond any limit (RPM, TPM, or RPD) are excluded from selection before scoring.
-
-## Per-account tiers
-
-Mixing free-tier (RPM 5, RPD 20) and Tier 1 (RPM 1000+, RPD 10 000+) accounts without limit overrides would make scoring unfair - the Tier 1 key would always win. Fix with per-model limit overrides in `data/gemini-api-accounts.json`:
-
-```json
-{
-  "id": "account-tier1",
-  "quotaGroup": "my-tier1-project",
-  "tier": "tier1",
-  "limits": {
-    "gemini-2.5-flash": { "rpm": 1000, "tpm": 1000000, "rpd": 10000 },
-    "gemini-3-flash-preview": { "rpm": 1000, "tpm": 2000000, "rpd": 10000 }
-  }
-}
-```
-
-Or via environment variable:
-
-```env
-GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON={"my-tier1-project":{"gemini-2.5-flash":{"rpm":1000,"tpm":1000000,"rpd":10000}}}
-```
-
-## Backend routing
-
-When `backendPreference=auto` (default), the backend sequence is resolved by model name:
-
-- **gemini-\* / gemma-\*** → `gemini-api` first, then other backends if fallback is allowed
-- **everything else** → `ollama` first, then other backends
-
-Force a specific backend per request with the `x-gemrouter-backend` header (`gemini-api`, `gemini`, `ai-studio`, or `auto`). The alias `x-baribi-backend` is also accepted.
-
-### Strict model IDs
-
-Models listed in `strictModelIds` (config) never fall back to another backend, even on error. Use this to prevent Gemma models from silently falling back to a Flash endpoint.
-
-## Fallback behavior
-
-When `backendPreference=auto`, GemRouter falls back to the next backend on:
-
-- 429 rate limit / quota exhaustion
-- 401 / 403 auth failure
-- model unavailable
-- upstream timeout or transport error
-
-Caller-error 4xx (bad request, invalid parameters) do not fall back.
-
-The fallback chain is annotated in the response as `fallbackFrom` / `fallbackReason`.
-
-## Cooldown
-
-A failed attempt holds the model+account out for a window determined by the cooldown source:
-
-| Source | Trigger | Duration |
-|---|---|---|
-| `retry-after` | 429 with `Retry-After` header | Exact header value |
-| `pacific-reset` | Day-scope 429 confirmed by local RPD usage | Until next Pacific midnight (marks `dailyDepleted`) |
-| `daily-depleted` | Suspect day-scope 429 while local RPD is below 50% | 30 min |
-| `429-backoff` | generic 429 (no header/scope) | Escalating ladder (see below) |
-| `high-demand` | 503 "overloaded/unavailable" | 30 s skip (model-wide; does not retry other accounts) |
-
-### 429 escalation ladder
-
-Generic 429s with no `Retry-After` and no day scope escalate **per model+account**. A quiet
-period of 10 minutes resets the ladder; the Pacific rollover also clears old strike state:
-
-1. **strike 1** → 1 min cooldown
-2. **strike 2** → 5 min cooldown
-3. **strike 3** → 10 min cooldown
-4. **strike 4+** → 15 min cooldown
-
-A generic 429 is never promoted to daily depletion without an explicit upstream day scope.
-A successful call clears the strike count and lifts any cooldown for that model+account.
-
-### High demand (503)
-
-A 503 "high demand" is a Google-side capacity condition shared by all accounts, so the
-router does **not** sweep the other keys - it records one attempt, applies a 30 s cooldown,
-and moves straight to the next model in the chain.
-
-Cooldowns can be cleared from the admin UI or via:
-
-```bash
-curl -X POST http://127.0.0.1:4024/admin/provider/gemini-api/clear-cooldown \
-  -H "Authorization: Bearer $GEMROUTER_ADMIN_TOKEN"
-```
-
-## Quota exposed to the dashboard
-
-The guest dashboard at `/dashboard/summary` receives a compact quota snapshot:
-
-```json
-{
-  "provider": {
-    "quota": {
-      "apiKeys": [...],
-      "quotaGroups": [
-        {
-          "id": "my-project",
-          "models": [
-            {
-              "model": "gemini-2.5-flash",
-              "rpm": { "used": 2, "limit": 5, "remaining": 3 },
-              "tpm": { "used": 4200, "limit": 250000, "remaining": 245800 },
-              "rpd": { "used": 8, "limit": 20, "remaining": 12 }
-            }
-          ]
-        }
-      ],
-      "rpdResetAt": "2026-06-26T07:00:00.000Z",
-      "rpdWindow": "America/Los_Angeles"
-    }
-  }
-}
-```
-
-The **cumulative remaining RPD** for a model across all accounts is the sum of `rpd.remaining` across every quota group. This is computed client-side by the frontend from the per-group data above. All values come directly from the local ledger - no Cloud Monitoring, no Google API calls.
-
-## Local Ollama (vision + embeddings)
-
-When `GEMROUTER_OLLAMA_LOCAL_ENABLED=true`, two models are served directly by the local
-Ollama server, on explicit request only, with **no fallback**:
-
-- **Embeddings** - `POST /v1/embeddings` (and `/embeddings`) for the configured embedding
-  model returns an OpenAI-style vector list via Ollama `/api/embed`.
-- **Vision** - dedicated `POST /v1/vision` (and `/vision`) endpoint. It always serves the
-  configured vision model via Ollama `/api/chat`; image parts (`image_url`/`input_image`,
-  data URIs or bare base64) are forwarded. On error it returns 502 and never falls back to
-  Gemini.
-
-Both require a valid app key but are intentionally kept **outside** the chat rate-limit /
-concurrency / priority queue, so vision and embedding run as their own flows. Per-model
-daily request counters persist to `data/ollama-local-usage.json` (Pacific reset) and
-surface in the dashboard's "Ollama Local RPD" box.
-
-## Admin management endpoints
-
-All require the admin bearer token or session.
-
-| Endpoint | Description |
+| Request | Automatic provider selection |
 |---|---|
-| `GET/POST /admin/provider/gemini-api/accounts` | List accounts; `add`/`update`/`remove`/`list-models` subpaths manage the key pool live (persist to `accounts.json`, hot reload) |
-| `GET/POST /admin/provider/models-config` | Read/set the routed model set and order (applied live, persisted to `model-config.json`) |
-| `GET/POST /admin/provider/proxy` | Read/set the outbound proxy config |
-| `POST /admin/apps` | Create an app; accepts an optional custom `apiKey` (e.g. `goon_` prefix) |
+| Gemini or Gemma text | Gemini API first. Hydrogen gets the Gemini downgrade chain before a permitted sequential NVIDIA fallback. For other eligible text models, an authorized NVIDIA candidate can race a slow Gemini request after `GEMROUTER_NVIDIA_RACE_HEDGE_DELAY_MS` (default 8 seconds). |
+| Configured NVIDIA model or tier alias | NVIDIA first. An eligible failure can use the configured Gemini fallback when permitted. The admin catalog controls the available NVIDIA models and aliases. |
+| GPT text | Codex checks the app grant, exact model and thinking level. A depleted quota can trigger account fallback and then an authorized Gemini fallback, according to the separate app settings. |
+| Ollama catalog model | The configured Ollama router takes precedence for ordinary Ollama names. The separate local Ollama embeddings and vision endpoints use their own client. |
+| `gemini-decision-1` | `POST /v1beta/decisions` evaluates typed questions. Eligible account retries stay within Decision 1. The result includes answers and Google-reported usage when available. |
 
-## Observability endpoints
+For a provider pin, send `x-gemrouter-backend` with `gemini-api`, `nvidia` or `codex`. The default is `auto`. A provider pin disables switching to another provider. The Gemini client can still try other authorized Gemini models unless the requested model is strict. [Router](../src/llm/router.ts) · [Gemini model selection](../src/llm/providers/gemini-api/client.ts) · [Codex policy](codex-account.md)
 
-| Endpoint | Auth | Description |
-|---|---|---|
-| `GET /health` | none | Runtime health and compact quota summary |
-| `GET /dashboard/summary` | none | Guest-safe stats, quota view, and local Ollama RPD |
-| `GET /admin/summary` | admin | Full diagnostics, model catalog, apps |
-| `GET /v1/provider/runtime` | client | Backend order and current key selection state |
-| `GET /v1/provider/models` | client | Discovered model list |
-| `GET /v1/provider/quota` | client | Per-key, per-model quota snapshot |
+## Accounts and project limits
 
-## API surfaces
+Google applies limits per project. Give every key for the same project the same `quotaGroup`. The local counters combine all eligible keys in that group for each model. Keys used elsewhere can consume capacity outside GemRouter’s counters. The project’s billing tier and effective limits are available in AI Studio. [Google rate limits](https://aistudio.google.com/docs/rate-limits)
 
-All surfaces route through the same backend selection logic.
+GemRouter loads credentials in this order:
 
-**OpenAI-compatible**
+1. A nonempty `GEMROUTER_GEMINI_API_KEYS_JSON` array.
+2. Entries carrying a `key` in account metadata. In this mode only the entries with keys are loaded. The `GEMROUTER_GEMINI_API_ACCOUNTS_JSON` array overrides metadata from `GEMROUTER_GEMINI_API_ACCOUNTS_PATH`.
+3. The comma-separated `GEMROUTER_GEMINI_API_KEYS` list. Metadata and keys are paired by **array position**.
 
-```
-GET  /v1/models
-POST /v1/chat/completions
-POST /v1/responses
-POST /v1/images/generations
-GET  /v1/provider/runtime
-GET  /v1/provider/models
-GET  /v1/provider/quota
-```
+Use stable IDs and an explicit accounts path when managing accounts in the dashboard. An empty or omitted account `models` list permits all otherwise eligible models. The per-account Google catalog and recorded access denials narrow that set. Listing a model alone does not establish available inference quota. [Example account metadata](gemini-api-accounts.example.json) · [Census and verification](gemini-account-census.md)
 
-**DeepSeek-compatible**
+The `tier` field is metadata. A built-in limit can be overridden per model by `GEMROUTER_GEMINI_API_LIMITS_PATH`, then by `GEMROUTER_GEMINI_API_LIMITS_JSON`. Group-specific limits take precedence. For a deployment that edits accounts through the dashboard, `GEMROUTER_GEMINI_API_GROUP_LIMITS_JSON` preserves project overrides across account edits. The current account writer serializes resolved keys and omits file-based per-account `limits`.
 
-```
-GET  /models
-POST /chat/completions
-```
+| Model | Built-in requests/min | Input tokens/min | Requests/day |
+|---|---:|---:|---:|
+| `gemini-4-hydrogen` | 5 | 250,000 | 20 |
+| `gemini-decision-1` | 200 | 50,000 | 10,000 |
 
-**Ollama-compatible**
+These are local admission settings. An operator can adjust them to the project’s actual quota. [Built-in limits](../src/llm/providers/gemini-api/rateLimits.ts)
 
-```
-GET  /api/version
-GET  /api/tags
-POST /api/show
-POST /api/chat
-POST /api/generate
-```
+## What happens under load
+
+The key pool filters disabled keys, unavailable models and exhausted groups. Higher account priority wins. For equal priorities, remaining RPM, TPM and RPD capacity, recent errors, least recent use and configuration order determine the next key. A normal Gemini text call has a shared budget of up to six upstream attempts. One model can use up to three keys, subject to a tighter limit on some fallback candidates. Short local waits, inference attempts and retries share the request deadline.
+
+| Signal | Scheduler behavior |
+|---|---|
+| Local minute quota exhausted | The scheduler checks other eligible keys or models. It can wait briefly for a minute-window slot when the deadline allows. |
+| 429 with a short-window `Retry-After` | The group/model cools down for the reported interval, with a 60-second minimum. |
+| Explicit daily 429 | At or above 50% of the local daily allowance, or when the local allowance is unknown, the group/model waits for Pacific midnight. With lower recorded usage the cooldown lasts 30 minutes. |
+| Generic 429 | Successive cooldowns are 1, 5, 10 and 15 minutes. A quiet interval of 10 minutes or the Pacific day change resets the escalation. |
+| Google reports high demand | The affected group/model receives a short cooldown. The current request moves to the next eligible model without trying every key against the overloaded model. |
+| Empty completion | Text generation may retry with a larger output budget. These attempts share the same request budget and can consume upstream quota. |
+| Proven model denial | A structured model-not-found response or an explicit supported zero-quota denial quarantines that account/model pair. A later successful targeted probe can restore it. |
+
+The ledger reserves one request and estimated input tokens before dispatch. Google-reported prompt tokens replace the TPM estimate on success. Aborted requests that reached dispatch can still count. `GEMROUTER_GEMINI_API_COUNT_FAILED_429_AS_USAGE` controls whether a failed 429 keeps its reservations (default `false`). Daily reservations reset at midnight in `America/Los_Angeles`. [Key selection](../src/llm/providers/gemini-api/keyPool.ts) · [Quota ledger](../src/llm/providers/gemini-api/quotaLedger.ts)
+
+## Reading the dashboard
+
+The guest summary at `/dashboard/summary` shows local quota groups and retained interaction totals. Count each group **once per model** when aggregating eligible RPD. For client-scoped catalog entries use `/v1/models` with the app’s key. The administrative account viewer and targeted probes help distinguish discovery, inference entitlement and temporary exhaustion.
+
+Three measurements answer different questions:
+
+- **Gemini TPM** measures input tokens admitted per group/model in the rolling minute.
+- **Interaction token volume** aggregates the usage recorded for individual requests. Ordinary non-Codex chat and Responses currently estimate usage from text. Decision uses the counts returned by Google. Codex uses measured per-turn usage when available.
+- **Codex quota windows** show service-reported percentages and reset times independently of request token totals.
+
+See [HTTP endpoints](api.md), [operations](operations.md) and the [Codex runtime guide](codex-runtime-updates.md).

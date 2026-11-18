@@ -1,118 +1,91 @@
-# Setup
+# Install and verify GemRouter
 
-## Requirements
+This guide starts one Gemini-backed router on the loopback interface. It uses the admin dashboard to add the provider credential and gives the bootstrap client access to the first two text models. Run the commands in the repository root.
 
-- Node `24.18.0` (use [nvm](https://github.com/nvm-sh/nvm): `nvm use`)
-- `pnpm` `10.26.1`
+## Install the pinned toolchain
 
-## Install
+Use Node.js `24.18.0` and pnpm `10.26.1`. The repository pins Node in `.nvmrc` and pnpm in the `packageManager` field of `package.json`. With nvm, run `nvm install` and `nvm use` in the checkout. Check the output of both version commands before installing.
 
 ```bash
+node --version
+pnpm --version
 pnpm install --frozen-lockfile
-cp .env.example .env
+pnpm check
 pnpm build
 ```
 
-## Minimum required config
+## Configure a new instance
 
-Open `.env` and set:
-
-```env
-GEMROUTER_ADMIN_TOKEN=your-secret-admin-token
-GEMROUTER_BOOTSTRAP_API_KEY=your-client-api-key
-GEMROUTER_GEMINI_API_ENABLED=true
-GEMROUTER_GEMINI_API_KEYS=AIza...
-```
-
-For multiple keys use a comma-separated list or `GEMROUTER_GEMINI_API_KEYS_JSON` (JSON array).
-
-## Account metadata (optional but recommended)
-
-`data/gemini-api-accounts.json` lets you assign quota groups, tiers, and per-model limit overrides to individual keys. See [`docs/gemini-api-accounts.example.json`](gemini-api-accounts.example.json) for the format.
-
-Example with a free-tier account and a Tier 1 account:
-
-```json
-[
-  {
-    "id": "account1",
-    "quotaGroup": "my-free-project",
-    "tier": "free",
-    "priority": 100,
-    "enabled": true
-  },
-  {
-    "id": "account2",
-    "quotaGroup": "my-tier1-project",
-    "tier": "tier1",
-    "priority": 100,
-    "enabled": true,
-    "limits": {
-      "gemini-2.5-flash": { "rpm": 1000, "tpm": 1000000, "rpd": 10000 }
-    }
-  }
-]
-```
-
-When per-model `limits` are present they override the global defaults for that quota group, which fixes the scoring imbalance that would otherwise occur when mixing free and paid accounts.
-
-## Start
+The following command creates an owner-readable `.env` with two independent random credentials. It stops if `.env` already exists. For an existing installation, edit the configuration used by its service. The [configuration reference](configuration.md) explains which settings come from disk and which take effect on restart.
 
 ```bash
+node --input-type=module <<'JS'
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+
+const token = () => randomBytes(32).toString('hex');
+writeFileSync('.env', [
+  'HOST=127.0.0.1',
+  'PORT=4024',
+  'GEMROUTER_ADMIN_TOKEN=' + token(),
+  'GEMROUTER_BOOTSTRAP_API_KEY=' + token(),
+  'GEMROUTER_BOOTSTRAP_MODEL_ACCESS=custom',
+  'GEMROUTER_BOOTSTRAP_ALLOWED_MODELS=gemini-4-hydrogen,gemini-3.8-flash',
+  'GEMROUTER_GEMINI_API_ENABLED=true',
+  'GEMROUTER_GEMINI_API_ACCOUNTS_PATH=data/gemini-api-accounts.json',
+  ''
+].join('\n'), { flag: 'wx', mode: 0o600 });
+JS
+
+umask 077
 pnpm start
 ```
 
-Health check:
+The listener defaults to port `4024`. The file above binds it to loopback. For a tunnel on the same machine, point its origin at that listener and set `GEMROUTER_PUBLIC_BASE_URL` to the public HTTPS origin before starting the service. Larger deployments can use [the annotated environment template](../.env.example) to look up additional settings.
+
+1. Open `http://127.0.0.1:4024/admin`. With the configuration above, sign in as `admin` using the generated `GEMROUTER_ADMIN_TOKEN` from your local secret file.
+2. In the Gemini account manager, add a Google Gemini Developer API key for your project. Set the same quota group for keys issued by the same project. A project identifier in the form `projects/<number>` is a convenient group name.
+3. Use the bootstrap key for the first client check. For another application, create a separate client key in the dashboard and select its models. Keep the issued key when it is displayed. Client requests use that credential, and the server supplies the upstream Google credential.
+
+If you provision accounts through environment variables, see [account source precedence](configuration.md#gemini-credentials-and-quotas) before switching to dashboard management.
+
+## Verify the listener, app and provider
+
+In a second terminal in the same checkout, run the public health check.
 
 ```bash
 curl -fsS http://127.0.0.1:4024/health
 ```
 
-Admin UI: open `http://127.0.0.1:4024/admin` in a browser and log in with `GEMROUTER_DASHBOARD_ADMIN_USERS`.
-From the dashboard you can manage accounts (add/remove/priority/enable), reorder the routed
-model set, create client API keys (optionally with a custom prefix), and review interaction
-telemetry - all live, without editing `.env` or restarting. See [routing](routing.md) and
-[operations](operations.md).
-
-## Verify
-
-Chat (routed across the Gemini pool):
+For a client-level check, load the bootstrap key from the local file and call both model discovery and chat. The chat call uses one or more upstream requests according to the routing and retry policy. Its backend and served model are printed so you can identify a fallback.
 
 ```bash
-curl -sS http://127.0.0.1:4024/v1/chat/completions \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-2.5-flash",
-    "messages": [{ "role": "user", "content": "Reply only with OK." }]
-  }'
+node --env-file=.env --input-type=module <<'JS'
+const base = 'http://127.0.0.1:' + (process.env.PORT || '4024');
+const headers = {
+  authorization: 'Bearer ' + process.env.GEMROUTER_BOOTSTRAP_API_KEY,
+  'content-type': 'application/json'
+};
+for (const [path, body] of [
+  ['/v1/models'],
+  ['/v1/chat/completions', { messages: [{ role: 'user', content: 'Reply with OK.' }] }]
+]) {
+  const reply = await fetch(base + path, {
+    method: body ? 'POST' : 'GET', headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const result = await reply.json();
+  if (!reply.ok) throw new Error(path + ' HTTP ' + reply.status + ' ' + (result.error?.code || ''));
+  if (body) console.log(reply.headers.get('x-gemrouter-backend'), result.model, result.choices[0].message.content);
+  else console.log(result.data.map(model => model.id));
+}
+JS
 ```
 
-## Optional: local embeddings & vision
+An HTTP 200 from `/health` verifies the listener. Seeing a model in the client catalog verifies visibility. A successful generation verifies inference for the selected route and identity.
 
-Set `GEMROUTER_OLLAMA_LOCAL_*` (see [configuration](configuration.md)) to serve an embedding
-and a vision model from a local Ollama instance, on dedicated endpoints, with no Gemini
-fallback:
+## Other deployment paths
 
-```bash
-# Embeddings (model must be the configured embedding model)
-curl -sS http://127.0.0.1:4024/v1/embeddings \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "model": "bge-m3", "input": ["hello"] }'
-
-# Vision (always uses the configured vision model; send images as image_url parts)
-curl -sS http://127.0.0.1:4024/v1/vision \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{ "messages": [{ "role": "user", "content": [
-        { "type": "text", "text": "Describe this image" },
-        { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
-      ] }] }'
-```
-
-## Smoke tests
-
-```bash
-bash scripts/smoke.sh
-```
+- For a supervised service, tunnel, backups and upgrades, follow [Operations](operations.md).
+- Enable local Ollama for dedicated vision or embeddings, or configure the NVIDIA and Agnes providers using the [configuration reference](configuration.md).
+- The focused [Gemini account census](gemini-account-census.md) distinguishes model discovery from verified inference and supports a bounded probe plan. `pnpm test` runs the repository test suite. The general `pnpm smoke` script targets a running server, makes live chat and image calls and exercises optional compatibility surfaces. Set `API_BASE` explicitly when running it against a selected installation.

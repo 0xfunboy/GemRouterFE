@@ -8,8 +8,7 @@ Private account profiles remain outside the repository and backup trees.
 
 ## Dashboard workflow
 
-**Codex Token Quota** shows a prominent **Codex login update available** banner
-when the official npm registry advertises a newer runtime. It is visible before
+**Codex Token Quota** shows **Codex login update available** when the official npm registry advertises a newer runtime. The banner concerns GemRouter’s provider executable. It does not require signing in again. `GET /dashboard/codex/runtime` shows the active and latest cached versions; the version in the bundled manifest is the offline baseline. It is visible before
 login, but only an authenticated admin with valid mutation/CSRF authorization
 can update. Expand **Codex Backend Routing**, then use **Check Codex updates** or
 **Update and scan models / thinking**. Checks also run every six hours; guest
@@ -36,9 +35,7 @@ substitute another GPT model. Results list new/removed models, thinking changes
 and the number of updated apps. The app thinking selector reflects discovery;
 unsupported model/effort combinations still fail at dispatch.
 
-The bundled version is reproducibly refreshed by a maintainer using
-`node --import tsx scripts/vendor-codex.ts`, reviewing the protocol and tests, and
-committing the new assets/manifest. Dashboard-downloaded versions remain ignored
+To refresh the offline bundle, a maintainer updates the pinned `CODEX_RUNTIME_VERSION`, reviews the protocol and tests, then runs `node --import tsx scripts/vendor-codex.ts` from the repository root. Commit the resulting assets and manifest together with the pin. Dashboard-downloaded versions remain ignored
 on that machine; they do not push binaries or credentials to Git.
 
 ## Account quota fallback
@@ -58,7 +55,7 @@ Response headers identify actual routing without account identities:
 count attempts: a quota-blocked preferred attempt plus one alternate completion
 are not two client completions.
 
-## Telegram: alerts only
+## Telegram alerts
 
 Set `GEMROUTER_TELEGRAM_BOT_TOKEN` and up to two numeric
 `GEMROUTER_TELEGRAM_CHAT_IDS` in ignored `.env` (0600). Supergroup IDs normally
@@ -75,7 +72,7 @@ are deduplicated persistently per recipient; failed sends have a 15-minute
 cooldown and do not block inference. Delivery state is admin-only under
 `GET /admin/codex/alerts`. The Telegram token is never returned over HTTP.
 
-Endpoints: public cached `GET /dashboard/codex/runtime`; admin mutations
+Clients can read the cached state with `GET /dashboard/codex/runtime`. The admin mutations
 `POST /admin/codex/runtime/check` and `POST /admin/codex/runtime/update` accept
 only an empty JSON object. Existing login routes keep their authorization and
 session ownership rules.

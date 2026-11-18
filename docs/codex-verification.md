@@ -1,4 +1,6 @@
-# Codex provider verification — 2026-09-16
+# Codex provider verification history
+
+These dated checks record the runtime, account state and results observed at the time. For current deployment settings and verification commands, see the [provider guide](codex-account.md) and [managed runtime guide](codex-runtime-updates.md).
 
 ## Live managed update — 2026-10-07
 

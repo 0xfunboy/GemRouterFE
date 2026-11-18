@@ -1,169 +1,78 @@
-<div align="center">
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=6,11,20&height=160&section=header&text=GemRouterFE&fontSize=50&fontColor=fff&animation=fadeIn&fontAlignY=38&desc=GemRouter%20is%20an%20OpenAI-compatible%20backend%20router%20for%20Gemini%20API%2C%20designed...&descAlignY=60&descSize=14" width="100%"/>
-
-<img src="https://skillicons.dev/icons?i=ts,bash,nodejs&theme=dark" alt="Tech stack"/>
-
-</div>
-
 # GemRouter
 
-A lightweight backend router for Gemini API traffic. It exposes OpenAI-, DeepSeek-, and
-Ollama-compatible HTTP surfaces while routing requests across a pool of Gemini API keys with
-automatic fallback, local quota tracking, and resilient error handling - plus direct routes
-to a local Ollama for embeddings and vision.
+GemRouter is a self-hosted HTTP gateway for applications that share access to AI providers. Each application gets its own API key and model permissions. The gateway chooses an eligible provider account, tracks local quota usage and can move a text request to another permitted model when the first one is busy. Operators manage accounts, app keys, routing and usage from the built-in dashboard.
 
-The optional **Codex provider** uses your authenticated account for text inference:
-`gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-6-astra`, with model-specific thinking.
-Enable it per app; on exhausted quota it can fall back to that app's authorized Gemini chain.
-The dashboard supports two isolated saved logins and manual account selection,
-with private aliases, public quota bars and per-account measured request tokens. No MCP,
-personal-chat wake, browser controller or coding tools. See [Codex](docs/codex-account.md).
-The official Codex executable is bundled in the repository. See
-[runtime updates, quota-only account fallback and Telegram alerts](docs/codex-runtime-updates.md).
+An OpenAI-compatible client can use `/v1/chat/completions` or `/v1/responses`. The root chat endpoints and the Ollama-compatible routes serve other clients. These interfaces implement a subset of the upstream APIs. For example, use plain text for Gemini chat, use a dedicated endpoint for vision, and expect Gemini and Codex chat streaming to deliver buffered text. [Client API and examples](docs/api.md)
 
-It is designed to squeeze the maximum useful throughput out of **free-tier** Gemini accounts:
-pool many accounts, always try the strongest model first, and gracefully scale down a fallback
-chain that ends on very high-quota models - so most traffic is served at **zero API cost**.
+## Run locally
 
-## Why it pays off (economic advantages)
+Use Node.js **24.18.0** and pnpm **10.26.1**, the versions specified in `.nvmrc` and `package.json`. From a fresh checkout, install dependencies and create a private configuration file.
 
-GemRouter makes a fleet of free Gemini accounts behave like one large, reliable,
-OpenAI-compatible endpoint - without a paid plan and without external billing/monitoring services.
-
-- **Multiplied free quota.** Daily quota is per account. Pool *N* free accounts and the usable
-  daily capacity multiplies by *N*. Example with 7 accounts: `gemini-2.5-flash` ~140 req/day,
-  `gemini-3.1-flash-lite` ~3,500/day, `gemma-4-31b-it`/`gemma-4-26b-a4b-it` ~9,000/day each →
-  **~21,000+ text requests/day at $0**.
-- **Strongest-first, graceful degradation.** Each request tries the best model first and only
-  falls back down an ordered chain (flagship flash → flash-lite → gemma) when a model is
-  exhausted/overloaded. You always get the best model you can serve *for free*, and you keep
-  serving traffic instead of failing when the top models run out.
-- **No wasted quota on transient failures.** 429s roll back the local counter so a rejected
-  request doesn't burn quota; an escalating backoff (1 min → 5 min → daily) parks genuinely
-  depleted model+account pairs; a model-wide 503 "high demand" is parked for 30 s instead of
-  hammering every key. Net effect: fewer burnt requests, higher effective free throughput.
-- **No empty/failed billable retries.** An empty completion is never returned as success - it
-  is retried with a larger budget, then falls to the next model. Clients don't pay (in tokens
-  or quota) for blank answers, and don't need their own retry glue.
-- **Local embeddings & vision = $0 and offloaded.** `bge-m3` (embeddings) and a vision model
-  run on your own Ollama box via dedicated `/v1/embeddings` and `/v1/vision` endpoints - no
-  per-token embedding/vision API bill, and they run as separate flows that never touch the
-  Gemini quota or queue.
-- **No external cost to operate.** Quota is tracked entirely in-process (a local JSON ledger);
-  there is no Cloud Monitoring, Service Usage, or `gcloud` dependency to pay for or maintain.
-- **Drop-in OpenAI compatibility.** Point any OpenAI SDK at GemRouter's base URL and keep your
-  code unchanged - you swap a paid endpoint for a free-tier pool with one config line.
-- **Operate without redeploys.** Add/remove accounts, set priorities, reorder the routed model
-  set, and mint client keys live from the admin UI - no `.env` edits, no restarts, no downtime.
-
-## What it does
-
-- **Multi-account routing** across many Gemini API keys (AI Studio free-tier and Tier 1), with
-  capacity-aware rotation (equal-priority accounts with more headroom are preferred).
-- **Local quota ledger** - RPM / TPM / RPD tracked per quota-group + model; RPD resets at
-  midnight America/Los_Angeles (Google's real boundary). No Google Cloud calls.
-- **Resilient fallback** - ordered model chain, strongest→weakest; escalating 429 backoff;
-  503 high-demand handling; empty-completion retry/fallback; cross-backend fallback to Ollama.
-- **Local Ollama integration** - dedicated `/v1/embeddings` (bge-m3) and `/v1/vision`
-  (e.g. minicpm) routes, direct to a local server, with no Gemini fallback and their own
-  daily counters.
-- **Compatibility surfaces** - OpenAI, DeepSeek, and Ollama-compatible endpoints from one backend.
-- **Operator admin UI** at `/admin` - live quota, account manager (add/remove/priority/enable,
-  per-account model discovery), routed-model editor, app/key management (with custom key
-  prefixes), interaction telemetry filterable by app, and an outbound-proxy manager.
-- **Optional Codex inference** - account login, explicit app permission, thinking,
-  quota-only Gemini fallback, buffered SSE and measured token accounting.
-
-## Endpoints (quick reference)
-
-| Endpoint | Auth | Purpose |
-|---|---|---|
-| `POST /v1/chat/completions`, `/chat/completions` | client key | Gemini, NVIDIA or an authorized Codex model |
-| `POST /v1/responses` | client key | Responses-compatible text inference |
-| `POST /v1beta/decisions` | client key with `gemini-decision-1` access | Google Decisions API for classification and scoring |
-| `POST /v1/embeddings`, `/embeddings` | client key | Embeddings via local Ollama (`bge-m3`) |
-| `POST /v1/vision`, `/vision` | client key | Vision via local Ollama (separate flow, no queue) |
-| `GET /health`, `GET /dashboard/summary` | none | Health and guest-safe quota/stats |
-| `GET /admin`, `POST /admin/*` | admin | Operator dashboard and management APIs |
-
-Gemini text routing defaults to `gemini-4-hydrogen` followed by `gemini-3.8-flash` for apps with access to both. Explicit model requests and app allowlists still govern the starting point of each request.
-
-For a decision, send a Bearer client key and a JSON body to `/v1beta/decisions`. For example, this request returns a probability in `answers.damaged`. The endpoint accepts text and inline media.
-
-```json
-{"model":"gemini-decision-1","input":"The mug arrived cracked.","questions":{"damaged":{"type":"noul","instructions":"Did the item arrive damaged?"}}}
-```
-
-## Requirements
-
-- Node `24.18.0` (see [`.nvmrc`](./.nvmrc))
-- `pnpm` `10.26.1`
-
-## Install
-
-```bash
+```sh
 pnpm install --frozen-lockfile
-cp .env.example .env
-# edit .env - set at minimum GEMROUTER_ADMIN_TOKEN, GEMROUTER_BOOTSTRAP_API_KEY, GEMROUTER_GEMINI_API_KEYS
+touch .env && chmod 600 .env
+```
+
+For a first Gemini text request, set these entries in `.env`. Generate two different random local secrets and replace the Google key placeholder with a credential for your own project. The default data directory is `./data` and the default port is `4024`.
+
+```dotenv
+HOST=127.0.0.1
+GEMROUTER_ADMIN_TOKEN=<random-operator-secret>
+GEMROUTER_BOOTSTRAP_API_KEY=<different-random-client-secret>
+GEMROUTER_GEMINI_API_KEYS=<google-project-api-key>
+GEMROUTER_GEMINI_API_ACCOUNTS_PATH=data/gemini-api-accounts.json
+```
+
+```sh
 pnpm build
-```
-
-## Start
-
-```bash
 pnpm start
-# or for production
-./scripts/start-gemrouter.sh
 ```
 
-Default port: `4024`. Health check:
+In a second shell, set `GEMROUTER_APP_KEY` to the bootstrap client key or an app key created in the dashboard. The model list shows what that key can discover. Omitting `model` in the text example exercises the default selection. Include `model` when your application needs a particular starting model.
 
-```bash
+```sh
 curl -fsS http://127.0.0.1:4024/health
+curl -fsS http://127.0.0.1:4024/v1/models \
+  -H "Authorization: Bearer $GEMROUTER_APP_KEY"
+
+curl -sS -i http://127.0.0.1:4024/v1/chat/completions \
+  -H "Authorization: Bearer $GEMROUTER_APP_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Reply with OK."}],"max_tokens":128}'
 ```
 
-## Quick example
+Check the HTTP status and `x-gemrouter-backend-model` to see which model served the reply. For clients that take an OpenAI base URL, use `http://127.0.0.1:4024/v1`. The operator dashboard is at `/admin`. [Installation and initial configuration](docs/setup.md)
 
-```bash
-curl -sS http://127.0.0.1:4024/v1/chat/completions \
-  -H "Authorization: Bearer $GEMROUTER_BOOTSTRAP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gemini-2.5-flash",
-    "messages": [{ "role": "user", "content": "Reply only with OK." }]
-  }'
-```
+## Models and routing
 
-Use it from the OpenAI SDK by pointing `base_url` at `http://<host>:4024/v1`.
+| Workload | Entry point | Routing behavior |
+|---|---|---|
+| Text chat | `POST /v1/chat/completions`, `POST /v1/responses` | The built-in default is `gemini-4-hydrogen`. With both models enabled and permitted, busy Hydrogen can fall back to `gemini-3.8-flash`. Requests for a particular model start with that model when eligible. |
+| Classification and scoring | `POST /v1beta/decisions` | Requires the `gemini-decision-1` grant. Returns typed answers and usage. Accepts text and inline media. |
+| Optional text providers | Chat endpoints | NVIDIA NIM, configured Ollama servers and Codex each have their own routing rules. Codex requires provider enablement, a signed-in account and an app grant. |
+| Images, video, vision, embeddings | Dedicated endpoints | Availability depends on the configured provider. Vision and embeddings use local Ollama. Agnes can serve image and video generation. |
+
+Gemini admission is tracked per **quota group and model**. Put keys from the same Google project in the same group. A catalog entry confirms that the provider lists a model. A successful inference also verifies that the project could use it at the time of the test. For billing and current project limits, consult the provider. Local counters and dashboard token estimates serve operational monitoring. [Routing and quota](docs/routing.md) · [Google rate limits](https://aistudio.google.com/docs/rate-limits)
 
 ## Documentation
 
-| Guide | Contents |
+| Task | Guide |
 |---|---|
-| [Setup](docs/setup.md) | Installation, configuration, first run |
-| [Configuration reference](docs/configuration.md) | All environment variables |
-| [Routing and quota](docs/routing.md) | Multi-key routing, fallback, cooldowns, local Ollama, endpoints |
-| [Architecture and workflow](docs/architecture-workflow.md) | Startup, model discovery, app policy, routing, quota lifecycle, production checklist |
-| [Operations](docs/operations.md) | Deployment, systemd, security, live admin management, troubleshooting |
-| [Codex provider](docs/codex-account.md) | Login, models/thinking, quota, fallback, usage and verification |
+| Integrate an application, interpret fallback headers or handle errors | [Client API](docs/api.md) |
+| Set up a new installation or choose configuration values | [Setup](docs/setup.md) · [Configuration](docs/configuration.md) |
+| Understand model selection, account discovery and quota accounting | [Routing](docs/routing.md) · [Architecture and workflow, in Italian](docs/architecture-workflow.md) |
+| Deploy the service, operate the dashboard or recover configuration | [Operations](docs/operations.md) |
+| Connect a Codex account or manage its runtime | [Codex provider](docs/codex-account.md) · [Runtime updates](docs/codex-runtime-updates.md) |
+| Check which Gemini models individual accounts can actually use | [Account census](docs/gemini-account-census.md) |
 
-Third-party attribution for design references is recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## Development
 
-Account metadata/keys live in `data/gemini-api-accounts.json` (gitignored; see
-[`docs/gemini-api-accounts.example.json`](docs/gemini-api-accounts.example.json) for the format).
+```sh
+pnpm check
+pnpm test
+pnpm build
+```
 
-## Licensing
+The test suite includes local HTTP fixtures for authentication, routing, quota accounting and fallback. `pnpm smoke` targets a running service and can send real inference requests. Choose the target and credentials before running it. [Operations](docs/operations.md)
 
-Licensing scope and preserved third-party permissions are documented in [LICENSING.md](LICENSING.md). The [0xfunboy Non-Commercial License](LICENSE.md) covers eligible original material only.
-## Archived wake experiments
-
-The failed widget-wake microtest and preceding browser-controller experiment are
-archived in `archive/widget-wake-probe-2026-09-16` (`12af0c3`), including code,
-tests and chronological evidence, without private profiles or credentials.
-See [the archive pointer](docs/chatgpt-widget-wake-verification.md).
-
-The active checkout uses Codex as an inference provider. Read-only account tools:
-`pnpm --silent codex:account status|login|usage|models`.
-See [Codex account and usage](docs/codex-account.md) for dashboard configuration,
-measurement limits and the distinction between automated tests and real reads.
+The repository's non-commercial license covers eligible original material. Third-party components retain their respective terms. [Licensing scope](LICENSING.md) · [License](LICENSE.md) · [Third-party notices](THIRD_PARTY_NOTICES.md)

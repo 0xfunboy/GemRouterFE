@@ -1,5 +1,13 @@
 # Gemini account/model census
 
+The tables below preserve the October 7, 2026 rollout observations. To check an account today, use the account viewer or the targeted diagnostic described below. Current routing and local limits are documented separately. [Routing and quota](routing.md)
+
+## November 18 model rollout
+
+In the later production rollout, all 11 enabled accounts returned text from `gemini-4-hydrogen` and a typed answer from `gemini-decision-1`. The public chat endpoint returned Hydrogen when the client omitted the model. The public native Decisions endpoint returned an answer and Google-reported input token usage. These were bounded inference checks performed during that rollout. Each project’s remaining quota changes as requests are made.
+
+The registration and fallback regression tests use a local provider fixture. They check app grants, the Decision endpoint, token accounting and Hydrogen’s downgrade to 3.8 Flash on overload. [HTTP regression test](../tests/gemini-models-http.test.ts)
+
 ## Live findings — 2026-10-07
 
 The existing production service was used; no second router was started against
@@ -94,8 +102,7 @@ responses per key/model. These exclusions survive restart and catalog refresh;
 listing alone cannot erase a zero-quota observation. A genuinely successful
 inference can restore access. For a blocked pair, the protected admin
 `POST /admin/provider/gemini-api/accounts/probe-model` endpoint accepts only
-`{ "accountId": "account2", "model": "gemini-2.5-pro" }`. Its fixed, text-only
-diagnostic can update the gate without allowing normal inference through it;
+an object with an existing `accountId` and an exact `model`. For example, use `gemini-4-hydrogen` for a fixed text prompt or `gemini-decision-1` for a fixed native decision question. A successful diagnostic can update the gate without allowing normal inference through it;
 an independent curated exclusion still needs explicit operator review. The
 endpoint uses existing admin/CSRF protection, two concurrent probes maximum and
 one probe per account/model per minute, with no retries or arbitrary prompts.
@@ -126,20 +133,14 @@ pnpm census:gemini --probe --models=gemini-2.5-pro --apply
 ```
 
 Default operation is list-only and limits candidates to Gemini/Gemma chat flags;
-neither those flags nor listing prove inference entitlement. `--probe` explicitly consumes upstream inference
-quota through the existing live service's protected probe endpoint: at most one
-generation request per target/key, 20-second catalog and generation deadlines,
-45-second HTTP ceiling, 128 output tokens, two concurrent account sequences.
+neither those flags nor listing prove inference entitlement. `--probe` consumes upstream quota through the live service’s protected endpoint. The CLI runs up to two account sequences concurrently and sends at most one generation request per selected account/model pair. Catalog fetches have a 20-second deadline; the fixed text prompt allows 128 output tokens. The CLI stops waiting for the admin HTTP response after 45 seconds. The underlying Hydrogen generation probe can take up to 65 seconds, so a CLI timeout can precede a successful upstream reply. For Hydrogen use the account viewer or call the protected endpoint directly with time for both catalog and inference; use that endpoint for Decision 1 too, since the CLI selects chat models.
 No second router instance is started. Explicit probes update access evidence,
 not client interaction/usage counters. JSON-lines output contains safe slot IDs,
 model names, individual durations, statuses and reported tokens, not keys,
 identities or raw upstream errors. `--apply` requires `--probe` and only narrows
 policy for proven zero quota/structured 404, through the live loopback admin API.
 It never updates policy after failed discovery, transient error or a changed
-account/key. It never widens an existing allowlist and refuses an empty list
-because the existing router interprets an empty list as unrestricted. It does
-not enable/disable accounts, restart production, or assert that listing proves
-access. Take a private configuration backup before an intentional `--apply` run.
+account/key. For an explicit allowlist, it removes proven denials and retains the other entries. With an unrestricted account, it constructs a new list from `generateContent` catalog entries, which can exclude other valid methods such as `createDecision`. Review the intended list and use the targeted admin controls for such accounts. The CLI refuses an empty replacement because the router treats an empty account allowlist as unrestricted.
 
 ## Verification boundaries
 
