@@ -410,7 +410,8 @@ export class CodexRuntime {
       child.stdout.on('data', (chunk: string) => { output += chunk; if (output.length > 256) finish(new CodexRuntimeError('codex_invalid_response')); });
       child.stderr.on('data', () => undefined);
       child.on('error', () => finish(new CodexRuntimeError('codex_unreachable')));
-      child.on('exit', (code) => finish(code === 0 ? undefined : new CodexRuntimeError('codex_unreachable')));
+      // exit can precede the last stdout data event when several profiles start together.
+      child.on('close', (code) => finish(code === 0 ? undefined : new CodexRuntimeError('codex_unreachable')));
       child.stdin.end();
     });
   }

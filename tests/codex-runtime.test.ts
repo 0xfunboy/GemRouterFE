@@ -27,7 +27,12 @@ function simulatedRuntime(settings: { authenticated?: boolean; noAstra?: boolean
     launches.push({ args, options });
     processes.push(child);
     if (args[0] === '--version') {
-      queueMicrotask(() => { child.stdout.write(`codex-cli ${settings.version ?? CODEX_RUNTIME_VERSION}\n`); child.exitCode = 0; child.emit('exit', 0); });
+      queueMicrotask(() => {
+        child.exitCode = 0;
+        child.emit('exit', 0);
+        child.stdout.end(`codex-cli ${settings.version ?? CODEX_RUNTIME_VERSION}\n`);
+        child.emit('close', 0);
+      });
       return child;
     }
     server = child;
