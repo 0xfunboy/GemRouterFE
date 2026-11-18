@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import path from 'node:path';
 
 import { filterRetiredGeminiModelIds, isRetiredGeminiModelId } from '../../../lib/models.js';
+import { GEMINI_DECISION_MODEL } from './decisions.js';
 import type { GeminiApiProviderConfig } from './types.js';
 import { fetchGeminiCatalog, geminiAccessDenial, type GeminiAccessDenial } from './catalogApi.js';
 
@@ -90,7 +91,13 @@ export class GeminiAccountModelCatalog {
     const reason = geminiAccessDenial(status, payload);
     const key = this.config.keys.find((candidate) => candidate.id === accountId);
     if (!key || (dispatchedKey != null && key.key !== dispatchedKey) || (!reason && status !== 200)) return;
-    if (!reason && !Array.isArray((payload as { candidates?: unknown } | null)?.candidates)) return;
+    if (!reason) {
+      const result = payload as { answers?: unknown; candidates?: unknown } | null;
+      const successful = model === GEMINI_DECISION_MODEL
+        ? !!result?.answers && typeof result.answers === 'object' && !Array.isArray(result.answers)
+        : Array.isArray(result?.candidates);
+      if (!successful) return;
+    }
     const old = this.data.accounts[accountId];
     const entry = old && (!old.fingerprint || old.fingerprint === fingerprint(key.key)) ? old : {
       accountId, models: [], fetchedAt: '', error: null,
@@ -127,7 +134,8 @@ export class GeminiAccountModelCatalog {
           const catalog = await fetchGeminiCatalog(this.config, key.key);
           const models = filterRetiredGeminiModelIds(catalog
             .filter((model) => Array.isArray(model.supportedGenerationMethods)
-              && model.supportedGenerationMethods.map(String).includes('generateContent'))
+              && (model.supportedGenerationMethods.includes('generateContent') ||
+                (model.name === `models/${GEMINI_DECISION_MODEL}` && model.supportedGenerationMethods.includes('createDecision'))))
             .map((model) => String(model.name ?? '').replace(/^models\//, '').trim().toLowerCase())
             .filter(Boolean)).sort();
           const old = this.data.accounts[key.id];

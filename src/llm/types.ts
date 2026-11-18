@@ -49,7 +49,7 @@ export interface LLMOptions {
   thinking?: {
     includeThoughts?: boolean;
     thinkingBudget?: number;
-    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   };
   imageConfig?: {
     aspectRatio?: string;

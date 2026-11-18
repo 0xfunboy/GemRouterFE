@@ -180,7 +180,7 @@ The preferred account is retried only when fresh service quota confirms recovery
 an elapsed reset countdown alone cannot clear exhaustion. A structured upstream
 rejection has a short backoff so a lagging snapshot cannot cause a retry storm.
 With no usable alternate account, exhausted quota allows fallback to the first authorized configured Gemini
-(current curated order starts with gemini-3.8-flash). Existing key rotation and
+(current curated order starts with `gemini-4-hydrogen`, then `gemini-3.8-flash`). Existing key rotation and
 model downgrades still respect the app allowlist and shared request deadline.
 Reorder the routing editor when a new preferred Gemini becomes available.
 

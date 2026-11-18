@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  DEFAULT_DIRECT_MODEL_IDS,
   isGeminiEmbeddingModelId,
   isGeminiImageGenerationModelId,
   isGeminiLiveModelId,
@@ -14,6 +15,7 @@ import { applySemanticPrompt, normalizeSemanticOutput } from '../../../lib/seman
 import { LLMHedgeCancelled } from '../../errors.js';
 import { GeminiAccountModelCatalog } from './accountCatalog.js';
 import { fetchGeminiCatalog, geminiAccessDenial } from './catalogApi.js';
+import { GEMINI_DECISION_MODEL, encodeDecisionRequest, isDecisionResponse, validateDecisionRequest, type GeminiDecisionResult } from './decisions.js';
 import { GeminiApiProviderError } from './errors.js';
 import { GeminiApiKeyPool, type GeminiApiKeyReservation, type GeminiApiLocalBackpressure } from './keyPool.js';
 import { GeminiApiModelDiscovery } from './modelDiscovery.js';
@@ -100,7 +102,7 @@ export function estimateGeminiAdmissionTokens(messages: LLMMessage[]): number {
 }
 
 function normalizeGeminiApiModel(model: string | undefined): string {
-  const normalized = String(model ?? 'gemini-3.5-flash').trim().toLowerCase();
+  const normalized = String(model ?? DEFAULT_DIRECT_MODEL_IDS[0]).trim().toLowerCase();
   return normalized.replace(/^models\//, '');
 }
 
@@ -125,6 +127,8 @@ const LOCAL_BACKPRESSURE_MAX_WAIT_MS = 20_000;
 // successful downgrade by more than 50s. Cap only candidates which still have a
 // fallback; the final candidate retains the remaining global deadline.
 const GEMINI_EARLY_ATTEMPT_TIMEOUT_MS = 15_000;
+// Even at low thinking, a successful Hydrogen response can take over 25s.
+const HYDROGEN_ATTEMPT_TIMEOUT_MS = 45_000;
 const REQUEST_DEADLINE_RESERVE_MS = 1_000;
 export const GEMINI_MAX_UPSTREAM_ATTEMPTS_PER_REQUEST = 6;
 // Initial quota-group attempt plus at most two account rotations.
@@ -173,13 +177,13 @@ export function buildGeminiThinkingConfig(modelId: string | undefined, opts?: LL
     return null;
   }
   const includeThoughts = opts?.thinking?.includeThoughts === true;
-  // Gemini 3.7/3.8 Flash support low/medium/high but reject minimal. Preserve an
-  // explicit supported level and safely promote the router's default minimal to low.
-  if (/^gemini-3\.(?:7|8)-flash/i.test(model)) {
-    const requestedLevel = opts?.thinking?.thinkingLevel ?? 'minimal';
+  const requestedLevel = opts?.thinking?.thinkingLevel ?? 'minimal';
+  // Hydrogen supports low through xhigh. Flash 3.7/3.8 accepts low through high.
+  const level = requestedLevel === 'xhigh' && model !== 'gemini-4-hydrogen' ? 'high' : requestedLevel;
+  if (model === 'gemini-4-hydrogen' || /^gemini-3\.(?:7|8)-flash/i.test(model)) {
     return {
       includeThoughts,
-      thinkingLevel: requestedLevel === 'minimal' ? 'low' : requestedLevel,
+      thinkingLevel: level === 'minimal' ? 'low' : level,
     };
   }
   // Other Gemini 3.x reasoning variants take minimal/low/medium/high. Live probes
@@ -187,7 +191,7 @@ export function buildGeminiThinkingConfig(modelId: string | undefined, opts?: LL
   if (/^gemini-3/i.test(model)) {
     return {
       includeThoughts,
-      thinkingLevel: opts?.thinking?.thinkingLevel ?? 'minimal',
+      thinkingLevel: level,
     };
   }
   if (/^gemini-2\.5-(?:flash|flash-lite)/i.test(model)) {
@@ -220,11 +224,12 @@ export function buildGeminiGenerationBody(messages: LLMMessage[], opts?: LLMOpti
     };
   }
   const generationConfig: Record<string, unknown> = {};
-  // Gemini 3.8 rejects legacy sampling parameters. Since 2026-10-08 Google also
-  // redirects the 3.7 alias to 3.8. Accept the client field but omit it upstream.
+  // Hydrogen and 3.8 Flash (also served by the 3.7 alias) use provider sampling.
+  const model = normalizeGeminiApiModel(opts?.model);
   if (
     typeof opts?.temperature === 'number' &&
-    !/^gemini-3\.(?:7|8)-flash/i.test(normalizeGeminiApiModel(opts.model))
+    model !== 'gemini-4-hydrogen' &&
+    !/^gemini-3\.(?:7|8)-flash/i.test(model)
   ) {
     generationConfig.temperature = opts.temperature;
   }
@@ -575,6 +580,7 @@ function isTextFallbackModelCandidate(
 ): boolean {
   if (!String(modelId).trim()) return false;
   if (!/^(?:gemini|gemma)-/i.test(normalizeGeminiApiModel(modelId))) return false;
+  if (normalizeGeminiApiModel(modelId) === GEMINI_DECISION_MODEL) return false;
   if (isGeminiImageGenerationModelId(modelId)) return false;
   if (isGeminiLiveModelId(modelId)) return false;
   if (isGeminiEmbeddingModelId(modelId)) return false;
@@ -617,6 +623,7 @@ function classifyTextModel(modelId: string): {
 }
 
 const TEXT_MODEL_CAPABILITY_RANK: Record<string, number> = {
+  'gemini-4-hydrogen': 440,
   'gemini-3.8-flash': 420,
   'gemini-3.7-flash': 400,
   'gemini-3.6-flash': 380,
@@ -686,7 +693,7 @@ export function buildGeminiModelAttemptPlan(input: {
   pureImageRequest?: boolean;
 }): string[] {
   const requested = normalizeGeminiApiModel(input.requestedModelId);
-  if (isRetiredGeminiModelId(requested)) return [];
+  if (isRetiredGeminiModelId(requested) || requested === GEMINI_DECISION_MODEL) return [];
   const explicitAllowlist = Array.isArray(input.allowedModelIds);
   const requestedIsGeminiProviderModel = /^(?:gemini|gemma)-/i.test(requested);
   const requestedAllowedByPolicy = !explicitAllowlist || (input.allowedModelIds ?? [])
@@ -770,12 +777,17 @@ export function computeGeminiAttemptTimeoutMs(input: {
   providerTimeoutMs: number;
   deadline: number;
   remainingModels: number;
+  primaryModel?: string;
   now?: number;
 }): number {
   const now = input.now ?? Date.now();
   const remainingMs = Math.max(1_000, input.deadline - now);
   const providerCap = effectiveRequestTimeoutMs(input.providerTimeoutMs);
   if (input.remainingModels <= 0) return Math.max(1_000, Math.min(providerCap, remainingMs));
+  if (input.primaryModel === 'gemini-4-hydrogen') {
+    // Leave at least half the remaining request budget for Flash and later candidates.
+    return Math.max(1_000, Math.min(providerCap, HYDROGEN_ATTEMPT_TIMEOUT_MS, Math.floor(remainingMs / 2)));
+  }
   // Preserve time for later model candidates. An early model can no longer occupy a
   // large share of the 75s router deadline; the last candidate keeps the remaining time.
   const plannedSlots = Math.min(3, input.remainingModels + 1);
@@ -892,7 +904,9 @@ interface GeminiRequestBudget {
   backpressureWaitMs: number;
 }
 
-export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClient {
+type GeminiDecisionClient = { decide: (input: unknown, signal?: AbortSignal) => Promise<GeminiDecisionResult> };
+
+export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClient & GeminiDecisionClient {
   const ledger = new GeminiApiQuotaLedger(config);
   const accountCatalog = new GeminiAccountModelCatalog(config);
   let keyPool = new GeminiApiKeyPool(config, ledger, accountCatalog);
@@ -983,7 +997,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     }
     void discovery.refreshIfStale();
     const started = Date.now();
-    const requestedModel = normalizeGeminiApiModel(opts?.model);
+    const requestedModel = normalizeGeminiApiModel(opts?.model ?? config.fallbackModelIds[0]);
     const estimatedTokens = estimateGeminiAdmissionTokens(messages);
     const budget: GeminiRequestBudget = {
       deadline: opts?.deadline ?? started + effectiveRequestTimeoutMs(config.timeoutMs),
@@ -1175,6 +1189,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               providerTimeoutMs: config.timeoutMs,
               deadline: budget.deadline,
               remainingModels: remainingModels.length,
+              primaryModel: modelIndex === 0 ? model : undefined,
             }), requestOptions),
           });
           const payload = await response.json().catch(() => ({}));
@@ -1425,9 +1440,62 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
     });
   }
 
+  async function dispatchDecision(
+    request: ReturnType<typeof validateDecisionRequest>, body: string, reservation: GeminiApiKeyReservation, signal: AbortSignal,
+  ): Promise<GeminiDecisionResult> {
+    const model = GEMINI_DECISION_MODEL;
+    const endpoint = `${config.baseUrl.replace(/\/+$/, '')}/v1beta/decisions`;
+    const { id: keyId, quotaGroup, key } = reservation.key;
+    const event = { model, keyId, quotaGroup, requestId: reservation.requestId };
+    ledger.markDispatched(event);
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST', body, signal, redirect: 'error',
+        headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        accountCatalog.observeInference(keyId, model, response.status, payload, key);
+        throw recordGeminiHttpFailure(response, payload, endpoint, model, reservation);
+      }
+      if (!isDecisionResponse(payload, request)) throw new Error('Invalid upstream Decisions response.');
+      accountCatalog.observeInference(keyId, model, response.status, payload, key);
+      ledger.markSuccess({ ...event, promptTokens: payload.usage?.total_input_tokens, upstreamHeaders: captureRateLimitHeaders(response) });
+      return { body: payload, keyId, quotaGroup };
+    } catch (error) {
+      throw normalizeError(error, endpoint, model, reservation);
+    }
+  }
+
   return {
     provider: 'gemini-api',
-    model: 'gemini-3.5-flash',
+    get model() { return normalizeGeminiApiModel(config.fallbackModelIds[0]); },
+
+    async decide(input, callerSignal) {
+      const request = validateDecisionRequest(input);
+      const { body, estimatedTokens } = encodeDecisionRequest(request, config.limits[request.model]?.tpm);
+      const deadline = AbortSignal.timeout(config.timeoutMs);
+      const signal = callerSignal ? AbortSignal.any([deadline, callerSignal]) : deadline;
+      const excludeKeyIds: string[] = [];
+      let previousError: GeminiApiProviderError | undefined;
+      while (true) {
+        signal.throwIfAborted();
+        let reservation: GeminiApiKeyReservation;
+        try {
+          reservation = keyPool.reserve(request.model, estimatedTokens, { excludeKeyIds });
+        } catch (error) {
+          throw previousError ?? error;
+        }
+        try {
+          return await dispatchDecision(request, body, reservation, signal);
+        } catch (error) {
+          excludeKeyIds.push(reservation.key.id);
+          if (!(error instanceof GeminiApiProviderError) || !shouldRetryWithAnotherKey(error)
+            || excludeKeyIds.length >= GEMINI_MAX_KEY_FANOUT_PER_MODEL) throw error;
+          previousError = error;
+        }
+      }
+    },
 
     async chat(messages, opts): Promise<LLMResponse> {
       return generate(messages, opts);
@@ -1568,12 +1636,13 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
               displayName: typeof model.displayName === 'string' ? model.displayName : id,
               supportedGenerationMethods: methods,
               chat: methods.includes('generateContent'),
+              decisions: id === GEMINI_DECISION_MODEL && methods.includes('createDecision'),
               routingAvailable: accountCatalog.allows(account.id, id)
                 && (!account.models?.length || account.models.includes(id)),
               limit,
             };
           })
-          .filter((model) => model.chat && !isRetiredGeminiModelId(model.id))
+          .filter((model) => (model.chat || model.decisions) && !isRetiredGeminiModelId(model.id))
           .sort((left, right) => left.id.localeCompare(right.id));
         return { ok: true, accountId, quotaGroup: account.quotaGroup, models };
       } catch (error) {
@@ -1596,21 +1665,33 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       try {
         const entry = (await fetchGeminiCatalog(config, key)).find((m) => m.name === `models/${model}`);
         const flags = inferModelCapabilities(model, entry?.supportedGenerationMethods);
-        if (!entry || !flags.chat || flags.imageGeneration) return { ok: false, error: 'model_not_in_text_catalog' };
+        const decisionProbe = model === GEMINI_DECISION_MODEL && entry?.supportedGenerationMethods?.includes('createDecision')
+          ? validateDecisionRequest({ model, input: 'A blue ball.', questions: { blue: { type: 'noul', instructions: 'Is the ball blue?' } } })
+          : null;
+        if (!entry || (!decisionProbe && (!flags.chat || flags.imageGeneration))) return { ok: false, error: 'model_not_in_text_catalog' };
         const current = config.keys.find((candidate) => candidate.id === accountId && candidate.enabled);
         if (!current || current.key !== key || current.quotaGroup !== quotaGroup) return { ok: false, error: 'account_changed_during_probe' };
         const messages: LLMMessage[] = [{ role: 'user', content: 'Reply OK.' }];
-        const estimatedTokens = estimateGeminiAdmissionTokens(messages);
+        const encodedDecision = decisionProbe ? encodeDecisionRequest(decisionProbe, config.limits[model]?.tpm) : null;
+        const estimatedTokens = encodedDecision?.estimatedTokens ?? estimateGeminiAdmissionTokens(messages);
         const availability = ledger.getAvailability(quotaGroup, model, estimatedTokens);
         if (!availability.available) return { ok: false, accountId, model, error: 'account_probe_quota_unavailable',
           reason: availability.reason, retryAfterMs: availability.waitMs };
         reservation = { key: { ...account }, model, requestId: `probe-${randomUUID()}`, estimatedTokens };
         ledger.reserve({ quotaGroup, keyId: accountId, model, requestId: reservation.requestId, estimatedTokens });
+        if (decisionProbe && encodedDecision) {
+          const result = await dispatchDecision(decisionProbe, encodedDecision.body, reservation, AbortSignal.timeout(20_000));
+          return { ok: true, accountId, model, status: 200, ms: Date.now() - started, access: 'inference_verified',
+            tokens: result.body.usage?.total_tokens ?? null, servedModelVersion: null };
+        }
         ledger.markDispatched({ quotaGroup, keyId: accountId, model, requestId: reservation.requestId });
         const response = await fetch(buildEndpoint(config, model), {
           method: 'POST', redirect: 'error', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' },
           body: JSON.stringify(buildGeminiGenerationBody(messages, { model, maxTokens: 128, thinking: { thinkingLevel: 'minimal' } })),
-          signal: AbortSignal.timeout(20_000),
+          signal: AbortSignal.timeout(model === 'gemini-4-hydrogen'
+            // Direct probes have no downgrade to reserve time for; successful queries reached 58s.
+            ? Math.min(effectiveRequestTimeoutMs(config.timeoutMs), 65_000)
+            : 20_000),
         });
         const payload = await response.json() as GeminiGenerateResponse;
         accountCatalog.observeInference(accountId, model, response.status, payload, key);
@@ -1631,7 +1712,7 @@ export function createGeminiApiClient(config: GeminiApiProviderConfig): LLMClien
       }
       finally { activeAccountProbes--; }
     },
-  } as LLMClient & {
+  } as LLMClient & GeminiDecisionClient & {
     health: () => Record<string, unknown>;
     discoverModels: () => Promise<Record<string, unknown>>;
     refreshAccountModels: () => Promise<Record<string, unknown>>;

@@ -46,6 +46,46 @@ async function consumeStream(
 }
 
 describe('router: delayed cross-backend NVIDIA hedge', () => {
+  for (const mode of ['chat', 'stream'] as const) {
+    it(`waits for the Hydrogen chain in ${mode} and uses authorized NVIDIA after exhaustion`, async () => {
+      const hydrogen = 'gemini-4-hydrogen';
+      const calls: string[] = [];
+      let exhausted = false;
+      const router = createLlmRouter({
+        backendOrder: ['gemini-api', 'nvidia'], nvidiaHedgeDelayMs: 1, requestDeadlineMs: 1_000,
+      }, {
+        geminiApi: client('gemini-api', async (opts) => {
+          calls.push(hydrogen);
+          await abortableDelay(15, opts?.signal);
+          calls.push('gemini-3.8-flash');
+          if (exhausted) throw new LLMProviderError('gemini_api_rate_limited', 'gemini-api', 'Quota exhausted', {
+            statusCode: 429, fallbackEligible: true,
+          });
+          return response('gemini-api', 'Flash');
+        }),
+        nvidia: client('nvidia', async (opts) => {
+          calls.push(opts?.model ?? '');
+          return response('nvidia', 'NVIDIA');
+        }),
+      });
+      const options = { model: hydrogen, allowedModelIds: [hydrogen, 'gemini-3.8-flash', 'nvidia-auto'] };
+      const run = async (opts: LLMOptions) => mode === 'chat'
+        ? router.chat(messages, opts)
+        : (await consumeStream(router.streamChat!(messages, opts))).response;
+
+      assert.equal((await run(options)).content, 'Flash');
+      assert.deepEqual(calls.splice(0), [hydrogen, 'gemini-3.8-flash']);
+      exhausted = true;
+      const result = await run(options);
+      assert.equal(result.fallbackReason, 'gemini_api_rate_limited');
+      assert.deepEqual(calls.splice(0), [hydrogen, 'gemini-3.8-flash', 'nvidia-auto']);
+      await assert.rejects(run({ ...options, allowedModelIds: [hydrogen, 'gemini-3.8-flash'] }), /Quota exhausted/);
+      assert.deepEqual(calls.splice(0), [hydrogen, 'gemini-3.8-flash']);
+      assert.equal((await run({ ...options, backendPreference: 'nvidia' })).backend, 'nvidia');
+      assert.deepEqual(calls, [hydrogen]);
+    });
+  }
+
   it('does not launch NVIDIA when Gemini completes inside its head start', async () => {
     let nvidiaCalls = 0;
     const router = createLlmRouter({

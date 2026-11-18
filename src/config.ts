@@ -15,6 +15,7 @@ import {
 } from './lib/models.js';
 import type { LLMBackendId, ModelTier } from './llm/types.js';
 import { GEMINI_API_TIER1_LIMITS } from './llm/providers/gemini-api/rateLimits.js';
+import { GEMINI_DECISION_MODEL } from './llm/providers/gemini-api/decisions.js';
 import type { GeminiApiKeyConfig, GeminiApiProviderConfig, GeminiApiRateLimit } from './llm/providers/gemini-api/types.js';
 import type { NvidiaModelConfig, NvidiaProviderConfig } from './llm/providers/nvidia/types.js';
 import type { OllamaRouterConfig } from './llm/providers/ollama/client.js';
@@ -84,7 +85,7 @@ export interface RuntimeConfig {
     includeThoughts: boolean;
     stripReasoning: boolean;
     thinkingBudget?: number;
-    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high';
+    thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
   };
   outboundProxy: {
     enabled: boolean;
@@ -467,7 +468,6 @@ export function loadConfig(
   const agnesModelIds = agnesEnabled ? [...agnesImageModels, ...agnesVideoModels] : [];
 
   const directModels = [...new Set([configuredDirectDefaultModel, ...configuredDirectModels, ...configuredOllamaModels, ...nvidiaModelIds, ...agnesModelIds])];
-  const modelIds = buildPublicModelIds([...directModels, ...(codex.enabled ? codex.models : [])]);
   const compatibilityState = coerceCompatibilityState({
     defaultSurface: pick(
       env,
@@ -495,6 +495,9 @@ export function loadConfig(
     ? 'shared'
     : 'per-key';
   const geminiApiKeys = readGeminiApiKeys(env, geminiApiDefaultTier, geminiApiQuotaGroupMode);
+  const geminiApiEnabled = readBoolean(env, geminiApiKeys.length > 0, 'GEMROUTER_GEMINI_API_ENABLED');
+  const decisionModels = geminiApiEnabled ? [GEMINI_DECISION_MODEL] : [];
+  const modelIds = buildPublicModelIds([...directModels, ...decisionModels, ...(codex.enabled ? codex.models : [])]);
 
   return {
     codex,
@@ -553,7 +556,7 @@ export function loadConfig(
           'BAIRBI_BOOTSTRAP_ALLOWED_MODELS',
           'BARIBI_BOOTSTRAP_ALLOWED_MODELS',
         ),
-        [...freeTierTextModelIds, ...nvidiaModelIds],
+        [...freeTierTextModelIds, ...nvidiaModelIds, ...decisionModels],
         modelIds,
       ),
       sessionNamespace: pick(
@@ -590,7 +593,7 @@ export function loadConfig(
       enabledSurfaces: compatibilityState.enabledSurfaces,
     },
     geminiApi: {
-      enabled: readBoolean(env, geminiApiKeys.length > 0, 'GEMROUTER_GEMINI_API_ENABLED'),
+      enabled: geminiApiEnabled,
       keys: geminiApiKeys,
       accountsPath: path.resolve(
         rootDir,
@@ -723,7 +726,7 @@ export function loadConfig(
       thinkingBudget: readNumber(env, 0, 'GEMROUTER_THINKING_BUDGET'),
       thinkingLevel: (() => {
         const value = pick(env, 'GEMROUTER_THINKING_LEVEL')?.toLowerCase();
-        return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' ? value : 'minimal';
+        return value === 'minimal' || value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' ? value : 'minimal';
       })(),
     },
     auditLogPath: path.join(dataDir, 'audit.log'),

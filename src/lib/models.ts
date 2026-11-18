@@ -2,6 +2,7 @@
 // quality; the high-RPD lite/gemma models sit at the tail so the fallback chain has
 // large daily headroom (3.1-flash-lite 500/project, Gemma 14.4K/project) before "busy".
 export const DEFAULT_DIRECT_MODEL_IDS = [
+  'gemini-4-hydrogen',
   'gemini-3.8-flash',
   'gemini-3.7-flash',
   'gemini-3.6-flash',
@@ -14,6 +15,7 @@ export const DEFAULT_DIRECT_MODEL_IDS = [
 ] as const;
 
 export const DEFAULT_FREE_TIER_TEXT_MODEL_IDS = [
+  'gemini-4-hydrogen',
   'gemini-3.8-flash',
   'gemini-3.7-flash',
   'gemini-3.6-flash',
@@ -59,6 +61,7 @@ export const DEFAULT_FREE_TIER_EMBEDDING_MODEL_IDS = [
 ] as const;
 
 export const DEFAULT_TEXT_FALLBACK_MODEL_IDS = [
+  'gemini-4-hydrogen',
   'gemini-3.8-flash',
   'gemini-3.7-flash',
   'gemini-3.6-flash',

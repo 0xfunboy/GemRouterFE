@@ -106,6 +106,12 @@ function normalizedAllowedModels(opts?: LLMOptions): Set<string> | null {
   return new Set(opts.allowedModelIds.map(normalizedModel).filter(Boolean));
 }
 
+function allowsHydrogenNvidiaAutoFallback(opts?: LLMOptions): boolean {
+  return (opts?.backendPreference ?? 'auto') === 'auto'
+    && normalizedModel(opts?.model) === 'gemini-4-hydrogen'
+    && normalizedAllowedModels(opts)?.has('nvidia-auto') === true;
+}
+
 function resolveCrossBackendNvidiaHedge(
   config: LLMRouterConfig,
   sequence: LLMBackendId[],
@@ -114,6 +120,9 @@ function resolveCrossBackendNvidiaHedge(
   if ((opts?.backendPreference ?? 'auto') !== 'auto') return null;
   if (sequence[0] !== 'gemini-api' || !config.backendOrder.includes('nvidia')) return null;
   const model = normalizedModel(opts?.model);
+  // Hydrogen can take tens of seconds. Give its Gemini downgrade chain first use
+  // of the deadline before any authorized cross-provider fallback.
+  if (model === 'gemini-4-hydrogen') return null;
   const textGeminiModel = /^(gemini|gemma)-/.test(model)
     && !/(?:embedding|image|audio|tts|live|veo)/.test(model);
   if (!textGeminiModel || config.strictModelIds?.includes(model)) return null;
@@ -230,7 +239,8 @@ function resolveBackendSequence(config: LLMRouterConfig, opts?: LLMOptions): LLM
   }
   // Models outside the NVIDIA catalog never spill into nvidia: a Gemini 429 must
   // surface as a 429, and namespaced Ollama ids ("ns/model") stay on their backend.
-  const order = nvidiaCanServe ? rawOrder : rawOrder.filter((backend) => backend !== 'nvidia');
+  const order = nvidiaCanServe || allowsHydrogenNvidiaAutoFallback(opts)
+    ? rawOrder : rawOrder.filter((backend) => backend !== 'nvidia');
   if (isGeminiModel) {
     return [
       ...order.filter((backend) => backend === 'gemini-api'),
@@ -309,6 +319,9 @@ export function createLlmRouter(
   // Non-nvidia backends can't serve a NVIDIA-only id: substitute the configured
   // Gemini fallback model for their attempt (the response keeps the real model used).
   function optsForBackend(backend: LLMBackendId, opts: LLMOptions): LLMOptions {
+    if (backend === 'nvidia' && allowsHydrogenNvidiaAutoFallback(opts)) {
+      return { ...opts, model: 'nvidia-auto' };
+    }
     if (backend === 'gemini-api' && isCodexRequest(String(opts.model ?? ''))) {
       const candidates = config.codexFallbackModels?.().filter((id) => !opts.allowedModelIds || opts.allowedModelIds.includes(id)) ?? [];
       if (!candidates.length) throw new LLMProviderError('codex_fallback_not_allowed', 'codex', 'No authorized Gemini fallback.', { statusCode: 429 });

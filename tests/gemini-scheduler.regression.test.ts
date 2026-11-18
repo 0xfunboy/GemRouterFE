@@ -16,6 +16,8 @@ import {
 } from '../src/llm/providers/gemini-api/client.js';
 import { GeminiApiProviderError } from '../src/llm/providers/gemini-api/errors.js';
 import { LLMHedgeCancelled } from '../src/llm/errors.js';
+import { DEFAULT_DIRECT_MODEL_IDS, DEFAULT_FREE_TIER_TEXT_MODEL_IDS, DEFAULT_TEXT_FALLBACK_MODEL_IDS } from '../src/lib/models.js';
+import { GEMINI_API_TIER1_LIMITS } from '../src/llm/providers/gemini-api/rateLimits.js';
 import type { GeminiApiProviderConfig } from '../src/llm/providers/gemini-api/types.js';
 
 const workDirs: string[] = [];
@@ -104,6 +106,68 @@ function okResponse(model: string, promptTokens = 100): Response {
 }
 
 describe('Gemini request scheduler', () => {
+  it('defaults Hydrogen to low thinking and uses provider sampling', () => {
+    const body = buildGeminiGenerationBody([{ role: 'user', content: 'hello' }], {
+      model: 'models/gemini-4-hydrogen', temperature: 0.2, maxTokens: 128,
+    });
+    assert.deepEqual(body.generationConfig, {
+      maxOutputTokens: 128, thinkingConfig: { includeThoughts: false, thinkingLevel: 'low' },
+    });
+  });
+
+  it('returns only visible Hydrogen text in chat and streaming responses', async () => {
+    const model = 'gemini-4-hydrogen';
+    const client = createGeminiApiClient(makeConfig({ limits: { [model]: GEMINI_API_TIER1_LIMITS[model] } }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => Response.json({
+      candidates: [{ content: { parts: [
+        { thought: true, text: 'private thought' },
+        { text: '<thinking>hidden</thinking>OK', thoughtSignature: 'opaque' },
+      ] }, finishReason: 'STOP' }],
+    });
+    try {
+      const messages = [{ role: 'user' as const, content: 'hello' }];
+      assert.equal((await client.chat(messages, { model })).content, 'OK');
+      const chunks = [];
+      for await (const chunk of client.streamChat!(messages, { model })) chunks.push(chunk);
+      assert.deepEqual(chunks, [{ content: 'OK' }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('downgrades a busy Hydrogen request to Flash 3.8 with compatible thinking', async () => {
+    const primary = 'gemini-4-hydrogen';
+    const fallback = 'gemini-3.8-flash';
+    for (const order of [DEFAULT_DIRECT_MODEL_IDS, DEFAULT_FREE_TIER_TEXT_MODEL_IDS, DEFAULT_TEXT_FALLBACK_MODEL_IDS]) {
+      assert.deepEqual(order.slice(0, 2), [primary, fallback]);
+    }
+    const client = createGeminiApiClient(makeConfig({ keyCount: 1, fallbackModelIds: [primary, fallback], limits: {
+      [primary]: GEMINI_API_TIER1_LIMITS[primary],
+      [fallback]: GEMINI_API_TIER1_LIMITS[fallback],
+    } }));
+    const calls: Array<{ model: string; level: string }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const model = modelFromUrl(url);
+      const { thinkingConfig } = JSON.parse(String(init?.body)).generationConfig;
+      calls.push({ model, level: thinkingConfig.thinkingLevel });
+      return model === primary
+        ? Response.json({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } }, { status: 503 })
+        : okResponse(model);
+    };
+    try {
+      assert.equal(client.model, primary);
+      const response = await client.chat([{ role: 'user', content: 'hello' }], {
+        allowedModelIds: [fallback, primary], thinking: { thinkingLevel: 'xhigh' },
+      });
+      assert.equal(response.backendModel, fallback);
+      assert.deepEqual(calls, [{ model: primary, level: 'xhigh' }, { model: fallback, level: 'high' }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('promotes unsupported minimal thinking to low for Gemini 3.7/3.8 Flash', () => {
     assert.deepEqual(
       buildGeminiThinkingConfig('gemini-3.8-flash', { thinking: { thinkingLevel: 'minimal' } }),
@@ -243,6 +307,15 @@ describe('Gemini request scheduler', () => {
       remainingModels: 0,
       now: 0,
     }), 40_000);
+  });
+
+  it('gives primary Hydrogen more time and reserves at least half the deadline for downgrades', () => {
+    const input = { primaryModel: 'gemini-4-hydrogen', providerTimeoutMs: 120_000, remainingModels: 4, now: 0 };
+    assert.equal(computeGeminiAttemptTimeoutMs({ ...input, deadline: 75_000 }), 37_500);
+    assert.equal(computeGeminiAttemptTimeoutMs({ ...input, deadline: 120_000 }), 45_000);
+    assert.equal(computeGeminiAttemptTimeoutMs({ ...input, deadline: 30_000 }), 15_000);
+    assert.equal(computeGeminiAttemptTimeoutMs({ ...input, deadline: 75_000, providerTimeoutMs: 12_000 }), 12_000);
+    assert.equal(computeGeminiAttemptTimeoutMs({ ...input, deadline: 75_000, primaryModel: 'gemini-3.8-flash' }), 15_000);
   });
 
   it('treats a request larger than every account TPM as locally ineligible', () => {

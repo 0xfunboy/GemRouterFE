@@ -2870,6 +2870,7 @@ export function renderAppShell(input: {
       // Strongest -> weakest. Keep every model-facing view on this same order;
       // anything not listed sorts after it, alphabetically.
       const MODEL_POWER_ORDER = [
+        'gemini-4-hydrogen',
         'gemini-3.8-flash',
         'gemini-3.7-flash',
         'gemini-3.6-flash',
@@ -3188,13 +3189,14 @@ export function renderAppShell(input: {
 
       function modelSupportsRouter(entry) {
         const capabilities = modelCapabilities(entry);
-        return modelSupportsChat(entry) || modelSupportsImage(entry) || capabilities.longRunning === true;
+        return modelSupportsChat(entry) || modelSupportsImage(entry) || capabilities.longRunning === true || capabilities.decisions === true;
       }
 
       function modelCapabilityTags(entry) {
         const capabilities = modelCapabilities(entry);
         return [
           capabilities.chat ? 'chat' : '',
+          capabilities.decisions ? 'decisions' : '',
           capabilities.imageGeneration ? 'image' : '',
           capabilities.live ? 'live' : '',
           capabilities.nativeAudio ? 'native-audio' : '',
@@ -3213,7 +3215,8 @@ export function renderAppShell(input: {
             displayName: id,
             label: id,
             capabilities: {
-              chat: true,
+              chat: id !== 'gemini-decision-1',
+              decisions: id === 'gemini-decision-1',
               imageGeneration: /image|nano-banana/i.test(String(id)),
             },
           };
@@ -3321,7 +3324,7 @@ export function renderAppShell(input: {
         const allowed = new Set(app && Array.isArray(app.allowedModels) ? app.allowedModels : []);
         const options = getModelCatalog().filter(function(entry) {
           const id = modelId(entry);
-          return modelSupportsRouter(entry) && id && (allowed.size === 0 || allowed.has(id))
+          return modelSupportsRouter(entry) && !modelCapabilities(entry).decisions && id && (allowed.size === 0 || allowed.has(id))
             && (entry.provider !== 'codex' || app && app.codexEnabled === true);
         }).sort(byModelPower);
         const nextSelected = typeof selectedModel === 'string' && selectedModel.trim() ? selectedModel.trim() : promptModel.value;

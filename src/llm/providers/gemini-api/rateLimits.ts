@@ -1,6 +1,11 @@
 import type { GeminiApiRateLimit } from './types.js';
 
 export const GEMINI_API_TIER1_LIMITS = {
+  'gemini-4-hydrogen': {
+    rpm: 5,
+    tpm: 250_000,
+    rpd: 20,
+  },
   // Confirmed in the account2 AI Studio free-tier limits view on 2026-08-17.
   'gemini-3.7-flash': {
     rpm: 5,
@@ -86,6 +91,11 @@ export const GEMINI_API_TIER1_LIMITS = {
     rpm: 30,
     tpm: 16_000,
     rpd: 14_400,
+  },
+  'gemini-decision-1': {
+    rpm: 200,
+    tpm: 50_000,
+    rpd: 10_000,
   },
   'gemini-embedding-001': {
     rpm: 3000,

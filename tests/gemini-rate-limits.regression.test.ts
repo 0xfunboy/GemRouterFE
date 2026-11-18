@@ -5,6 +5,7 @@ import { GEMINI_API_TIER1_LIMITS } from '../src/llm/providers/gemini-api/rateLim
 
 describe('Gemini API configured project quotas', () => {
   const expected = {
+    'gemini-4-hydrogen': { rpm: 5, tpm: 250_000, rpd: 20 },
     'gemini-3.6-flash': { rpm: 5, tpm: 250_000, rpd: 20 },
     'gemini-3.1-flash-lite': { rpm: 15, tpm: 250_000, rpd: 500 },
     'gemini-2.5-flash': { rpm: 5, tpm: 250_000, rpd: 20 },

@@ -36,11 +36,12 @@ describe('frontend model performance ordering', () => {
     assert.match(shell, /listed; inference access not verified/);
     assert.match(shell, /excluded from routing/);
   });
-  it('ranks Gemini 3.8 ahead of every older Flash generation', () => {
+  it('ranks Hydrogen before Gemini 3.8 and the older Flash generations', () => {
     const orderSource = shell.match(/const MODEL_POWER_ORDER = \[([\s\S]*?)\];/)?.[1] ?? '';
     const order = [...orderSource.matchAll(/'([^']+)'/g)].map((match) => match[1]);
 
-    assert.deepEqual(order.slice(0, 4), [
+    assert.deepEqual(order.slice(0, 5), [
+      'gemini-4-hydrogen',
       'gemini-3.8-flash',
       'gemini-3.7-flash',
       'gemini-3.6-flash',

@@ -58,6 +58,7 @@ import {
   type OllamaGenerateRequest,
 } from './lib/ollama.js';
 import { createGeminiApiClient } from './llm/providers/gemini-api/client.js';
+import { GEMINI_DECISION_MODEL } from './llm/providers/gemini-api/decisions.js';
 import { nextPacificDayStartMs } from './llm/providers/gemini-api/quotaLedger.js';
 import { createNvidiaClient } from './llm/providers/nvidia/client.js';
 import { buildNvidiaServableModelIds } from './llm/providers/nvidia/naming.js';
@@ -94,7 +95,7 @@ const PRIVATE_BACKUP_EXCLUSIONS = [config.codex.privateDirectory, path.join(conf
 function knownGeminiTextModels(): string[] {
   return Object.keys(config.geminiApi.limits)
     .map((id) => id.toLowerCase())
-    .filter((id) => /^(gemini|gemma)-/.test(id) && !id.includes('embedding'));
+    .filter((id) => /^(gemini|gemma)-/.test(id) && !id.includes('embedding') && id !== GEMINI_DECISION_MODEL);
 }
 
 function applyModelConfig(orderedModels: string[]): void {
@@ -630,6 +631,7 @@ function ensureModelAllowed(
 
 function isConfiguredTextModel(modelId: string): boolean {
   const normalized = normalizeModelId(modelId);
+  if (normalized === GEMINI_DECISION_MODEL) return false;
   if (config.freeTierPolicy.textModelIds.includes(normalized)) return true;
   return config.modelIds.map((model) => model.toLowerCase()).includes(normalized) &&
     !config.freeTierPolicy.audioModelIds.includes(normalized) &&
@@ -647,6 +649,9 @@ function resolveTextModelForApp(
   requestedModel: string,
 ): { model: string; requestedModel: string; policyFallbackReason?: string; allowedModelIds: string[] } | null {
   const requested = normalizeModelId(requestedModel);
+  if (requested === GEMINI_DECISION_MODEL) {
+    throw new LLMProviderError('gemini_api_invalid_request', 'gemini-api', 'Use POST /v1beta/decisions for Gemini Decision 1.', { statusCode: 400 });
+  }
   const allowedModelIds = textModelsAllowedForApp(clientApp);
   if (isCodexRequest(requested)) {
     if (!config.codex.enabled) throw new LLMProviderError('backend_disabled', 'codex', 'Codex provider is disabled.', { statusCode: 503 });
@@ -907,7 +912,7 @@ async function refreshFreeTierPolicyIfStale(force = false): Promise<FreeTierPoli
         allowedModelIds: config.freeTierPolicy.fallbackModelIds,
       });
       const parsed = extractJsonObject(response.content) ?? {};
-      const textModelIds = readStringList(parsed.textModelIds);
+      const textModelIds = readStringList(parsed.textModelIds).filter((id) => id !== GEMINI_DECISION_MODEL);
       const audioModelIds = readStringList(parsed.audioModelIds);
       const embeddingModelIds = readStringList(parsed.embeddingModelIds);
       const rawDiagnostics = ((geminiApiLlm.getDiagnostics?.() ?? {}) as Record<string, unknown>);
@@ -1373,6 +1378,8 @@ function buildAdminModelCatalog(
 // configured entries absent from discovery still receive a safe capability fallback.
 function buildAppPickerModelCatalog(geminiApi: Record<string, unknown>): Array<Record<string, unknown>> {
   const providerEntries = [...buildAdminModelCatalog(geminiApi), ...buildNvidiaCatalogEntries(),
+    { id: GEMINI_DECISION_MODEL, displayName: 'Gemini Decision 1', provider: 'gemini-api',
+      supportedGenerationMethods: ['createDecision'], capabilities: { chat: false, decisions: true } },
     ...codexLlm.models().map((model) => ({ id: model.model, provider: 'codex', displayName: model.displayName,
       supportedReasoningEfforts: model.supportedReasoningEfforts, available: true, capabilities: { chat: true } }))];
   const byId = new Map(
@@ -1691,6 +1698,8 @@ function getRuntimeSnapshot(
     models: [
       ...codexLlm.models().map((model) => model.model),
       ...buildCompatibleSurfaceModelIds(geminiApiDiagnostics, 'chat-or-image'),
+      ...(config.geminiApi.enabled && config.geminiApi.keys.some((key) =>
+        key.enabled && (!key.models?.length || key.models.includes(GEMINI_DECISION_MODEL))) ? [GEMINI_DECISION_MODEL] : []),
       ...(Array.isArray(ollamaDiagnostics.models)
         ? (ollamaDiagnostics.models as Record<string, unknown>[]).map((model) => String(model.id ?? '').trim()).filter(Boolean)
         : []),
@@ -1755,6 +1764,7 @@ function validateCodexAppPolicy(body: Record<string, unknown>): void {
 
 function listPublicEndpoints(): string[] {
   const endpoints = ['/', '/health', '/admin', '/auth/me', '/dashboard/summary'];
+  if (config.geminiApi.enabled) endpoints.push('/v1beta/decisions');
   if (isSurfaceEnabled('openai')) {
     endpoints.push('/v1/models', '/v1/provider/runtime', '/v1/provider/models', '/v1/provider/quota', '/v1/chat/completions', '/v1/responses', '/v1/images/generations');
   }
@@ -1793,6 +1803,7 @@ async function handleModelsRequest(
           object: 'model',
           created: 0,
           owned_by: PROJECT_NAME,
+          ...(modelId === GEMINI_DECISION_MODEL ? { endpoint: '/v1beta/decisions' } : {}),
         })),
     };
   } finally {
@@ -4032,6 +4043,36 @@ async function handleEmbeddingsRequest(
   }
 }
 app.post<{ Body: { model?: string; input?: unknown } }>('/v1/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
+app.post('/v1beta/decisions', async (request, reply) => {
+  const access = await ensureClientAccess(request, reply);
+  if (!access) return reply;
+  const model = GEMINI_DECISION_MODEL;
+  const route = '/v1beta/decisions';
+  const interaction = { request, route, model, appRecord: access.app, messages: [] };
+  try {
+    if (!config.geminiApi.enabled) {
+      return sendError(reply, 503, { message: 'Gemini API is disabled.', type: 'server_error', code: 'backend_disabled' });
+    }
+    if (!ensureModelAllowed(reply, access.app, model)) return reply;
+    const { body, keyId, quotaGroup } = await geminiApiLlm.decide(request.body, request.signal);
+    const tokens = body.usage;
+    const usage = tokens?.total_input_tokens === undefined ? undefined : {
+      prompt_tokens: tokens.total_input_tokens,
+      completion_tokens: tokens.total_output_tokens ?? 0,
+      total_tokens: tokens.total_tokens ?? tokens.total_input_tokens + (tokens.total_output_tokens ?? 0),
+    };
+    recordInteraction({ ...interaction, status: 'succeeded', statusCode: 200, provider: 'gemini-api', usage,
+      response: { backend: 'gemini-api', backendModel: model, apiKeyId: keyId, quotaGroup } });
+    reply.header('x-gemrouter-backend', 'gemini-api').header('x-gemrouter-backend-model', model);
+    return body;
+  } catch (error) {
+    const http = mapLlmErrorToHttp(error);
+    recordInteraction({ ...interaction, status: 'failed', statusCode: http.statusCode, llmError: error, error: http.code });
+    return sendError(reply, http.statusCode, { message: http.message, type: http.type, code: http.code });
+  } finally {
+    access.release();
+  }
+});
 app.post<{ Body: { model?: string; input?: unknown } }>('/embeddings', async (request, reply) => handleEmbeddingsRequest(request, reply));
 app.post<{ Body: ChatCompletionsRequest }>('/v1/vision', async (request, reply) => handleVisionRequest(request, reply));
 app.post<{ Body: ChatCompletionsRequest }>('/vision', async (request, reply) => handleVisionRequest(request, reply));
@@ -4117,7 +4158,7 @@ app.get('/api/tags', async (request, reply) => {
       ? runtime.models.map((model) => String(model).trim()).filter(Boolean)
       : config.modelIds;
     const allowedModels = runtimeModels.filter((modelId) =>
-      appStore.isModelAllowed(access.app, modelId),
+      modelId !== GEMINI_DECISION_MODEL && appStore.isModelAllowed(access.app, modelId),
     );
     return buildOllamaTagsResponse(allowedModels);
   } finally {
@@ -4131,6 +4172,9 @@ app.post<{ Body: { name?: string; model?: string } }>('/api/show', async (reques
   if (!access) return reply;
   try {
     const requestedModel = normalizeModelId(String(request.body?.name ?? request.body?.model ?? '').trim() || undefined);
+    if (requestedModel === GEMINI_DECISION_MODEL) return sendError(reply, 404, {
+      message: 'This model is served by /v1beta/decisions.', type: 'invalid_request_error', code: 'model_not_found',
+    });
     if (!ensureModelAllowed(reply, access.app, requestedModel)) return reply;
     return buildOllamaShowResponse(requestedModel);
   } catch (error) {

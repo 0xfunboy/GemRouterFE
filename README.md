@@ -81,10 +81,19 @@ OpenAI-compatible endpoint - without a paid plan and without external billing/mo
 |---|---|---|
 | `POST /v1/chat/completions`, `/chat/completions` | client key | Gemini, NVIDIA or an authorized Codex model |
 | `POST /v1/responses` | client key | Responses-compatible text inference |
+| `POST /v1beta/decisions` | client key with `gemini-decision-1` access | Google Decisions API for classification and scoring |
 | `POST /v1/embeddings`, `/embeddings` | client key | Embeddings via local Ollama (`bge-m3`) |
 | `POST /v1/vision`, `/vision` | client key | Vision via local Ollama (separate flow, no queue) |
 | `GET /health`, `GET /dashboard/summary` | none | Health and guest-safe quota/stats |
 | `GET /admin`, `POST /admin/*` | admin | Operator dashboard and management APIs |
+
+Gemini text routing defaults to `gemini-4-hydrogen` followed by `gemini-3.8-flash` for apps with access to both. Explicit model requests and app allowlists still govern the starting point of each request.
+
+For a decision, send a Bearer client key and a JSON body to `/v1beta/decisions`. For example, this request returns a probability in `answers.damaged`. The endpoint accepts text and inline media.
+
+```json
+{"model":"gemini-decision-1","input":"The mug arrived cracked.","questions":{"damaged":{"type":"noul","instructions":"Did the item arrive damaged?"}}}
+```
 
 ## Requirements
 
