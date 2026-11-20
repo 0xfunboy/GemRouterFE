@@ -8,7 +8,7 @@ import { delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } f
 /** Contract inspected with generate-json-schema --experimental; upgrades require review. */
 export const CODEX_RUNTIME_VERSION = '0.159.3';
 const MAX_LINE_BYTES = 1024 * 1024;
-const LOGIN_LIFETIME_MS = 5 * 60_000;
+const LOGIN_LIFETIME_MS = 15 * 60_000;
 
 export class CodexRuntimeError extends Error {
   constructor(public readonly code: string, public readonly usage: CodexTokenUsage | null = null) { super(code); this.name = 'CodexRuntimeError'; }
